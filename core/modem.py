@@ -459,10 +459,55 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
     # candidate; only a CRC-valid packet escapes this loop.
     for candidate_number, (sync_score, preamble_start, wire_label, sync_bits) in enumerate(candidates, 1):
         try:
+            frequency_limit = int(profile.frequency_search_limit_hz)
+            frequency_step = int(profile.frequency_search_step_hz)
             frequency_offset, frequency_score = estimate_frequency_offset(
                 x, preamble_start, sps, sync_bits, mark, space, sample_rate,
-                search_limit_hz=profile.frequency_search_limit_hz,
-                step_hz=profile.frequency_search_step_hz)
+                search_limit_hz=frequency_limit,
+                step_hz=frequency_step)
+
+            # A best-fit offset pinned to the edge is not a reliable estimate:
+            # it usually means the real acoustic clock/carrier displacement is
+            # outside the current profile's search window. Expand the search
+            # only for those boundary hits. The extended candidate is still
+            # provisional; the protected header CRC below remains mandatory.
+            boundary_hit = (
+                frequency_limit > 0
+                and abs(frequency_offset) >= max(0, frequency_limit - frequency_step)
+            )
+            if boundary_hit:
+                extended_limit = min(max(frequency_limit * 2, frequency_limit + 240), 900)
+                extended_offset, extended_score = estimate_frequency_offset(
+                    x, preamble_start, sps, sync_bits, mark, space, sample_rate,
+                    search_limit_hz=extended_limit,
+                    step_hz=frequency_step)
+                extended_is_interior = (
+                    abs(extended_offset) < max(0, extended_limit - frequency_step)
+                )
+                if extended_is_interior and extended_score > frequency_score + 1e-6:
+                    report(
+                        "FREQUENCY_RECOVERY",
+                        "Carrier estimate moved off the search boundary after bounded expansion",
+                        initial_offset_hz=frequency_offset,
+                        initial_score=f"{frequency_score:.4f}",
+                        recovered_offset_hz=extended_offset,
+                        recovered_score=f"{extended_score:.4f}",
+                        initial_limit_hz=frequency_limit,
+                        expanded_limit_hz=extended_limit,
+                    )
+                    frequency_offset, frequency_score = extended_offset, extended_score
+                else:
+                    report(
+                        "FREQUENCY_RECOVERY",
+                        "Expanded carrier search did not find a better interior estimate",
+                        initial_offset_hz=frequency_offset,
+                        initial_score=f"{frequency_score:.4f}",
+                        expanded_offset_hz=extended_offset,
+                        expanded_score=f"{extended_score:.4f}",
+                        initial_limit_hz=frequency_limit,
+                        expanded_limit_hz=extended_limit,
+                    )
+
             report("CHANNEL", "Carrier-frequency offset estimated from the preamble",
                    offset_hz=frequency_offset, normalized_score=f"{frequency_score:.4f}")
             report("BITS", "Preamble synchronized; decoding protected frame header",

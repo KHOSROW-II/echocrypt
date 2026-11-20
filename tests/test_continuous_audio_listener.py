@@ -105,6 +105,85 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             finally:
                 listener.stop()
 
+    def test_tone_activity_gate_covers_frequency_offsets_supported_by_demodulator(self):
+        from core.audio import _tone_band_ratio
+
+        rate = 48000
+        samples = np.arange(1024, dtype=np.float64)
+        shifted_tone = np.sin(2 * np.pi * 1000 * samples / rate).astype(np.float32)
+        ratio = _tone_band_ratio(
+            shifted_tone, rate,
+            (1200, 1500, 1800, 2100, 2400, 2700, 3000),
+        )
+        self.assertGreater(ratio, 0.90)
+
+    def test_listener_does_not_split_broadcast_burst_on_short_tone_ratio_dropout(self):
+        from core.audio import _tone_band_ratio
+        from core.broadcast import BROADCAST_HOP_KEY
+
+        rate = 48000
+        payload = b"broadcast-continuous-capture-regression"
+        waveform = modulate(
+            payload, rate, 400, mark=1800, space=2400, gain=0.40,
+            max_payload=1024, fec_mode="conv", hop_key=BROADCAST_HOP_KEY,
+        )
+
+        class BroadcastStream:
+            def __init__(self, *, callback, blocksize, **_kwargs):
+                self.callback = callback
+                self.blocksize = blocksize
+
+            def start(self):
+                samples = np.concatenate((
+                    np.zeros(rate // 5, dtype=np.float32),
+                    waveform,
+                    np.zeros(rate // 4, dtype=np.float32),
+                ))
+                padded = ((len(samples) + self.blocksize - 1) // self.blocksize) * self.blocksize
+                samples = np.pad(samples, (0, padded - len(samples)))
+                for offset in range(0, len(samples), self.blocksize):
+                    block = samples[offset:offset + self.blocksize]
+                    self.callback(block.reshape(-1, 1), self.blocksize, None, None)
+
+            def stop(self):
+                return None
+
+            def close(self):
+                return None
+
+        class BroadcastBackend:
+            def InputStream(self, **kwargs):
+                return BroadcastStream(**kwargs)
+
+        ratio_calls = [0]
+
+        def simulate_short_spectral_dropout(samples, sample_rate, frequencies, bandwidth_hz=240.0):
+            index = ratio_calls[0]
+            ratio_calls[0] += 1
+            if 30 <= index < 45:
+                return 0.0
+            return _tone_band_ratio(samples, sample_rate, frequencies, bandwidth_hz)
+
+        listener = ContinuousAudioListener(
+            rate, blocksize=1024,
+            activity_frequencies=(1200, 1500, 1800, 2100, 2400, 2700, 3000),
+            quiet_seconds=0.18, pre_roll_seconds=0.65, max_frame_seconds=10,
+        )
+        with patch("core.audio._sounddevice", return_value=BroadcastBackend()):
+            with patch("core.audio._tone_band_ratio", side_effect=simulate_short_spectral_dropout):
+                listener.start()
+                try:
+                    frame = listener.get_frame(timeout=3.0)
+                    decoded = demodulate(
+                        frame, rate, 400, 1800, 2400, 1024,
+                        hop_key=BROADCAST_HOP_KEY,
+                    )
+                    self.assertEqual(decoded, payload)
+                    self.assertEqual(listener.snapshot()["captured_frames"], 1)
+                    self.assertGreaterEqual(frame.size, len(waveform))
+                finally:
+                    listener.stop()
+
     def test_continuous_listener_emits_debug_for_listening_detection_capture_and_resume(self):
         events = []
         listener = ContinuousAudioListener(

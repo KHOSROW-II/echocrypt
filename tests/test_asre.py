@@ -199,6 +199,31 @@ class ASRECodecTests(unittest.TestCase):
                     payload,
                 )
 
+    def test_boundary_carrier_search_expands_for_large_real_offset(self):
+        payload = bytes((index * 31 + 5) & 0xFF for index in range(96))
+        engine = AdaptiveSignalRecoveryEngine(profile_for_grade("WEAK"))
+
+        for offset in (-450, 450):
+            with self.subTest(offset_hz=offset):
+                waveform = modulate(
+                    payload, RATE, 800,
+                    mark=1800 + offset, space=2400 + offset,
+                    gain=0.45, fec_mode="conv", wire_version=3,
+                )
+                recovery_events = []
+                recovered = demodulate(
+                    waveform, RATE, 800, mark=1800, space=2400,
+                    recovery_engine=engine,
+                    on_debug=lambda stage, message, **fields:
+                        recovery_events.append((stage, message, fields)),
+                )
+                self.assertEqual(recovered, payload)
+                self.assertTrue(any(
+                    stage == "FREQUENCY_RECOVERY"
+                    and "moved off the search boundary" in message
+                    for stage, message, _fields in recovery_events
+                ))
+
     def test_weak_sync_at_carrier_search_boundary_gets_crc_gated_header_recovery(self):
         payload = bytes((index * 19 + 7) & 0xFF for index in range(72))
         waveform = modulate(

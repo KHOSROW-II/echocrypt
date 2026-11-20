@@ -378,9 +378,9 @@ def main():
             ignore_saved=bootstrap_requested and explicit_mode is None,
         )
         if mode == "rootless" and _is_termux():
-            # Re-run package setup only when dependencies/profile are missing.
-            # The audio service is refreshed on every launch because Android may
-            # stop PulseAudio while ECHO-CRYPT is not running.
+            # Re-run package setup only when dependencies/profile or the
+            # Termux:API command are missing. Otherwise verify a real PortAudio
+            # input stream on each launch instead of relying on device enumeration.
             missing = _missing_imports(Path(sys.executable), TERMUX_IMPORTS)
             termux_api_cli_missing = shutil.which("termux-microphone-record") is None
             needs_bootstrap = (

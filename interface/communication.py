@@ -22,7 +22,7 @@ from core.codec2_backend import Codec2Unavailable
 from core.config import load
 from core.debug import for_config
 from core.reliability import ACK_PACKET_SIZE, ReliableTextChannel
-from core.session_engine import AudioSessionEngine
+from core.session_engine import AudioSessionEngine, BROADCAST_INTER_FRAME_GAP_SECONDS
 from core.broadcast import (BroadcastCodec, BroadcastType, BroadcastReassembler,
                             BroadcastRetransmitCache, BroadcastError,
                             MEDIA_VOICE,
@@ -102,7 +102,6 @@ SESSION_MENU_ITEMS = [
 ]
 
 
-BROADCAST_INTER_FRAME_GAP_SECONDS = 0.55
 BROADCAST_FILE_MANIFEST_COPIES = 3
 
 RETRY_KEY_RESULT = "__ECHOCRYPT_RETRY__"

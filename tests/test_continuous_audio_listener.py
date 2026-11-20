@@ -185,6 +185,66 @@ class ContinuousAudioListenerTests(unittest.TestCase):
                 finally:
                     listener.stop()
 
+
+    def test_listener_ends_burst_when_mobile_input_noise_rises_after_detection(self):
+        rate = 48000
+        payload = b"mobile-noise-floor-regression"
+        waveform = modulate(
+            payload, rate, 400, mark=1800, space=2400, gain=0.40,
+            max_payload=1024, fec_mode="conv", hop_key=b"m" * 32,
+        )
+        # Simulate an Android input-gain ramp: the room's 500 Hz hum becomes
+        # much louder after the first modem tone, but it is not modem activity.
+        tail_count = rate // 2
+        tail_t = np.arange(tail_count, dtype=np.float64) / rate
+        ambient = (0.005 * np.sin(2 * np.pi * 500 * tail_t)).astype(np.float32)
+        samples = np.concatenate((
+            np.zeros(rate // 5, dtype=np.float32), waveform, ambient,
+        ))
+
+        class MobileStream:
+            def __init__(self, *, callback, blocksize, **_kwargs):
+                self.callback = callback
+                self.blocksize = blocksize
+
+            def start(self):
+                padded = ((len(samples) + self.blocksize - 1) // self.blocksize) * self.blocksize
+                source = np.pad(samples, (0, padded - len(samples)))
+                for offset in range(0, len(source), self.blocksize):
+                    block = source[offset:offset + self.blocksize]
+                    self.callback(block.reshape(-1, 1), self.blocksize, None, None)
+
+            def stop(self):
+                return None
+
+            def close(self):
+                return None
+
+        class MobileBackend:
+            def InputStream(self, **kwargs):
+                return MobileStream(**kwargs)
+
+        listener = ContinuousAudioListener(
+            rate, blocksize=1024,
+            activity_frequencies=(1200, 1500, 1800, 2100, 2400, 2700, 3000),
+            quiet_seconds=0.12, pre_roll_seconds=0.65, max_frame_seconds=10,
+        )
+        with patch("core.audio._sounddevice", return_value=MobileBackend()):
+            listener.start()
+            try:
+                frame = listener.get_frame(timeout=3.0)
+                decoded = demodulate(
+                    frame, rate, 400, 1800, 2400, 1024, hop_key=b"m" * 32,
+                )
+                self.assertEqual(decoded, payload)
+                self.assertEqual(listener.snapshot()["captured_frames"], 1)
+                deadline = __import__("time").monotonic() + 1.0
+                while listener.busy and __import__("time").monotonic() < deadline:
+                    __import__("time").sleep(0.01)
+                self.assertFalse(listener.busy, "mobile ambient noise must not hold RX busy")
+            finally:
+                listener.stop()
+
     def test_continuous_listener_emits_debug_for_listening_detection_capture_and_resume(self):
         events = []
         listener = ContinuousAudioListener(

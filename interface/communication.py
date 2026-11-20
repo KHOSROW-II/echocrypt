@@ -1516,7 +1516,8 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                     engine.submit_packet(frame, fec_mode=retry_fec,
                                          symbol_rate=retry_rate, hop_key=None,
                                          label=f"BROADCAST RETRY {index}/{len(resend_jobs)} @ {retry_rate}",
-                                         channel_access=(index == 1))
+                                         channel_access=(index == 1),
+                                         disable_hopping=True)
                     debug("BROADCAST_TX", "Requested broadcast frame queued for retransmission",
                           frame_number=index, frame_count=len(resend_jobs), frame_bytes=len(frame))
                     report("TX BROADCAST RESEND", index, len(resend_jobs), "frames",
@@ -1723,9 +1724,10 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
 def _broadcast_send_frames(engine, frames, label, *, copies=1, progress_callback=None,
                            cancel_event=None, symbol_rate=None):
     """Send public frames, reporting progress and honoring user cancellation."""
-    # Broadcast has no delivery ACK: prefer the conservative reliable-chat
-    # profile rather than blindly selecting the fastest available rate.
-    rate = int(symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
+    # Public Broadcast has no confidentiality or private hopping key. Keep it
+    # fast: use the configured fast modem rate unless the caller explicitly
+    # selects a rate. Reliability comes from selective fragment retries.
+    rate = int(symbol_rate or getattr(engine.config, "fast_symbol_rate", 800))
     copies = max(1, min(5, int(copies)))
     total = len(frames)
     completed = 0
@@ -1739,6 +1741,7 @@ def _broadcast_send_frames(engine, frames, label, *, copies=1, progress_callback
                 label=f"{label} {index + 1}/{total} copy {copy_index + 1}/{copies}",
                 timeout=duration + 30.0,
                 channel_access=True, cancel_event=cancel_event,
+                disable_hopping=True,
             )
             completed += 1
             if progress_callback is not None:
@@ -1927,6 +1930,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     timeout=duration + 30.0,
                     channel_access=True,
                     cancel_event=transfer_cancel_event,
+                    disable_hopping=True,
                 )
                 report_tx("BROADCAST RESEND", index, total, "frames")
                 with messages_lock:
@@ -2191,15 +2195,17 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 mid = codec.decode(frames[0]).message_id
                 remember_broadcast_event(mid, cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
-                broadcast_rate = _reliable_chat_symbol_rate_plan(cfg)[0]
+                broadcast_rate = int(getattr(cfg, "fast_symbol_rate", 800))
+                broadcast_copies = 1
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text encoded and cached",
                                message_id=mid.hex(), payload_bytes=len(message.encode("utf-8")),
-                               fragments=len(frames), copies=3, symbol_rate=broadcast_rate,
-                               fragment_payload_limit=codec.max_fragment_payload)
-                report_tx("BROADCAST TEXT", 0, len(frames) * 3, "frames")
+                               fragments=len(frames), copies=broadcast_copies, symbol_rate=broadcast_rate,
+                               fragment_payload_limit=codec.max_fragment_payload,
+                               hopping=False)
+                report_tx("BROADCAST TEXT", 0, len(frames) * broadcast_copies, "frames")
                 try:
-                    _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=3,
+                    _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=broadcast_copies,
                         symbol_rate=broadcast_rate,
                         progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit),
                         cancel_event=cancel_event)
@@ -2208,7 +2214,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                         retransmit_cache.forget(mid, BroadcastType.TEXT)
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text transmission sequence completed",
-                               message_id=mid.hex(), fragments=len(frames), copies=3)
+                               message_id=mid.hex(), fragments=len(frames), copies=broadcast_copies)
             launch_worker("broadcast-text", entry, operation,
                           "broadcast on air · delivery is not acknowledged",
                           cancel_event=cancel_event, cancelable=True)
@@ -2251,13 +2257,14 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 _check_cancelled(cancel_event)
                 engine = engine_ref["engine"]
                 voice_transfer = description == "voice note"
-                broadcast_rate = _reliable_chat_symbol_rate_plan(engine.config)[0]
-                # No-ACK Broadcast uses a conservative rate for every frame,
-                # including voice, so receivers have a realistic chance to decode it.
+                broadcast_rate = int(getattr(engine.config, "fast_symbol_rate", 800))
+                # Public Broadcast uses a fast fixed-frequency profile. Chunk
+                # CRC, file SHA-256 validation and selective retries provide
+                # integrity/recovery; public FHSS would add no secrecy.
                 chunk_size = 192 if voice_transfer else 512
                 mid, frames = codec.encode_file(
                     path, chunk_size=chunk_size,
-                    symbol_rate=broadcast_rate, fec_mode="conv", hopping=True,
+                    symbol_rate=broadcast_rate, fec_mode="conv", hopping=False,
                     cancel_event=cancel_event,
                 )
                 _check_cancelled(cancel_event)

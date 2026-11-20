@@ -843,7 +843,14 @@ class ContinuousAudioListener:
             # windows. Once a burst is active, RMS provides a hysteresis path.
             # The adaptive room floor prevents ordinary ambient noise from
             # holding the burst open indefinitely.
-            active_rms_floor = max(rms_floor * 0.55, 0.0008)
+            # Do not let a stale, near-zero pre-capture noise estimate keep
+            # an Android/Termux burst open forever. Mobile audio backends can
+            # ramp their input gain after the first detected tone; subsequent
+            # room noise may then sit well above the original rms_floor while
+            # containing no modem energy. A real FSK burst is still retained by
+            # the tone-bank detector, and strong short spectral dropouts remain
+            # protected by this RMS hysteresis floor.
+            active_rms_floor = max(rms_floor * 1.25, 0.010)
             signal = (
                 ratio >= self.tone_ratio_threshold
                 or rms >= active_rms_floor

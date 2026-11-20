@@ -592,7 +592,7 @@ class ContinuousAudioListener:
     """
 
     def __init__(self, rate, device=None, *, blocksize=1024,
-                 activity_frequencies=(1800, 2400), bandwidth_hz=100.0,
+                 activity_frequencies=(1800, 2400), bandwidth_hz=240.0,
                  tone_ratio_threshold=0.10, quiet_seconds=0.55,
                  pre_roll_seconds=0.65, max_frame_seconds=180.0,
                  queue_blocks=512, frame_queue_size=8, on_error=None,
@@ -812,8 +812,10 @@ class ContinuousAudioListener:
                 if ratio < self.tone_ratio_threshold:
                     noise_levels.append(rms)
                     if len(noise_levels) >= 6:
-                        baseline = float(np.percentile(noise_levels, 35))
-                        rms_floor = max(0.0004, min(baseline * 1.35, 0.004))
+                        # Do not cap the measured room floor at -48 dBFS.
+                        # On louder desktops this made ambient RMS look like
+                        # modem energy whenever the spectral detector dipped.
+                        rms_floor = max(0.0004, min(baseline * 1.35, 0.020))
                 signal = rms >= rms_floor and ratio >= self.tone_ratio_threshold
                 pre_roll.append(mono.copy())
                 high_run = high_run + 1 if signal else 0
@@ -835,7 +837,16 @@ class ContinuousAudioListener:
                 continue
 
             chunks.append(mono.copy())
-            signal = rms >= rms_floor and ratio >= self.tone_ratio_threshold
+            # The narrow tone-bank score can briefly fall during rapid
+            # frequency hopping, carrier offset, room multipath, or short FFT
+            # windows. Once a burst is active, RMS provides a hysteresis path.
+            # The adaptive room floor prevents ordinary ambient noise from
+            # holding the burst open indefinitely.
+            active_rms_floor = max(rms_floor * 0.90, 0.0015)
+            signal = (
+                ratio >= self.tone_ratio_threshold
+                or rms >= active_rms_floor
+            )
             if signal:
                 quiet_run = 0
             else:

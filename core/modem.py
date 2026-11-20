@@ -449,6 +449,7 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
     profile = recovery_profile or default_profile()
     failures = []
     header_crc_failure_scores = []
+    strong_header_crc_failure_scores = []
     protected_header_valid = False
     # A false preamble candidate must not hide the real one. We validate the
     # duplicated protected header and final frame CRC for each bounded
@@ -506,6 +507,10 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                                              for i in range(header_symbol_count)]
                     header = _header_v2_decode(repeated_header_llrs)
                 except HeaderCRCError as first_error:
+                    # A weak cross-correlation is usually a false sync. Avoid
+                    # spending nine recovery trials on low-confidence candidates.
+                    if sync_score < 0.50:
+                        raise
                     # The sync is known data, so estimate the relative gain of
                     # both BFSK tones from it. Some speaker/microphone paths
                     # attenuate one tone enough to bias every subsequent bit.
@@ -513,7 +518,9 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                         x, preamble_start, sps, sync_bits, mark, space,
                         sample_rate, frequency_offset,
                     )
-                    phase_step = max(1, sps // 24)
+                    # Expand fixed symbol-phase recovery to ±1/6 symbol.
+                    # The old ±10-sample window was too narrow at 400 baud.
+                    phase_step = max(1, sps // 12)
                     offsets = (0, -phase_step, phase_step,
                                -2 * phase_step, 2 * phase_step)
                     recovered = None
@@ -642,6 +649,8 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
         except (ValueError, struct.error) as exc:
             if isinstance(exc, HeaderCRCError):
                 header_crc_failure_scores.append(float(sync_score))
+                if sync_score >= 0.50:
+                    strong_header_crc_failure_scores.append(float(sync_score))
             failures.append(f"{candidate_number}:{wire_label}@{preamble_start} score={sync_score:.3f} {type(exc).__name__}: {exc}")
             report("SYNC_CANDIDATE", "Preamble candidate failed validation; trying another candidate",
                    candidate=f"{candidate_number}/{len(candidates)}", format=wire_label,
@@ -649,6 +658,15 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                    error=type(exc).__name__, detail=str(exc))
 
     detail = " | ".join(failures[:8])
+    # A strong preamble followed by a protected-header CRC error is evidence
+    # of a real signal. Lower-ranked false candidates may fail as incomplete
+    # or wrong-version frames; they must not erase the stronger diagnosis.
+    if strong_header_crc_failure_scores:
+        raise HeaderCRCError(
+            "Strong preamble candidate(s) failed the protected header CRC; "
+            f"best_sync_score={max(strong_header_crc_failure_scores):.3f}: {detail}",
+            sync_score=max(strong_header_crc_failure_scores),
+        )
     if candidates and header_crc_failure_scores and len(header_crc_failure_scores) == len(failures):
         raise HeaderCRCError(
             "No preamble candidate passed the protected header CRC; "

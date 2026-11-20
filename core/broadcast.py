@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import struct
+import threading
 import time
 import uuid
 import zlib
@@ -547,6 +548,7 @@ class BroadcastReassembler:
                  max_file_size=64 * 1024 * 1024, max_partial_bytes=16 * 1024 * 1024,
                  max_partials=64, max_file_metadata=256, expiry_seconds=90.0):
         self.codec = codec
+        self._lock = threading.RLock()
         self.download_dir = Path(download_dir)
         self.max_file_size = int(max_file_size)
         self.max_partial_bytes = int(max_partial_bytes)
@@ -641,22 +643,25 @@ class BroadcastReassembler:
         return "".join(parts)
 
     def has_file_manifest(self, sender_id, message_id):
-        return (bytes(sender_id), bytes(message_id)) in self._file_meta
+        with self._lock:
+            return (bytes(sender_id), bytes(message_id)) in self._file_meta
 
     def file_metadata(self, sender_id, message_id):
-        meta = self._file_meta.get((bytes(sender_id), bytes(message_id)))
-        return dict(meta) if meta is not None else None
+        with self._lock:
+            meta = self._file_meta.get((bytes(sender_id), bytes(message_id)))
+            return dict(meta) if meta is not None else None
 
     def file_progress(self, sender_id, message_id):
-        sid, mid = bytes(sender_id), bytes(message_id)
-        partial = self._partials.get((sid, mid, BroadcastType.FILE_CHUNK))
-        meta = self._file_meta.get((sid, mid))
-        if partial is None:
-            if meta is None:
-                return 0, 0, ()
-            total = int(meta["total_chunks"])
-            return 0, total, tuple(range(total))
-        return len(partial.fragments), partial.count, partial.missing
+        with self._lock:
+            sid, mid = bytes(sender_id), bytes(message_id)
+            partial = self._partials.get((sid, mid, BroadcastType.FILE_CHUNK))
+            meta = self._file_meta.get((sid, mid))
+            if partial is None:
+                if meta is None:
+                    return 0, 0, ()
+                total = int(meta["total_chunks"])
+                return 0, total, tuple(range(total))
+            return len(partial.fragments), partial.count, partial.missing
 
     def _complete_file_if_ready(self, sender_id, message_id, now):
         key = (sender_id, message_id, BroadcastType.FILE_CHUNK)
@@ -689,6 +694,10 @@ class BroadcastReassembler:
                                  media_kind=partial.media_kind, codec_id=partial.codec_id)
 
     def feed(self, packet) -> BroadcastDelivery | tuple[str, object] | None:
+        with self._lock:
+            return self._feed_unlocked(packet)
+
+    def _feed_unlocked(self, packet) -> BroadcastDelivery | tuple[str, object] | None:
         frame = self.codec.decode(packet)
         now = time.monotonic()
         self._expire(now)
@@ -890,7 +899,11 @@ class BroadcastReassembler:
         return destination
 
     def retry_requests(self, *, older_than=None):
-        """Return (target sender, message, kind, missing indexes) descriptors."""
+        """Return a snapshot of missing fragments, safe during concurrent RX."""
+        with self._lock:
+            return self._retry_requests_unlocked(older_than=older_than)
+
+    def _retry_requests_unlocked(self, *, older_than=None):
         now = time.monotonic()
         self._expire(now)
         age = self.expiry_seconds if older_than is None else float(older_than)
@@ -922,9 +935,14 @@ class BroadcastRetransmitCache:
         self.codec = codec
         self.max_messages = int(max_messages)
         self.max_cached_bytes = int(max_cached_bytes)
+        self._lock = threading.RLock()
         self._messages = OrderedDict()
 
     def remember(self, message_id, kind, frames):
+        with self._lock:
+            return self._remember_unlocked(message_id, kind, frames)
+
+    def _remember_unlocked(self, message_id, kind, frames):
         mid = bytes(message_id)
         if len(mid) != 8:
             raise BroadcastError("Invalid message ID for retransmit cache")
@@ -940,6 +958,10 @@ class BroadcastRetransmitCache:
 
     def forget(self, message_id, kind=None):
         """Remove cached frames for a completed/cancelled message."""
+        with self._lock:
+            return self._forget_unlocked(message_id, kind)
+
+    def _forget_unlocked(self, message_id, kind=None):
         mid = bytes(message_id)
         if len(mid) != 8:
             raise BroadcastError("Invalid message ID for retransmit-cache removal")
@@ -953,6 +975,10 @@ class BroadcastRetransmitCache:
         return removed
 
     def handle_request(self, payload):
+        with self._lock:
+            return self._handle_request_unlocked(payload)
+
+    def _handle_request_unlocked(self, payload):
         # The live packet router already parses authenticated retry packets.
         # Accept that structured tuple directly as well as raw bytes. The old
         # implementation called bytes(tuple_of_bytes) here, which raises

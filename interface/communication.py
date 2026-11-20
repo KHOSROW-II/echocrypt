@@ -1802,9 +1802,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
 
     def remember_broadcast_event(message_id, cancel_event):
         mid = bytes(message_id)
-        broadcast_cancel_events[mid] = cancel_event
-        while len(broadcast_cancel_events) > 256:
-            broadcast_cancel_events.pop(next(iter(broadcast_cancel_events)), None)
+        with messages_lock:
+            broadcast_cancel_events[mid] = cancel_event
+            while len(broadcast_cancel_events) > 256:
+                broadcast_cancel_events.pop(next(iter(broadcast_cancel_events)), None)
 
     def report_tx(label, current, total, unit="chunks"):
         with tx_state_lock:
@@ -1895,7 +1896,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
 
     def queue_broadcast_resend(target_sender, target_mid, target_kind, indexes, resend_jobs):
         mid = bytes(target_mid)
-        transfer_cancel_event = broadcast_cancel_events.get(mid)
+        with messages_lock:
+            transfer_cancel_event = broadcast_cancel_events.get(mid)
         if transfer_cancel_event is not None and transfer_cancel_event.is_set():
             append_message("system", f"Ignored Broadcast resend request for cancelled transfer {mid.hex()[:12]}",
                            "original sender cancelled this transfer")

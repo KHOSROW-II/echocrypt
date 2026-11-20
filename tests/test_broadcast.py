@@ -155,6 +155,42 @@ class BroadcastCodecTests(unittest.TestCase):
         self.assertEqual(selected, (frames[1],))
 
 
+    def test_reassembler_feed_and_retry_snapshot_are_serialized(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        frames = sender.encode_text("thread safety " * 80, message_id=b"THREAD01")
+        reassembler = BroadcastReassembler(receiver)
+        barrier = threading.Barrier(3)
+
+        def feed_frames():
+            barrier.wait()
+            for _ in range(4):
+                for frame in frames:
+                    reassembler.feed(frame)
+
+        def scan_missing():
+            barrier.wait()
+            for _ in range(100):
+                reassembler.retry_requests(older_than=0)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            feed = pool.submit(feed_frames)
+            scan = pool.submit(scan_missing)
+            barrier.wait()
+            feed.result(timeout=5)
+            scan.result(timeout=5)
+
+        final = None
+        for frame in frames:
+            result = reassembler.feed(frame)
+            if result is not None and getattr(result, "complete", False):
+                final = result
+        self.assertIsNotNone(final)
+        self.assertEqual(final.payload.decode(), "thread safety " * 80)
+
     def test_retransmit_cache_forget_removes_only_requested_kind_or_entire_message(self):
         sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         mid = b"FORGET01"

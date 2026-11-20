@@ -853,30 +853,34 @@ class ContinuousAudioListener:
                 continue
 
             chunks.append(mono.copy())
-            # The narrow tone-bank score can briefly fall during rapid
-            # frequency hopping, carrier offset, room multipath, or short FFT
-            # windows. Once a burst is active, RMS provides a hysteresis path.
-            # The adaptive room floor prevents ordinary ambient noise from
-            # holding the burst open indefinitely.
-            # Do not let a stale, near-zero pre-capture noise estimate keep
-            # an Android/Termux burst open forever. Mobile audio backends can
-            # ramp their input gain after the first detected tone; subsequent
-            # room noise may then sit well above the original rms_floor while
-            # containing no modem energy. A real FSK burst is still retained by
-            # the tone-bank detector, and strong short spectral dropouts remain
-            # protected by this RMS hysteresis floor.
+            # Once a modem burst has started, out-of-band room noise must
+            # not keep it open just because its broadband RMS is high. Recent
+            # real captures showed 500 Hz/ambient energy at RMS 0.02 while the
+            # modem tone ratio was < 0.01; treating RMS alone as activity merged
+            # adjacent Broadcast chunks into one undecodable capture.
+            #
+            # Preserve short spectral dropouts by allowing a bounded 450 ms
+            # grace period only while broadband RMS remains elevated. Genuine
+            # low-level silence still uses the configured quiet_seconds value.
+            # Unlike the old RMS OR gate, this can never hold a burst open
+            # indefinitely when the modem tones disappear.
             active_rms_floor = max(rms_floor * 1.25, 0.010)
-            signal = (
-                ratio >= self.tone_ratio_threshold
-                or rms >= active_rms_floor
+            spectral_dropout_grace_blocks = max(
+                quiet_blocks_required,
+                int(math.ceil(0.45 / block_seconds)),
             )
-            if signal:
+            if ratio >= self.tone_ratio_threshold:
                 quiet_run = 0
             else:
                 quiet_run += 1
 
+            required_quiet_blocks = (
+                spectral_dropout_grace_blocks
+                if rms >= active_rms_floor
+                else quiet_blocks_required
+            )
             elapsed = time.monotonic() - frame_started
-            if quiet_run >= quiet_blocks_required or elapsed >= self.max_frame_seconds:
+            if quiet_run >= required_quiet_blocks or elapsed >= self.max_frame_seconds:
                 end_reason = "trailing silence" if quiet_run >= quiet_blocks_required else "maximum frame duration"
                 _emit_debug(self.on_debug, "CAPTURE", "Continuous audio burst ended",
                             reason=end_reason,

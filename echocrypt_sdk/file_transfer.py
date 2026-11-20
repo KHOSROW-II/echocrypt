@@ -57,15 +57,24 @@ class SecureFileTransfer:
             max_file_size=max_file_size,
         )
         self._events = queue.Queue(maxsize=256)
-        self._subscription = peer.add_raw_packet_handler(self._handle_raw_packet)
         self._pending_lock = threading.RLock()
         self._send_lock = threading.Lock()
         self._pending_ack = None
         self._pending_resume = None
         self._pending_completion = {}
         self._active_transmission = None
+        self._control_transmission = None
+        self._control_queue = queue.Queue(maxsize=64)
         self._outgoing = {}
         self._closed = False
+        self._control_thread = threading.Thread(
+            target=self._control_loop,
+            name="echocrypt-sdk-file-control",
+            daemon=True,
+        )
+        self._control_thread.start()
+        # Register only after every callback dependency and worker is ready.
+        self._subscription = peer.add_raw_packet_handler(self._handle_raw_packet)
 
     def _publish(self, kind, transfer_id=None, result=None, error=None):
         if self._closed:
@@ -90,6 +99,56 @@ class SecureFileTransfer:
 
     def _send_control(self, packet, label):
         return self.peer.send_secure_frame(bytes(packet), label=label)
+
+    def _queue_controls(self, controls):
+        """Queue an ordered sequence of protocol responses off the RX dispatcher."""
+        if self._closed:
+            return False
+        batch = tuple((bytes(packet), str(label)) for packet, label in controls)
+        if not batch:
+            return True
+        try:
+            self._control_queue.put_nowait(batch)
+            return True
+        except queue.Full:
+            self._publish(
+                "control_queue_full",
+                error=RuntimeError("Secure file control-response queue is full"),
+            )
+            return False
+
+    def _control_loop(self):
+        while True:
+            item = self._control_queue.get()
+            if item is None:
+                self._control_queue.task_done()
+                return
+            try:
+                for packet, label in item:
+                    if self._closed:
+                        break
+                    transmission = self._send_control(packet, label)
+                    with self._pending_lock:
+                        self._control_transmission = transmission
+                    while not transmission.done:
+                        if self._closed:
+                            transmission.cancel()
+                            break
+                        time.sleep(0.02)
+                    if self._closed:
+                        break
+                    transmission.wait()
+            except Exception as exc:
+                self._publish("control_send_error", error=exc)
+            finally:
+                with self._pending_lock:
+                    self._control_transmission = None
+                self._control_queue.task_done()
+
+    def _completion_packet(self, manifest):
+        return self._channel.make_completion_packet(
+            manifest.transfer_id, manifest.sha256
+        )
 
     def _handle_raw_packet(self, packet):
         if self._closed:
@@ -191,19 +250,22 @@ class SecureFileTransfer:
             self._publish("manifest_error", error=exc)
             return True
         else:
-            self._send_control(
-                manifest.ack_packet, "DIRECT FILE MANIFEST ACK"
-            ).wait()
-            self._send_control(
-                manifest.resume_packet, "DIRECT FILE RESUME"
-            ).wait()
+            controls = [
+                (manifest.ack_packet, "DIRECT FILE MANIFEST ACK"),
+                (manifest.resume_packet, "DIRECT FILE RESUME"),
+            ]
+            if manifest.completed_path is not None:
+                controls.append((
+                    self._completion_packet(manifest.manifest),
+                    "DIRECT FILE COMPLETE",
+                ))
+            self._queue_controls(controls)
             self._publish(
                 "manifest_received",
                 manifest.manifest.transfer_id,
                 manifest,
             )
             if manifest.completed_path is not None:
-                self._send_completion(manifest.manifest)
                 self._publish(
                     "file_completed",
                     manifest.manifest.transfer_id,
@@ -214,14 +276,14 @@ class SecureFileTransfer:
         try:
             chunk = self._channel.receive_chunk(packet)
         except ChunkIntegrityError as exc:
-            self._send_control(
-                exc.ack_packet, "DIRECT FILE CHUNK ACK"
-            ).wait()
             request = self._channel.make_resend_request_packet(
                 exc.transfer_id, exc.indexes,
                 max_packet_size=self.peer.client.config.max_packet_bytes,
             )
-            self._send_control(request, "DIRECT FILE REPAIR REQUEST").wait()
+            self._queue_controls((
+                (exc.ack_packet, "DIRECT FILE CHUNK ACK"),
+                (request, "DIRECT FILE REPAIR REQUEST"),
+            ))
             self._publish(
                 "integrity_repair_required",
                 exc.transfer_id,
@@ -235,25 +297,21 @@ class SecureFileTransfer:
             self._publish("chunk_error", error=exc)
             return True
         else:
-            self._send_control(
-                chunk.ack_packet, f"DIRECT FILE CHUNK ACK {chunk.index}"
-            ).wait()
-            self._publish("chunk_received", chunk.transfer_id, chunk)
+            controls = [(chunk.ack_packet, f"DIRECT FILE CHUNK ACK {chunk.index}")]
             if chunk.completed_path is not None:
                 manifest = self._channel.manifest_for_transfer(chunk.transfer_id)
-                self._send_completion(manifest)
+                controls.append((
+                    self._completion_packet(manifest), "DIRECT FILE COMPLETE"
+                ))
+            self._queue_controls(controls)
+            self._publish("chunk_received", chunk.transfer_id, chunk)
+            if chunk.completed_path is not None:
                 self._publish(
                     "file_completed",
                     chunk.transfer_id,
                     {"path": chunk.completed_path, "sha256": manifest.sha256},
                 )
             return True
-
-    def _send_completion(self, manifest):
-        packet = self._channel.make_completion_packet(
-            manifest.transfer_id, manifest.sha256
-        )
-        self._send_control(packet, "DIRECT FILE COMPLETE").wait()
 
     def _send_and_wait(
         self,

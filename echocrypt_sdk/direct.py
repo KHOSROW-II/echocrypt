@@ -262,6 +262,8 @@ class DirectPeer:
             hello = self.handshake.start()
         deadline = time.monotonic() + float(timeout)
         while not self._connected.is_set():
+            if self._closed:
+                raise DirectPeerError("DirectPeer was closed during handshake")
             if time.monotonic() >= deadline:
                 raise TimeoutError("Direct handshake timed out")
             retry_packet = self.handshake.retry_packet or hello
@@ -269,6 +271,8 @@ class DirectPeer:
                 retry_packet, handshake_control=True, label="DIRECT HANDSHAKE HELLO/RETRY"
             ).wait()
             self._connected.wait(min(float(retry_interval), max(0.0, deadline - time.monotonic())))
+        if self._closed or not self.handshake.established:
+            raise DirectPeerError("DirectPeer closed before the handshake completed")
         return self
 
     def accept(self, *, timeout=30.0):
@@ -284,6 +288,8 @@ class DirectPeer:
             raise ValueError("timeout must be finite and positive")
         if not self._connected.wait(float(timeout)):
             raise TimeoutError("Direct handshake timed out waiting for peer")
+        if not self.connected:
+            raise DirectPeerError("DirectPeer closed before the handshake completed")
         return self
 
     def send_text(self, text, *, ack_timeout=None, retries=None):
@@ -311,11 +317,15 @@ class DirectPeer:
             last_tx = None
             try:
                 for attempt in range(1, selected_retries + 2):
+                    if self._closed:
+                        raise DirectPeerError("DirectPeer was closed during send")
                     last_tx = self._send_packet(
                         outgoing.packet, label=f"DIRECT TEXT {attempt}"
                     )
                     last_tx.wait()
                     if ack_event.wait(selected_timeout):
+                        if self._closed:
+                            raise DirectPeerError("DirectPeer was closed while awaiting ACK")
                         return DirectSendResult(
                             outgoing.message_id_hex, attempt, True, last_tx
                         )
@@ -427,13 +437,18 @@ class DirectPeer:
         if self._closed:
             return
         self._closed = True
-        self._connected.clear()
+        # Wake connect/accept and in-flight reliable sends so they can observe
+        # the closed state instead of sleeping until their full timeouts.
+        self._connected.set()
         self._subscription.close()
         with self._lock:
+            pending_ack_event = self._pending_ack_event
             self._packet_handlers.clear()
             self._raw_packet_handlers.clear()
             self._pending_ack_id = None
             self._pending_ack_event = None
+        if pending_ack_event is not None:
+            pending_ack_event.set()
         try:
             self.client.set_hop_key(None)
         except Exception:

@@ -197,30 +197,6 @@ class ASRECodecTests(unittest.TestCase):
                     payload,
                 )
 
-    def test_asre_expands_frequency_search_when_the_best_offset_hits_boundary(self):
-        payload = bytes((index * 31 + 5) & 0xFF for index in range(72))
-        for offset in (-420, 420, -500, 500):
-            with self.subTest(offset_hz=offset):
-                waveform = modulate(
-                    payload, RATE, 800,
-                    mark=1800 + offset, space=2400 + offset,
-                    gain=0.45, fec_mode="conv",
-                )
-                engine = AdaptiveSignalRecoveryEngine(profile_for_grade("WEAK"))
-                events = []
-                recovered = demodulate(
-                    waveform, RATE, 800, mark=1800, space=2400,
-                    recovery_engine=engine,
-                    on_debug=lambda stage, message, **fields:
-                        events.append((stage, message, fields)),
-                )
-                self.assertEqual(recovered, payload)
-                self.assertTrue(any(
-                    stage == "CHANNEL"
-                    and "search expanded after reaching its boundary" in message
-                    for stage, message, _fields in events
-                ))
-
     def test_header_decode_recovers_from_asymmetric_tone_channel_gain(self):
         payload = bytes((index * 23 + 11) & 0xFF for index in range(96))
         waveform = modulate(

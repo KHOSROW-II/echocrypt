@@ -784,6 +784,13 @@ def _receive_file(channel, cfg, hop_key, symbol_rate, title="Receive file", cont
         _send_authenticated_ack(result.ack_packet, "FILE MANIFEST ACK", cfg, hop_key, symbol_rate)
         _send_packet(result.resume_packet, "FILE RESUME STATUS", cfg, hop_key, symbol_rate)
         if result.completed_path:
+            completion_packet = channel.make_completion_packet(
+                m.transfer_id, m.sha256
+            )
+            _send_packet(
+                completion_packet, "FILE TRANSFER COMPLETE · SHA-256 VERIFIED",
+                cfg, hop_key, symbol_rate, "conv",
+            )
             print("This transfer was already completed:", result.completed_path)
             _maybe_play_voice(result.completed_path, cfg)
             if continuous:
@@ -805,9 +812,34 @@ def _receive_file(channel, cfg, hop_key, symbol_rate, title="Receive file", cont
                       (" (duplicate; not written twice)." if incoming.duplicate else "."))
                 print(f"Received {incoming.bytes_received:,}/{m.file_size:,} bytes.")
                 if incoming.completed_path:
+                    completion_packet = channel.make_completion_packet(
+                        m.transfer_id, m.sha256
+                    )
+                    _send_packet(
+                        completion_packet, "FILE TRANSFER COMPLETE · SHA-256 VERIFIED",
+                        cfg, hop_key, symbol_rate, "conv",
+                    )
                     print("\nFILE RECEIVED AND SHA-256 VERIFIED:", incoming.completed_path)
                     _maybe_play_voice(incoming.completed_path, cfg)
                     transfer_complete = True
+            except ChunkIntegrityError as exc:
+                # ACK the authenticated frame so stop-and-wait can advance,
+                # then explicitly request fresh ciphertext for the damaged
+                # chunks. The sender services this while waiting for COMMIT.
+                _send_authenticated_ack(
+                    exc.ack_packet, "FILE CHUNK ACK · INTEGRITY REPAIR",
+                    cfg, hop_key, symbol_rate,
+                )
+                request_packet = channel.make_resend_request_packet(
+                    exc.transfer_id, exc.indexes,
+                    max_packet_size=cfg.max_payload,
+                )
+                _send_packet(
+                    request_packet, "FILE INTEGRITY REPAIR REQUEST",
+                    cfg, hop_key, symbol_rate, "conv",
+                )
+                print("Final SHA-256 mismatch; requesting retransmission of damaged chunks:",
+                      ", ".join(str(index) for index in exc.indexes))
             except TimeoutError:
                 print("No next file frame detected. Partial data is retained for resume.")
                 print("Transfer ID:", m.transfer_id_hex)

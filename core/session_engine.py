@@ -413,9 +413,24 @@ class AudioSessionEngine:
                     for waiter in self._waiters:
                         waiter.cancel(SessionEngineError("Session stopped while waiting for response"))
                     self._waiters.clear()
+                # Do not declare shutdown complete while an audio worker is still
+                # alive. A subsequent start must not create a second worker while
+                # the previous worker still owns the audio device.
                 for thread in (self._decoder_thread, self._tx_thread):
                     if thread is not None and thread is not threading.current_thread():
-                        thread.join(timeout=5.0)
+                        thread.join()
+
+                # The TX loop exits when _running is cleared as well as when it
+                # consumes the sentinel. If it was busy during stop, the sentinel
+                # can remain queued and make the next TX worker exit immediately.
+                while True:
+                    try:
+                        stale = self._tx_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if stale is not None and not stale.future.done():
+                        stale.future.set_exception(stopped_error)
+
                 self._decoder_thread = self._tx_thread = None
                 self._started = False
                 self._shutdown_thread = None

@@ -78,6 +78,25 @@ class BroadcastCodecTests(unittest.TestCase):
                 )
 
 
+    def test_compressed_public_manifest_is_bounded_before_json_parsing(self):
+        import zlib
+        from core.broadcast import MAX_BROADCAST_MANIFEST_BYTES
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastReassembler(
+            BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        )
+        # This compressed payload is tiny on the wire but expands beyond the
+        # strict manifest limit. It must be rejected without unbounded inflate.
+        compressed_bomb = b"Z" + zlib.compress(
+            b"A" * (MAX_BROADCAST_MANIFEST_BYTES + 1)
+        )
+        packet = sender.encode(
+            BroadcastType.FILE_META, compressed_bomb, message_id=b"BOMB0001"
+        )
+        with self.assertRaises(BroadcastError):
+            receiver.feed(packet)
+
     def test_public_broadcast_roundtrip_without_peer_key_exchange(self):
         alice = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         bob = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

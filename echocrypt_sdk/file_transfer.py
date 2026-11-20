@@ -62,6 +62,7 @@ class SecureFileTransfer:
         self._pending_ack = None
         self._pending_resume = None
         self._pending_completion = {}
+        self._active_transmission = None
         self._outgoing = {}
         self._closed = False
 
@@ -270,32 +271,57 @@ class SecureFileTransfer:
                 or not math.isfinite(float(ack_timeout)) or ack_timeout <= 0:
             raise ValueError("ack_timeout must be finite and positive")
 
-        self._send_lock.acquire()
+        acquired = False
+        while not acquired:
+            if self._closed:
+                raise RuntimeError("SecureFileTransfer is closed")
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Secure file transfer cancelled")
+            acquired = self._send_lock.acquire(timeout=0.05)
+
         ack_event = threading.Event()
         resume_event = threading.Event() if expect_resume else None
         resume_value = {}
         tid = bytes(transfer_id)
-        with self._pending_lock:
-            self._pending_ack = (tid, int(kind), int(index), ack_event)
-            self._pending_resume = (
-                (tid, int(total_chunks), resume_event, resume_value)
-                if expect_resume else None
-            )
         try:
+            if self._closed:
+                raise RuntimeError("SecureFileTransfer is closed")
+            with self._pending_lock:
+                self._pending_ack = (tid, int(kind), int(index), ack_event)
+                self._pending_resume = (
+                    (tid, int(total_chunks), resume_event, resume_value)
+                    if expect_resume else None
+                )
             for attempt in range(retries + 1):
+                if self._closed:
+                    raise RuntimeError("SecureFileTransfer was closed during transfer")
                 if cancel_event is not None and cancel_event.is_set():
                     raise InterruptedError("Secure file transfer cancelled")
                 tx = self._send_control(
                     packet, f"DIRECT FILE {kind}:{index} attempt {attempt + 1}"
                 )
+                with self._pending_lock:
+                    self._active_transmission = tx
+                    closed_during_submit = self._closed
+                if closed_during_submit:
+                    tx.cancel()
+                    raise RuntimeError("SecureFileTransfer was closed during transmission")
                 while not tx.done:
+                    if self._closed:
+                        tx.cancel()
+                        raise RuntimeError("SecureFileTransfer was closed during transmission")
                     if cancel_event is not None and cancel_event.is_set():
                         tx.cancel()
                         raise InterruptedError("Secure file transfer cancelled")
                     time.sleep(0.02)
                 tx.wait()
+                with self._pending_lock:
+                    if self._active_transmission is tx:
+                        self._active_transmission = None
                 deadline = time.monotonic() + float(ack_timeout)
                 while time.monotonic() < deadline:
+                    if self._closed:
+                        raise RuntimeError("SecureFileTransfer was closed while awaiting ACK")
                     if cancel_event is not None and cancel_event.is_set():
                         raise InterruptedError("Secure file transfer cancelled")
                     if ack_event.is_set() and (
@@ -314,7 +340,9 @@ class SecureFileTransfer:
                     self._pending_ack = None
                 if self._pending_resume is not None and self._pending_resume[2] is resume_event:
                     self._pending_resume = None
-            self._send_lock.release()
+                self._active_transmission = None
+            if acquired:
+                self._send_lock.release()
 
     def prepare(self, source, *, chunk_size=None, transfer_id=None, cancel_event=None):
         if self._closed:
@@ -517,11 +545,25 @@ class SecureFileTransfer:
         self._closed = True
         self._subscription.close()
         with self._pending_lock:
+            pending_ack = self._pending_ack
+            pending_resume = self._pending_resume
+            active_transmission = self._active_transmission
             self._pending_ack = None
             self._pending_resume = None
             for event in self._pending_completion.values():
                 event.set()
             self._pending_completion.clear()
+        # Wake any transfer thread blocked on protocol acknowledgements and
+        # interrupt the currently queued/playing acoustic frame, if possible.
+        if pending_ack is not None:
+            pending_ack[3].set()
+        if pending_resume is not None:
+            pending_resume[2].set()
+        if active_transmission is not None:
+            try:
+                active_transmission.cancel()
+            except Exception:
+                pass
 
     def __enter__(self):
         return self

@@ -162,7 +162,9 @@ def decode_voice_message(blob: bytes) -> tuple[np.ndarray, int]:
     magic, sample_rate, sample_count, predictor, index = VOICE_HEADER.unpack(blob[:VOICE_HEADER.size])
     if magic != VOICE_MAGIC or sample_rate not in (3000, 4000, 8000):
         raise ValueError("Unsupported ECV voice format")
-    expected_body = (max(0, sample_count - 1) + 1) // 2
+    if not 1 <= sample_count <= sample_rate * 300:
+        raise ValueError("ECV1 sample count exceeds the five-minute format limit")
+    expected_body = (sample_count - 1 + 1) // 2
     body = blob[VOICE_HEADER.size:]
     if len(body) != expected_body:
         raise ValueError("Voice payload length does not match sample count")

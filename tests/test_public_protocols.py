@@ -160,6 +160,52 @@ class DirectSDKTests(unittest.TestCase):
             peer_a.close()
             peer_b.close()
 
+    def test_close_unblocks_a_direct_send_waiting_for_ack(self):
+        identity_a = Ed25519PrivateKey.generate()
+        identity_b = Ed25519PrivateKey.generate()
+        handshake_a = PeerHandshake(
+            "initiator", identity_a, raw_public(identity_b.public_key()),
+            fingerprint(identity_b.public_key()),
+        )
+        handshake_b = PeerHandshake(
+            "responder", identity_b, raw_public(identity_a.public_key()),
+            fingerprint(identity_a.public_key()),
+        )
+        hello_r = handshake_b.receive(handshake_a.start())
+        finish_i = handshake_a.receive(hello_r)
+        finish_r = handshake_b.receive(finish_i)
+        handshake_a.receive(finish_r)
+
+        client = FakeAcousticClient()  # no remote peer: the ACK will never arrive
+        send_started = threading.Event()
+        original_send = client.send_async
+
+        def tracked_send(packet, **options):
+            send_started.set()
+            return original_send(packet, **options)
+
+        client.send_async = tracked_send
+        peer = DirectPeer(client, handshake_a)
+        errors = []
+
+        def send():
+            try:
+                peer.send_text("wait for ACK", ack_timeout=10.0, retries=0)
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=send)
+        worker.start()
+        self.assertTrue(send_started.wait(1.0))
+        peer.close()
+        worker.join(1.0)
+
+        self.assertFalse(worker.is_alive(), "close() left DirectPeer.send_text blocked")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], Exception)
+        self.assertIn("closed", str(errors[0]).lower())
+
+
     def test_reliable_text_is_acknowledged_and_delivered_once(self):
         peer_a, peer_b, client_a, _client_b = make_connected_peers()
         try:
@@ -194,6 +240,56 @@ class DirectSDKTests(unittest.TestCase):
 
 
 class SecureFileSDKTests(unittest.TestCase):
+    def test_close_unblocks_a_file_transfer_waiting_for_ack(self):
+        import time
+
+        send_started = threading.Event()
+
+        class FakeSubscription:
+            def close(self):
+                pass
+
+        class FakePeer:
+            connected = True
+            handshake = SimpleNamespace()
+            client = SimpleNamespace(config=AcousticConfig(max_packet_bytes=1024))
+
+            def add_raw_packet_handler(self, _handler):
+                return FakeSubscription()
+
+            def send_secure_frame(self, _packet, label=""):
+                send_started.set()
+                return FakeTransmission(label)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            transfer = SecureFileTransfer(
+                FakePeer(), receive_root=Path(tmp) / "recv",
+                state_root=Path(tmp) / "state",
+            )
+            errors = []
+
+            def wait_for_ack():
+                try:
+                    transfer._send_and_wait(
+                        b"test-packet", b"T" * 16, 1, 0,
+                        ack_timeout=10.0, retries=0,
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=wait_for_ack)
+            worker.start()
+            self.assertTrue(send_started.wait(1.0))
+            time.sleep(0.05)  # allow the completed local TX to enter its ACK wait
+            transfer.close()
+            worker.join(1.0)
+
+            self.assertFalse(worker.is_alive(), "close() left the ACK waiter blocked")
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], RuntimeError)
+            self.assertIn("closed", str(errors[0]).lower())
+
+
     def test_file_transfer_waits_for_authenticated_remote_hash_completion(self):
         peer_a, peer_b, _client_a, _client_b = make_connected_peers()
         try:

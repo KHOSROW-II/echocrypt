@@ -114,6 +114,7 @@ class ContinuousAudioListenerTests(unittest.TestCase):
         ratio = _tone_band_ratio(
             shifted_tone, rate,
             (1200, 1500, 1800, 2100, 2400, 2700, 3000),
+            bandwidth_hz=240.0,
         )
         self.assertGreater(ratio, 0.90)
 

@@ -29,12 +29,31 @@ class AdaptiveSignalRecoveryEngine:
         if active_profile.name != balanced.name:
             # Keep a robust fallback for sudden channel changes after an easy frame.
             profiles.append(balanced)
+
         last_error = None
+        strongest_header_error = None
         started = time.monotonic()
         attempts = 0
+        seen_ratios = set()
+
         for profile in profiles:
             candidates = profile.clock_ratios if timing_recovery else (1.0,)
             for ratio in candidates:
+                # The GOOD and BALANCED profiles share clock candidates.
+                # Repeating the same resampling ratio only repeats expensive DSP.
+                if ratio in seen_ratios:
+                    continue
+                seen_ratios.add(ratio)
+
+                if isinstance(last_error, PreambleNotFoundError) and strongest_header_error is None:
+                    break
+                retry_budget = (
+                    11 if strongest_header_error is not None
+                    and strongest_header_error.sync_score >= 0.50 else 5
+                )
+                if attempts >= retry_budget:
+                    break
+
                 attempts += 1
                 adjusted = resample_clock(samples, ratio)
                 if ratio != 1.0 and on_debug:
@@ -66,6 +85,10 @@ class AdaptiveSignalRecoveryEngine:
                     return payload, metrics
                 except (ValueError, struct.error) as exc:
                     last_error = exc
+                    if isinstance(exc, HeaderCRCError):
+                        if (strongest_header_error is None
+                                or exc.sync_score > strongest_header_error.sync_score):
+                            strongest_header_error = exc
                     if on_debug:
                         try:
                             on_debug("RECOVERY", "Candidate failed frame validation",
@@ -73,27 +96,39 @@ class AdaptiveSignalRecoveryEngine:
                                      error=type(exc).__name__, detail=str(exc))
                         except Exception:
                             pass
-                    if isinstance(exc, PreambleNotFoundError):
-                        # Clock resampling cannot rescue a capture that has no
-                        # recognizable preamble in the full pre-roll search.
+
+                    if (isinstance(exc, PreambleNotFoundError)
+                            and strongest_header_error is None):
+                        # No signal was synchronized; clock correction is unlikely
+                        # to manufacture a missing preamble.
                         break
-                    if isinstance(exc, HeaderCRCError) and (
-                            exc.sync_score >= 0.50 or attempts >= 5):
-                        # A strong, stable preamble with a failed header CRC is
-                        # not helped by blindly testing all 17 clock ratios.
-                        # Keep recovery bounded so RX can reach queued fragments.
+                    retry_budget = (
+                        11 if strongest_header_error is not None
+                        and strongest_header_error.sync_score >= 0.50 else 5
+                    )
+                    if attempts >= retry_budget:
                         break
-            if isinstance(last_error, PreambleNotFoundError) or (
-                    isinstance(last_error, HeaderCRCError) and
-                    (last_error.sync_score >= 0.50 or attempts >= 5)):
+
+            retry_budget = (
+                11 if strongest_header_error is not None
+                and strongest_header_error.sync_score >= 0.50 else 5
+            )
+            if attempts >= retry_budget or (
+                    isinstance(last_error, PreambleNotFoundError)
+                    and strongest_header_error is None):
                 break
+
         self.last_attempt_count = attempts
+        if strongest_header_error is not None:
+            raise HeaderCRCError(
+                f"ASRE exhausted {attempts} bounded clock candidates after a strong "
+                f"preamble/header CRC failure: {strongest_header_error}",
+                sync_score=strongest_header_error.sync_score,
+            ) from strongest_header_error
         if last_error is None:
             raise ValueError("ASRE has no recovery candidates")
-        if isinstance(last_error, HeaderCRCError):
-            raise HeaderCRCError(
-                f"ASRE stopped after {attempts} bounded candidates: {last_error}",
-                sync_score=last_error.sync_score,
-            ) from last_error
-        raise ValueError(f"ASRE exhausted {attempts} recovery candidates: {last_error}") from last_error
+        raise ValueError(
+            f"ASRE exhausted {attempts} bounded recovery candidates: {last_error}"
+        ) from last_error
+
 

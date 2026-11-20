@@ -1493,10 +1493,10 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
                         entry["status"] = "complete · SHA-256 verified · Play voice"
                     else:
                         entry["body"] = f"Attachment saved: {chunk.completed_path}"
-                completed_manifest = reliable_binary.manifest_for_transfer(
-                    chunk.transfer_id
-                )
-                send_completion(completed_manifest, engine, reply_rate)
+                    completed_manifest = reliable_binary.manifest_for_transfer(
+                        chunk.transfer_id
+                    )
+                    send_completion(completed_manifest, engine, reply_rate)
             report("RX FILE", received, total, "chunks", not completed)
             return
 

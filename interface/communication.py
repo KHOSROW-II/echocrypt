@@ -1597,7 +1597,8 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
             if delivery.media_kind == MEDIA_VOICE or delivery.path.suffix.casefold() == ".ecv":
                 entry = add(f"[{sender}] Voice message received · {delivery.path.name}",
                             "complete · SHA-256 verified · press Play voice", key=key)
-                entry["voice_path"] = str(delivery.path)
+                with lock:
+                    entry["voice_path"] = str(delivery.path)
             else:
                 add(f"[{sender}] File received: {delivery.path}",
                     "complete · SHA-256 verified", key=key)
@@ -2244,7 +2245,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 entry_body = f"{description}: {path.name}"
             entry = append_message("me", entry_body, "preparing broadcast")
             if description == "voice note":
-                entry["voice_path"] = str(path)
+                with messages_lock:
+                    entry["voice_path"] = str(path)
             def operation():
                 _check_cancelled(cancel_event)
                 engine = engine_ref["engine"]
@@ -2294,9 +2296,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                message_id=mid.hex(), filename=path.name,
                                total_frames=len(frames), file_bytes=size_bytes)
             if cancelable:
-                entry["status"] = "queued · cancellable"
-                entry["cancelable"] = True
-                entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
+                with messages_lock:
+                    entry["status"] = "queued · cancellable"
+                    entry["cancelable"] = True
+                    entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
                 with ptt_state["lock"]:
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
@@ -2308,7 +2311,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             if description == "voice note" and voice_duration is not None:
                 entry = append_message("me", f"Voice message · {voice_duration:.1f}s · {size_bytes:,} bytes",
                                        "queued · cancellable" if cancelable else "sending · chunked transfer")
-                entry["voice_path"] = str(path)
+                with messages_lock:
+                    entry["voice_path"] = str(path)
             else:
                 entry = append_message("me", f"{description}: {path.name}", "sending · chunked transfer")
             def remember_outgoing(outgoing):
@@ -2332,10 +2336,12 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     transfer_id=resume_id_override,
                     preferred_symbol_rate=preferred_symbol_rate)
                 if description != "voice note":
-                    entry["body"] = f"{description}: {manifest.filename} ({manifest.file_size:,} bytes)"
+                    with messages_lock:
+                        entry["body"] = f"{description}: {manifest.filename} ({manifest.file_size:,} bytes)"
             if cancelable:
-                entry["cancelable"] = True
-                entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
+                with messages_lock:
+                    entry["cancelable"] = True
+                    entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
                 with ptt_state["lock"]:
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
@@ -2346,11 +2352,13 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         return entry
 
     def request_resend(entry):
-        request_info = entry.get("retry_request")
+        with messages_lock:
+            raw_request_info = entry.get("retry_request")
+            request_info = dict(raw_request_info) if isinstance(raw_request_info, dict) else None
+            request_count = int(entry.get("retry_count", 0)) + 1
+            entry["retry_count"] = request_count
         if not request_info:
             raise RuntimeError("This message has no missing data to request")
-        request_count = int(entry.get("retry_count", 0)) + 1
-        entry["retry_count"] = request_count
         missing = tuple(request_info.get("missing", ()))
         if not missing:
             raise RuntimeError("There are no missing chunks to request")
@@ -2516,20 +2524,22 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             return cancel_operation(active_event, active_entry)
         # F7 also works while a cancellable send is still waiting in the
         # application FIFO and has not yet become the engine's active job.
-        queued_entry = next(
-            (item for item in reversed(list(messages))
-             if item.get("cancelable") and callable(item.get("cancel_action"))),
-            None,
-        )
-        if queued_entry is not None:
-            return bool(queued_entry["cancel_action"]())
+        with messages_lock:
+            queued_action = next(
+                (item.get("cancel_action") for item in reversed(messages)
+                 if item.get("cancelable") and callable(item.get("cancel_action"))),
+                None,
+            )
+        if queued_action is not None:
+            return bool(queued_action())
         return False
 
 
     try:
         while engine_ref["engine"] is not None and engine_ref["engine"].running:
             def play_voice_entry(entry):
-                path_value = entry.get("voice_path")
+                with messages_lock:
+                    path_value = entry.get("voice_path")
                 if not path_value:
                     raise RuntimeError("Voice file is not available on this device")
                 # Return the generated WAV path to ChatScreen. The UI updates

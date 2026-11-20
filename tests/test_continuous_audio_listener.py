@@ -76,6 +76,24 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             finally:
                 listener.stop()
 
+    def test_stop_joins_the_collector_without_a_timeout_before_restart(self):
+        listener = ContinuousAudioListener(
+            48000,
+            blocksize=1024,
+            activity_frequencies=(1200, 1500, 1800, 2100, 2400, 2700, 3000),
+            quiet_seconds=0.12,
+            pre_roll_seconds=0.20,
+            max_frame_seconds=10,
+        )
+        with patch("core.audio._sounddevice", return_value=_FakeSoundDevice()):
+            listener.start()
+            collector = listener._thread
+            with patch.object(collector, "join", wraps=collector.join) as join:
+                listener.stop()
+                join.assert_called_once_with()
+            self.assertFalse(collector.is_alive())
+            self.assertIsNone(listener._thread)
+
     def test_continuous_listener_emits_debug_for_listening_detection_capture_and_resume(self):
         events = []
         listener = ContinuousAudioListener(

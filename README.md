@@ -225,7 +225,7 @@ python echocrypt.py --bootstrap rootless
 
 The launcher handles dependency checks and environment setup according to the detected platform.
 
-**Android/Termux limitation:** Rootless bootstrap and a working terminal UI do not guarantee live microphone capture. EchoCrypt requires a continuous raw PCM input stream; the standard upstream Termux app currently does not declare Android's `RECORD_AUDIO` permission for native PortAudio/OpenSL ES capture. See [Android audio and Termux notes](docs/ANDROID_AUDIO.md) before treating Termux as a supported live-audio host.
+**Android/Termux limitation:** Rootless bootstrap and a working terminal UI do not guarantee live microphone capture. EchoCrypt requires a continuous raw PCM input stream. The upstream Termux app itself does not declare `RECORD_AUDIO`, although Termux:API does and the upstream packages use a shared UID; the effective permission grant and PortAudio stream opening must still be verified on-device. See [Android audio and Termux notes](docs/ANDROID_AUDIO.md).
 
 ---
 

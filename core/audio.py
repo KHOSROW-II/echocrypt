@@ -68,14 +68,17 @@ def _explain_android_input_error(exc):
     ]
     if _is_termux_audio_runtime():
         guidance.extend([
-            "Termux note: the current upstream termux-app AndroidManifest does "
-            "not declare RECORD_AUDIO. If your installed Termux APK has no "
-            "Microphone permission entry, Android cannot grant that permission "
-            "to PortAudio/OpenSL ES running inside Termux.",
-            "The RECORD_AUDIO permission of the separate Termux:API app does "
-            "not transfer to the Termux process. termux-microphone-record "
-            "writes a recording file; it is not a live PCM stream that can "
-            "replace EchoCrypt's continuous modem input.",
+            "Termux note: the current upstream Termux app manifest does not "
+            "itself declare RECORD_AUDIO, but the Termux:API manifest does. "
+            "The upstream apps request the same shared UID, so Android may "
+            "share the runtime permission grant across the matching packages. "
+            "Install Termux:API from the same trusted distribution as Termux "
+            "and grant microphone permission if it is requested or exposed in "
+            "Android settings.",
+            "The Termux:API recording command writes a file; that file-based "
+            "capture is not a live PCM stream and cannot replace EchoCrypt's "
+            "continuous modem input. The direct InputStream test below is the "
+            "relevant check for PortAudio/OpenSL ES.",
         ])
     guidance.append(f"Underlying audio error: {message}")
     return RuntimeError("\n".join(guidance))

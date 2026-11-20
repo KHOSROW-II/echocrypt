@@ -12,16 +12,16 @@ Android requires `android.permission.RECORD_AUDIO` for applications that capture
 
 In the upstream Termux source currently referenced by this project review:
 
-- The main [Termux app manifest](https://github.com/termux/termux-app/blob/master/app/src/main/AndroidManifest.xml) does not declare `RECORD_AUDIO`.
-- The separate [Termux:API app manifest](https://github.com/termux/termux-api/blob/master/app/src/main/AndroidManifest.xml) does declare `RECORD_AUDIO`, but Android permissions belong to the app package that requests them. It does not automatically grant that permission to the main Termux application.
+- The main [Termux app manifest](https://github.com/termux/termux-app/blob/master/app/src/main/AndroidManifest.xml) does not itself declare `RECORD_AUDIO`.
+- The [Termux:API app manifest](https://github.com/termux/termux-api/blob/master/app/src/main/AndroidManifest.xml) does declare `RECORD_AUDIO`. Both current upstream manifests request the same `sharedUserId` value. Android keeps runtime grants for shared UIDs as a shared grant set, so installing a compatible Termux:API package signed for the same Termux distribution can make that permission available to the shared UID. This depends on the installed APK pair and Android's permission state; do not assume it is either granted or unavailable without checking. See [Android's permission-state notes](https://android.googlesource.com/platform/frameworks/base/%2Bshow/d51fbb5b4694ea02a2240255e549d2335a47533c/core/java/android/permission/Permissions.md).
 - The Termux [PortAudio package build](https://github.com/termux/termux-packages/blob/master/packages/portaudio/build.sh) disables the PulseAudio backend and adds an OpenSL ES host API. Therefore, creating a PulseAudio source through Termux scripts does not necessarily make that source available to the PortAudio backend used by `sounddevice`.
 
 These are properties of the cited upstream sources at the time of review. A forked Termux APK or a future package build may differ; inspect the manifest and actual host APIs of the installed build before relying on it.
 
 ## What to check on the device
 
-1. In Android Settings, open the app-info page for the application that actually hosts Python (usually **Termux**, not only **Termux:API**).
-2. Check whether a **Microphone** permission is listed and allowed. Also check Android's global microphone privacy toggle.
+1. Install the matching **Termux:API** Android app from the same distribution/source as Termux; mismatched signatures/builds can break the shared-UID relationship.
+2. Open Android Settings and inspect the Microphone permission for Termux/Termux:API. Grant it if Android exposes the permission. Also check Android's global microphone privacy toggle.
 3. Close other apps that may be using the microphone.
 4. In Termux, inspect the PortAudio host APIs and try opening the same live input stream EchoCrypt uses:
 

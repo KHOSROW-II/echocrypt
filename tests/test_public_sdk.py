@@ -221,6 +221,30 @@ class PublicSDKTests(unittest.TestCase):
         self.assertTrue(client._engine.deliver_waiter_packet(b"ACK-1"))
         self.assertEqual(waiter.wait(timeout=1), b"ACK-1")
 
+    def test_close_unblocks_receive_waiting_without_timeout(self):
+        client = self.make_client()
+        client.start()
+        entered = threading.Event()
+        errors = []
+
+        def wait_for_packet():
+            entered.set()
+            try:
+                client.receive(timeout=None)
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=wait_for_packet)
+        worker.start()
+        self.assertTrue(entered.wait(0.5))
+        time.sleep(0.05)
+        client.close()
+        worker.join(0.5)
+
+        self.assertFalse(worker.is_alive(), "close() left receive(timeout=None) blocked")
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ClientClosedError)
+
     def test_receive_timeout_uses_sdk_exception(self):
         client = self.make_client()
         with self.assertRaises(ReceiveTimeout):

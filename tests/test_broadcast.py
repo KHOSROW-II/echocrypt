@@ -130,6 +130,38 @@ class BroadcastCodecTests(unittest.TestCase):
         with self.assertRaises(BroadcastError):
             codec.decode(frame)
 
+    def test_large_text_reassembly_avoids_full_missing_scan_per_fragment(self):
+        from unittest.mock import PropertyMock, patch
+        from core.broadcast import _PartialMessage
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastReassembler(
+            BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        )
+        text = "linear-time preview " * 2500
+        frames = sender.encode_text(text, message_id=b"LINEAR01")
+        self.assertGreater(len(frames), 100)
+
+        with patch.object(_PartialMessage, "missing", new_callable=PropertyMock) as full_scan:
+            deliveries = [receiver.feed(frame) for frame in frames]
+
+        full_scan.assert_not_called()
+        final = next(item for item in deliveries if item is not None and item.complete)
+        self.assertEqual(final.payload.decode("utf-8"), text)
+        self.assertEqual(receiver._partial_bytes, 0)
+
+        # The in-flight preview reports exact missing count but only the next
+        # missing fragment index, bounding per-frame UI/retry work.
+        sender2 = BroadcastCodec(sender_id=b"CAROL001", max_packet_size=256)
+        receiver2 = BroadcastReassembler(
+            BroadcastCodec(sender_id=b"DAVE0001", max_packet_size=256)
+        )
+        frames2 = sender2.encode_text("y" * 50000, message_id=b"LINEAR02")
+        partial = receiver2.feed(frames2[0])
+        self.assertFalse(partial.complete)
+        self.assertEqual(len(partial.missing), 1)
+        self.assertEqual(partial.missing_count, len(frames2) - 1)
+
     def test_fragmented_utf8_text_reassembles_out_of_order_and_deduplicates(self):
         codec = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=112)
         receiver = BroadcastReassembler(codec)

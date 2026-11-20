@@ -103,6 +103,10 @@ SESSION_MENU_ITEMS = [
 
 
 BROADCAST_FILE_MANIFEST_COPIES = 3
+# Shorter file fragments are more robust over real acoustic paths. A 512-byte
+# chunk produced ~13-second frames at 800 baud and repeatedly overwhelmed RX.
+BROADCAST_FILE_CHUNK_SIZE = 256
+BROADCAST_VOICE_CHUNK_SIZE = 192
 
 RETRY_KEY_RESULT = "__ECHOCRYPT_RETRY__"
 
@@ -2329,7 +2333,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 # Public Broadcast uses a fast fixed-frequency profile. Chunk
                 # CRC, file SHA-256 validation and selective retries provide
                 # integrity/recovery; public FHSS would add no secrecy.
-                chunk_size = 192 if voice_transfer else 512
+                chunk_size = BROADCAST_VOICE_CHUNK_SIZE if voice_transfer else BROADCAST_FILE_CHUNK_SIZE
                 mid, frames = codec.encode_file(
                     path, chunk_size=chunk_size,
                     symbol_rate=broadcast_rate, fec_mode="conv", hopping=False,

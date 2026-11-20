@@ -2263,7 +2263,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 mid = codec.decode(frames[0]).message_id
                 remember_broadcast_event(mid, cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
-                broadcast_rate = int(getattr(cfg, "fast_symbol_rate", 800))
+                broadcast_rate = _broadcast_symbol_rates(cfg)[0]
                 broadcast_copies = 1
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text encoded and cached",

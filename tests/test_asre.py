@@ -266,6 +266,23 @@ class ASRECodecTests(unittest.TestCase):
             )
         self.assertEqual(engine.last_attempt_count, 1)
 
+    def test_strong_hopping_header_error_propagates_before_false_candidates(self):
+        import core.modem as modem
+        from core.recovery.errors import HoppingKeyRequiredError
+
+        waveform = modulate(
+            b"valid-broadcast-header",
+            RATE,
+            400,
+            fec_mode="conv",
+            hop_key=b"H" * 32,
+        )
+        with self.assertRaises(HoppingKeyRequiredError):
+            modem._demodulate_once(
+                waveform, RATE, 400, 1800, 2400, 1024,
+                hop_key=None,
+            )
+
     def test_strong_frame_crc_failure_recovers_a_two_thousand_ppm_clock_offset(self):
         from types import SimpleNamespace
         from core.recovery.errors import FrameCRCError

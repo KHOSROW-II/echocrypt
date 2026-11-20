@@ -655,6 +655,11 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                    timing_offset_samples=metrics.timing_offset_samples)
             return (payload, metrics) if return_metrics else payload
         except (ValueError, struct.error) as exc:
+            if isinstance(exc, HoppingKeyRequiredError) and sync_score >= 0.50:
+                # A strong, CRC-validated header proves this is a hopping frame.
+                # Do not downgrade the profile mismatch to a generic ValueError
+                # after trying unrelated false preamble candidates.
+                raise
             if isinstance(exc, HeaderCRCError):
                 header_crc_failure_scores.append(float(sync_score))
                 if sync_score >= 0.50:

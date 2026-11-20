@@ -201,10 +201,9 @@ class ASRECodecTests(unittest.TestCase):
 
     def test_boundary_carrier_search_expands_for_large_real_offset(self):
         payload = bytes((index * 31 + 5) & 0xFF for index in range(96))
-        engine = AdaptiveSignalRecoveryEngine(profile_for_grade("WEAK"))
-
         for offset in (-450, 450):
             with self.subTest(offset_hz=offset):
+                engine = AdaptiveSignalRecoveryEngine(profile_for_grade("WEAK"))
                 waveform = modulate(
                     payload, RATE, 800,
                     mark=1800 + offset, space=2400 + offset,

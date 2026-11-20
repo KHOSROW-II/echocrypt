@@ -47,9 +47,10 @@ class BinaryTransferError(ValueError):
 class ChunkIntegrityError(BinaryTransferError):
     """Final file hash failed; these chunk indexes must be retransmitted."""
 
-    def __init__(self, transfer_id: bytes, indexes):
+    def __init__(self, transfer_id: bytes, indexes, ack_packet: bytes):
         self.transfer_id = bytes(transfer_id)
         self.indexes = tuple(sorted({int(index) for index in indexes}))
+        self.ack_packet = bytes(ack_packet)
         super().__init__(
             "Completed file SHA-256 mismatch; requesting fresh ciphertext for "
             + ", ".join(str(index) for index in self.indexes)
@@ -461,7 +462,12 @@ class ReliableBinaryChannel:
                 for invalid_index in invalid_indexes:
                     state["chunks"].pop(str(invalid_index), None)
                 _atomic_json(state_path, state)
-                raise ChunkIntegrityError(tid, invalid_indexes)
+                # The frame itself was authenticated and durably written.
+                # ACK it so stop-and-wait can progress, while the separate
+                # repair request asks for fresh ciphertext for damaged indexes.
+                raise ChunkIntegrityError(
+                    tid, invalid_indexes, self._ack_packet(tid, 1, index)
+                )
             self.receive_root.mkdir(parents=True, exist_ok=True)
             destination = self._unique_destination(self.receive_root / m.filename)
             os.replace(part_path, destination)

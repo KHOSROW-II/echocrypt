@@ -1365,6 +1365,17 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
         try:
             chunk = reliable_binary.receive_chunk(packet)
         except ChunkIntegrityError as exc:
+            # The current DATA frame is authenticated and stored, although the
+            # whole-file hash shows that one or more chunks need repair. ACK
+            # this valid frame before requesting fresh ciphertext for the bad
+            # indexes, otherwise the sender's stop-and-wait loop can stall.
+            try:
+                engine.submit_packet(
+                    exc.ack_packet, fec_mode="conv", symbol_rate=reply_rate,
+                    label="FILE CHUNK ACK · INTEGRITY REPAIR", channel_access=True,
+                )
+            except Exception:
+                pass
             if on_integrity_failure is not None:
                 on_integrity_failure(exc.transfer_id, exc.indexes)
             return

@@ -63,6 +63,11 @@ class BinaryTransferIntegrityTests(unittest.TestCase):
                 receiver.receive_chunk(final_packet)
             self.assertEqual(caught.exception.transfer_id, outgoing.manifest.transfer_id)
             self.assertEqual(caught.exception.indexes, (0,))
+            # The last authenticated DATA frame is ACKed even though the
+            # receiver separately requests a fresh copy of the damaged chunk.
+            self.assertTrue(sender.verify_ack(
+                caught.exception.ack_packet, outgoing.manifest.transfer_id, 1, 2
+            ))
             self.assertEqual(
                 receiver.transfer_progress(outgoing.manifest.transfer_id)[2], (0,)
             )

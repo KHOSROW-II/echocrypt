@@ -211,11 +211,13 @@ class AcousticClient:
         with self._lifecycle_lock:
             if self._closed:
                 return
+            # Publish the closed state before waiting for hardware cleanup so
+            # receive() and packet callbacks can terminate immediately.
+            self._closed = True
+            dispatcher = self._dispatcher_thread
             try:
                 self._engine.stop(wait=wait)
             finally:
-                self._closed = True
-                dispatcher = self._dispatcher_thread
                 try:
                     self._events.put_nowait(_SENTINEL)
                 except queue.Full:
@@ -264,6 +266,8 @@ class AcousticClient:
         return self.subscribe(callback, event=event)
 
     def _publish(self, event: AcousticEvent) -> None:
+        if self._closed:
+            return
         try:
             self._events.put_nowait(event)
         except queue.Full:

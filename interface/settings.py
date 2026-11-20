@@ -63,25 +63,25 @@ def _request_termux_android_microphone():
     from core.termux_api import request_microphone_permission
 
     render_app_header(session_status="ANDROID MICROPHONE PERMISSION")
-    print("\\nThis uses Termux:API to request Android's RECORD_AUDIO permission.")
+    print("\nThis uses Termux:API to request Android's RECORD_AUDIO permission.")
     print("A one-second test recording is created temporarily and deleted automatically.")
     try:
         status, detail = request_microphone_permission()
         if detail:
-            print("\\n" + detail)
+            print("\n" + detail)
         if status == "permission_required":
-            prompt("\\nAllow microphone access in the Android dialog, return here, then press Enter to retry...")
+            prompt("\nAllow microphone access in the Android dialog, return here, then press Enter to retry...")
             status, detail = request_microphone_permission()
             if detail:
-                print("\\n" + detail)
+                print("\n" + detail)
         if status == "granted":
-            print("\\nPermission check succeeded. Testing the live PortAudio microphone stream...")
+            print("\nPermission check succeeded. Testing the live PortAudio microphone stream...")
             run_microphone_level_test()
         else:
-            print("\\nAndroid microphone permission is not yet confirmed.")
+            print("\nAndroid microphone permission is not yet confirmed.")
             _pause()
     except Exception as exc:
-        print("\\nCould not request microphone permission through Termux:API:", exc)
+        print("\nCould not request microphone permission through Termux:API:", exc)
         print("Install both the 'termux-api' package and the matching Termux:API Android app.")
         _pause()
 

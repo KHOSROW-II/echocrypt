@@ -142,7 +142,7 @@ class MobileBootstrapTests(unittest.TestCase):
     def test_termux_live_input_probe_accepts_a_successful_stream_open(self):
         result = completed(
             ["python", "-c", "probe"],
-            stdout="ECHOCRYPT_INPUT_STREAM=OK\\n",
+            stdout="ECHOCRYPT_INPUT_STREAM=OK\n",
         )
         with patch.object(echocrypt.subprocess, "run", return_value=result) as run:
             opened, detail = echocrypt._probe_termux_live_input_stream()
@@ -153,7 +153,7 @@ class MobileBootstrapTests(unittest.TestCase):
     def test_termux_live_input_probe_reports_stream_open_failure(self):
         result = completed(
             ["python", "-c", "probe"],
-            stdout="ECHOCRYPT_INPUT_STREAM_ERROR=OpenSL ES -9999\\n",
+            stdout="ECHOCRYPT_INPUT_STREAM_ERROR=OpenSL ES -9999\n",
             returncode=4,
         )
         with patch.object(echocrypt.subprocess, "run", return_value=result):

@@ -26,7 +26,7 @@ def _run(command: list[str], *, timeout: float = 8.0) -> subprocess.CompletedPro
 
 
 def _combined_output(result: subprocess.CompletedProcess) -> str:
-    return "\\n".join(
+    return "\n".join(
         part.strip() for part in (result.stdout, result.stderr)
         if part and part.strip()
     )

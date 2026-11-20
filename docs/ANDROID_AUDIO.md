@@ -41,13 +41,13 @@ print("Host APIs:")
 for i, host in enumerate(sd.query_hostapis()):
     print(i, host["name"])
 
-print("\\nInput devices:")
+print("\nInput devices:")
 for i, device in enumerate(sd.query_devices()):
     if device["max_input_channels"] > 0:
         api = sd.query_hostapis()[device["hostapi"]]["name"]
         print(i, device["name"], "|", api)
 
-print("\\nOpening live microphone stream...")
+print("\nOpening live microphone stream...")
 stream = sd.InputStream(
     samplerate=48000,
     channels=1,

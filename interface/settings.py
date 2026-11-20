@@ -59,6 +59,33 @@ def _select_device(direction: str):
     _pause()
 
 
+def _request_termux_android_microphone():
+    from core.termux_api import request_microphone_permission
+
+    render_app_header(session_status="ANDROID MICROPHONE PERMISSION")
+    print("\\nThis uses Termux:API to request Android's RECORD_AUDIO permission.")
+    print("A one-second test recording is created temporarily and deleted automatically.")
+    try:
+        status, detail = request_microphone_permission()
+        if detail:
+            print("\\n" + detail)
+        if status == "permission_required":
+            prompt("\\nAllow microphone access in the Android dialog, return here, then press Enter to retry...")
+            status, detail = request_microphone_permission()
+            if detail:
+                print("\\n" + detail)
+        if status == "granted":
+            print("\\nPermission check succeeded. Testing the live PortAudio microphone stream...")
+            run_microphone_level_test()
+        else:
+            print("\\nAndroid microphone permission is not yet confirmed.")
+            _pause()
+    except Exception as exc:
+        print("\\nCould not request microphone permission through Termux:API:", exc)
+        print("Install both the 'termux-api' package and the matching Termux:API Android app.")
+        _pause()
+
+
 def _audio_settings():
     while True:
         cfg = load()
@@ -67,6 +94,7 @@ def _audio_settings():
             ("output", f"Output device          : {'SYSTEM DEFAULT' if cfg.output_device is None else cfg.output_device}"),
             ("speaker-test", "Test speakers (LEFT then RIGHT, 2 seconds each)"),
             ("mic-test", "Test microphone (live level meter)"),
+            ("android-mic", "Request Android microphone permission (Termux:API)"),
             ("sample", f"Sample rate            : {cfg.sample_rate} Hz"),
             ("record", f"Maximum record window  : {cfg.record_seconds:g} sec"),
             ("gain", f"Playback gain           : {cfg.gain:.2f}"),
@@ -83,6 +111,8 @@ def _audio_settings():
             _pause()
         elif c == "mic-test":
             run_microphone_level_test()
+        elif c == "android-mic":
+            _request_termux_android_microphone()
         elif c == "sample":
             _edit_numeric("audio", "sample_rate", "sample_rate", "Sample rate (48000 or 96000 recommended)", int)
         elif c == "record":

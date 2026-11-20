@@ -87,7 +87,7 @@ Voice is transported as an attachment/container rather than as a continuous real
 
 The current UI is terminal-based. Mobile support means narrow-screen terminal compatibility, not a native Android graphical application.
 
-Termux's rootless bootstrap can install Python dependencies, but that does not prove native microphone access works. The receive engine requires a live mono PCM input stream through PortAudio. The current upstream Termux app manifest does not itself declare Android's `RECORD_AUDIO` permission, while Termux:API does; both upstream packages request the same shared UID, so a matching installed pair may share the runtime grant. The actual permission state and a real PortAudio `InputStream` open test must still be verified on-device. Termux:API's file-based recording command is not a substitute for EchoCrypt's continuous PCM stream. See [Android audio and Termux notes](ANDROID_AUDIO.md).
+Termux's rootless bootstrap can install Python dependencies, but that does not prove native microphone access works. The receive engine requires a live mono PCM input stream through PortAudio. The current upstream Termux app manifest does not itself declare Android's `RECORD_AUDIO` permission, while Termux:API does; both upstream packages request the same shared UID and signing key. EchoCrypt can invoke Termux:API to request that permission, then it must still pass a real PortAudio `InputStream` open test. Termux:API's short file-based recording is only a permission check, not EchoCrypt's continuous PCM stream. See [Android audio and Termux notes](ANDROID_AUDIO.md).
 
 - Menus and chat should respond to the terminal's current dimensions.
 - Narrow terminals use a compact one-line wordmark instead of the wide ASCII banner.

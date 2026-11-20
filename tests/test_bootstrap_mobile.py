@@ -80,9 +80,7 @@ class MobileBootstrapTests(unittest.TestCase):
         calls = []
         with patch.object(echocrypt.shutil, "which", side_effect=lambda name: "/termux/bin/" + name), \
              patch.object(echocrypt, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)), \
-             patch.object(echocrypt, "_start_termux_audio_services",
-                          return_value={"server": True, "sources": ["mic"], "sinks": ["speaker"]}), \
-             patch.object(echocrypt, "_probe_termux_python_audio", return_value=(1, 1)), \
+             patch.object(echocrypt, "_verify_termux_audio_runtime", return_value=(1, 1)), \
              patch("builtins.print"):
             echocrypt._bootstrap_termux_rootless()
 
@@ -92,7 +90,8 @@ class MobileBootstrapTests(unittest.TestCase):
         self.assertIn("python-numpy", package_command)
         self.assertIn("python-cryptography", package_command)
         self.assertIn("portaudio", package_command)
-        self.assertIn("pulseaudio", package_command)
+        self.assertIn("termux-api", package_command)
+        self.assertNotIn("pulseaudio", package_command)
         self.assertNotIn("python-ensurepip-wheels", package_command)
         pip_command = " ".join(calls[1])
         self.assertIn("-m pip install", pip_command)
@@ -135,88 +134,32 @@ class MobileBootstrapTests(unittest.TestCase):
         calls = []
         with patch.object(echocrypt.shutil, "which", side_effect=lambda name: "/termux/bin/" + name), \
              patch.object(echocrypt, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)), \
-             patch.object(echocrypt, "_start_termux_audio_services", return_value={"server": True}), \
-             patch.object(echocrypt, "_probe_termux_python_audio",
+             patch.object(echocrypt, "_verify_termux_audio_runtime",
                           side_effect=RuntimeError("PortAudio load error")):
             with self.assertRaisesRegex(RuntimeError, "PortAudio load error"):
                 echocrypt._bootstrap_termux_rootless()
 
-    def test_pulseaudio_backend_probe_stops_after_first_working_pair(self):
-        modules = set()
-        calls = []
+    def test_termux_live_input_probe_accepts_a_successful_stream_open(self):
+        result = completed(
+            ["python", "-c", "probe"],
+            stdout="ECHOCRYPT_INPUT_STREAM=OK\\n",
+        )
+        with patch.object(echocrypt.subprocess, "run", return_value=result) as run:
+            opened, detail = echocrypt._probe_termux_live_input_stream()
+        self.assertTrue(opened)
+        self.assertEqual(detail, "")
+        self.assertEqual(run.call_args.kwargs["timeout"], 10)
 
-        def fake_run(command):
-            command = list(command)
-            calls.append(command)
-            if command[1:] == ["info"]:
-                return completed(command, "Server String: local")
-            if command[1:4] == ["list", "short", "modules"]:
-                return completed(command, "\n".join(f"{i} {name}" for i, name in enumerate(sorted(modules))))
-            if command[1] == "load-module":
-                modules.add(command[2])
-                return completed(command, "1")
-            if command[1:4] == ["list", "short", "sources"]:
-                source_lines = "1 AAudio_source module-aaudio-source.c\n2 AAudio_sink.monitor module-aaudio-sink.c"
-                return completed(command, source_lines if "module-aaudio-source" in modules else "")
-            if command[1:4] == ["list", "short", "sinks"]:
-                sink_lines = "1 AAudio_sink module-aaudio-sink.c"
-                return completed(command, sink_lines if "module-aaudio-sink" in modules else "")
-            return completed(command)
-
-        with patch.object(echocrypt.shutil, "which", side_effect=lambda name: "/termux/bin/" + name), \
-             patch.object(echocrypt, "_quiet_run", side_effect=fake_run), \
-             patch("builtins.print"):
-            result = echocrypt._start_termux_audio_services()
-
-        self.assertTrue(result["server"])
-        self.assertEqual(result["sources"], ["AAudio_source"])
-        self.assertEqual(result["sinks"], ["AAudio_sink"])
-        self.assertIn("module-aaudio-source", result["loaded"])
-        self.assertIn("module-aaudio-sink", result["loaded"])
-        self.assertNotIn("module-sles-source", " ".join(" ".join(c) for c in calls))
-        self.assertTrue(any(c[-2:] == ["set-default-source", "AAudio_source"] for c in calls))
-
-    def test_failed_partial_audio_backend_is_unloaded_before_next_backend(self):
-        modules = {}
-        next_id = 1
-        calls = []
-
-        def fake_run(command):
-            nonlocal next_id
-            command = list(command)
-            calls.append(command)
-            if command[1:] == ["--start", "--exit-idle-time=-1"]:
-                return completed(command)
-            if command[1:] == ["info"]:
-                return completed(command, "Server String: local")
-            if command[1:4] == ["list", "short", "modules"]:
-                return completed(command, "\n".join(f"{key} {name}" for key, name in modules.items()))
-            if command[1] == "load-module":
-                name = command[2]
-                if name == "module-aaudio-sink":
-                    return completed(command, "module unavailable", returncode=1)
-                ident = str(next_id)
-                next_id += 1
-                modules[ident] = name
-                return completed(command, ident)
-            if command[1] == "unload-module":
-                modules.pop(command[2], None)
-                return completed(command)
-            if command[1:4] == ["list", "short", "sources"]:
-                return completed(command, "1 Oboe_source module-oboe-source.c" if "module-oboe-source" in modules.values() else "")
-            if command[1:4] == ["list", "short", "sinks"]:
-                return completed(command, "1 Oboe_sink module-oboe-sink.c" if "module-oboe-sink" in modules.values() else "")
-            return completed(command)
-
-        with patch.object(echocrypt.shutil, "which", side_effect=lambda name: "/termux/bin/" + name), \
-             patch.object(echocrypt, "_quiet_run", side_effect=fake_run), \
-             patch("builtins.print"):
-            result = echocrypt._start_termux_audio_services()
-
-        self.assertTrue(result["server"])
-        self.assertEqual(result["loaded"], ["module-oboe-source", "module-oboe-sink"])
-        self.assertTrue(any(command[1:] == ["unload-module", "1"] for command in calls))
-        self.assertNotIn("module-aaudio-source", modules.values())
+    def test_termux_live_input_probe_reports_stream_open_failure(self):
+        result = completed(
+            ["python", "-c", "probe"],
+            stdout="ECHOCRYPT_INPUT_STREAM_ERROR=OpenSL ES -9999\\n",
+            returncode=4,
+        )
+        with patch.object(echocrypt.subprocess, "run", return_value=result):
+            opened, detail = echocrypt._probe_termux_live_input_stream()
+        self.assertFalse(opened)
+        self.assertIn("OpenSL ES -9999", detail)
 
     def test_generic_rootless_bootstrap_uses_unprivileged_venv(self):
         calls = []

@@ -147,94 +147,61 @@ def _install_requirements(python_path: Path, *, audio: bool) -> None:
         _run([str(python_path), "-m", "pip", "install", "-r", str(ROOT / "requirements-audio.txt")])
 
 
-def _quiet_run(command: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
-
-
-def _start_termux_audio_services() -> dict[str, object]:
-    """Best-effort Android audio setup; report what exists instead of assuming it."""
-    result: dict[str, object] = {"server": False, "sources": [], "sinks": [], "loaded": []}
-    pulseaudio = shutil.which("pulseaudio")
-    pactl = shutil.which("pactl")
-    if not pulseaudio or not pactl:
-        print("Audio service tools are unavailable; install the Termux pulseaudio package.")
-        return result
-
-    start = _quiet_run([pulseaudio, "--start", "--exit-idle-time=-1"])
-    info = _quiet_run([pactl, "info"])
-    if info.returncode != 0:
-        print("PulseAudio did not become ready. Check Termux audio permissions and service logs.")
-        if start.stderr.strip():
-            print("PulseAudio:", start.stderr.strip()[-500:])
-        return result
-    result["server"] = True
-
-    def endpoints():
-        source_output = _quiet_run([pactl, "list", "short", "sources"])
-        sink_output = _quiet_run([pactl, "list", "short", "sinks"])
-        sources = [line.split()[1] for line in source_output.stdout.splitlines()
-                   if len(line.split()) >= 2 and not line.split()[1].endswith(".monitor")]
-        sinks = [line.split()[1] for line in sink_output.stdout.splitlines()
-                 if len(line.split()) >= 2 and line.split()[1] not in {"auto_null", "null"}]
-        return sources, sinks
-
-    sources, sinks = endpoints()
-    # Android/Termux versions expose different native host APIs. Try a matching
-    # source/sink pair and stop at the first usable pair; loading every backend
-    # simultaneously can create duplicate devices or choose a dead endpoint.
-    pairs = (
-        ("module-aaudio-source", "module-aaudio-sink"),
-        ("module-oboe-source", "module-oboe-sink"),
-        ("module-sles-source", "module-sles-sink"),
+def _probe_termux_live_input_stream() -> tuple[bool, str]:
+    """Open and close a real PortAudio microphone stream, not just enumerate devices."""
+    script = """import sounddevice as sd
+stream = None
+try:
+    stream = sd.InputStream(
+        samplerate=48000,
+        channels=1,
+        dtype="float32",
+        blocksize=1024,
     )
-    if not (sources and sinks):
-        for source_module, sink_module in pairs:
-            loaded_this_pair: list[tuple[str, str]] = []
-            existing = _quiet_run([pactl, "list", "short", "modules"]).stdout
-            if source_module not in existing:
-                loaded = _quiet_run([pactl, "load-module", source_module])
-                if loaded.returncode == 0:
-                    module_id = loaded.stdout.strip().splitlines()[-1] if loaded.stdout.strip() else ""
-                    loaded_this_pair.append((source_module, module_id))
-            existing = _quiet_run([pactl, "list", "short", "modules"]).stdout
-            if sink_module not in existing:
-                loaded = _quiet_run([pactl, "load-module", sink_module])
-                if loaded.returncode == 0:
-                    module_id = loaded.stdout.strip().splitlines()[-1] if loaded.stdout.strip() else ""
-                    loaded_this_pair.append((sink_module, module_id))
-            sources, sinks = endpoints()
-            if sources and sinks:
-                result["loaded"].extend(name for name, _ in loaded_this_pair)
-                break
-            # Do not accumulate half-working backends while trying the next API.
-            for _module_name, module_id in reversed(loaded_this_pair):
-                if module_id.isdigit():
-                    _quiet_run([pactl, "unload-module", module_id])
-
-    result["sources"] = sources
-    result["sinks"] = sinks
-    if sources:
-        _quiet_run([pactl, "set-default-source", sources[0]])
-    if sinks:
-        _quiet_run([pactl, "set-default-sink", sinks[0]])
-    if sources and sinks:
-        print(f"PulseAudio endpoints detected: {len(sources)} input(s), {len(sinks)} output(s).")
-    else:
-        print("PulseAudio is running, but no usable Android microphone/speaker endpoint was detected.")
-        print("Check Android microphone permission and the device audio backend; a dummy sink is not usable.")
-    return result
+    stream.start()
+    print("ECHOCRYPT_INPUT_STREAM=OK")
+except Exception as exc:
+    print("ECHOCRYPT_INPUT_STREAM_ERROR=" + str(exc))
+    raise SystemExit(4)
+finally:
+    if stream is not None:
+        try:
+            stream.stop()
+        finally:
+            stream.close()
+"""
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if probe.returncode == 0 and "ECHOCRYPT_INPUT_STREAM=OK" in probe.stdout:
+        return True, ""
+    details = (probe.stderr or probe.stdout).strip()[-1200:]
+    return False, details or "PortAudio did not confirm that the input stream opened"
 
 
 def _verify_termux_audio_runtime() -> tuple[int, int]:
-    """Restart/probe the audio bridge on each launch without reinstalling packages."""
-    audio_status = _start_termux_audio_services()
+    """Check device enumeration and verify that PortAudio can open live input."""
     input_devices, output_devices = _probe_termux_python_audio()
     print(f"PortAudio loaded successfully: {input_devices} input device(s), {output_devices} output device(s).")
-    if not audio_status.get("server"):
-        print("The PulseAudio server is not confirmed running; check Termux audio permissions/logs.")
+    if input_devices:
+        live_ok, detail = _probe_termux_live_input_stream()
+        if live_ok:
+            print("Live microphone InputStream opened successfully.")
+        else:
+            print("PortAudio lists an input device, but could not open the live microphone stream:")
+            print(detail)
+            print("Open Configuration > Audio settings > Request Android microphone permission.")
     if input_devices < 1 or output_devices < 1:
-        print("WARNING: ECHO-CRYPT cannot yet confirm both microphone and speaker access on this device.")
-        print("Check Android permissions and the available PulseAudio/AAudio/Oboe/OpenSL ES endpoints.")
+        print("WARNING: ECHO-CRYPT cannot yet confirm both microphone and speaker devices on this device.")
+        print("Check the Termux:API companion app, Android microphone permission, and audio hardware.")
     return input_devices, output_devices
 
 
@@ -246,11 +213,13 @@ def _bootstrap_termux_rootless() -> None:
     native_packages = [
         # Termux separates pip from the Python package on current releases.
         "python-pip", "python-numpy", "python-cryptography",
-        "portaudio", "pulseaudio", "libffi", "clang", "make", "pkg-config",
+        "portaudio", "termux-api", "libffi", "clang", "make", "pkg-config",
     ]
     _run([pkg, "install", "-y", *native_packages])
-    # sounddevice is Python-level; its cffi dependency may need a local build on
-    # Android, for which clang/libffi were installed above. Never upgrade pip.
+    # Install the Termux-side Termux:API CLI. Its Android companion app is
+    # installed separately and requests RECORD_AUDIO. Termux PortAudio uses
+    # its native Android host API; a PulseAudio daemon is not required here.
+    # Never upgrade pip.
     _run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
           "prompt_toolkit>=3.0.43", "sounddevice>=0.4.6"])
     _verify_termux_audio_runtime()

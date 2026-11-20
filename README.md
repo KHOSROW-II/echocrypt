@@ -223,6 +223,8 @@ For Termux:
 python echocrypt.py --bootstrap rootless
 ```
 
+The bootstrap installs the Termux-side `termux-api` command package. Also install the **Termux:API Android companion app** from the same trusted distribution/signing source as Termux. Then open **Configuration → Audio settings → Request Android microphone permission** and allow the request. Termux:API is used to request the permission and make a short temporary test recording; EchoCrypt's continuous receiver still uses a live PortAudio microphone stream.
+
 The launcher handles dependency checks and environment setup according to the detected platform.
 
 **Android/Termux limitation:** Rootless bootstrap and a working terminal UI do not guarantee live microphone capture. EchoCrypt requires a continuous raw PCM input stream. The upstream Termux app itself does not declare `RECORD_AUDIO`, although Termux:API does and the upstream packages use a shared UID; the effective permission grant and PortAudio stream opening must still be verified on-device. See [Android audio and Termux notes](docs/ANDROID_AUDIO.md).

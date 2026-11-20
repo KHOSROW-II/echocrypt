@@ -18,6 +18,14 @@ In the upstream Termux source currently referenced by this project review:
 
 These are properties of the cited upstream sources at the time of review. A forked Termux APK or a future package build may differ; inspect the manifest and actual host APIs of the installed build before relying on it.
 
+## Termux:API permission setup
+
+The EchoCrypt bootstrap installs the Termux-side `termux-api` command package. The Android **Termux:API companion app** must also be installed separately, using the same trusted distribution/source and signing key as the main Termux app. The API app checks `RECORD_AUDIO` and opens Android's runtime permission activity when the permission is missing. The matching Termux and Termux:API packages share the configured Android UID; the actual permission grant must still be verified on the device.
+
+In EchoCrypt, open **Configuration → Audio settings → Request Android microphone permission**. The application asks Termux:API to make a one-second temporary AAC recording. If Android displays a permission prompt, allow it, return to EchoCrypt, and retry the action. A successful temporary recording confirms that the API permission path works. EchoCrypt then separately tests the live PortAudio input stream; that test is mandatory because a file recording is not the same as continuous PCM input.
+
+The standard Termux PortAudio package is built with OpenSL ES support and without its PulseAudio host API. The separate PulseAudio daemon warning is therefore not the right health check for this PortAudio build. EchoCrypt now tests the actual live `InputStream` rather than relying only on the number of enumerated input devices.
+
 ## What to check on the device
 
 1. Install the matching **Termux:API** Android app from the same distribution/source as Termux; mismatched signatures/builds can break the shared-UID relationship.

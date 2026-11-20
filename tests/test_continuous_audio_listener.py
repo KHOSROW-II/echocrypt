@@ -369,6 +369,10 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             rate, blocksize=1024,
             activity_frequencies=activity_frequencies,
             quiet_seconds=0.30, pre_roll_seconds=0.65, max_frame_seconds=20,
+            # The fake stream feeds samples without real-time pacing; provision
+            # enough blocks so this test measures segmentation, not test-harness
+            # producer/consumer scheduling.
+            queue_blocks=2048,
         )
         with patch("core.audio._sounddevice", return_value=NoisyGapBackend()):
             listener.start()

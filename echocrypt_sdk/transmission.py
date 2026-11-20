@@ -41,6 +41,11 @@ class Transmission:
         A timeout only limits this wait; it does not cancel transmission.
         Call cancel() explicitly to request cancellation.
         """
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or timeout < 0 or timeout == float("inf") or timeout != timeout
+        ):
+            raise ValueError("timeout must be a finite non-negative number or None")
         duration = self._future.result(timeout=timeout)
         return TransmissionResult(
             payload_bytes=self.payload_bytes,
@@ -73,4 +78,18 @@ class Transmission:
     def add_done_callback(self, callback: Callable[["Transmission"], object]) -> None:
         if not callable(callback):
             raise TypeError("callback must be callable")
-        self._future.add_done_callback(lambda _future: callback(self))
+        def dispatch(_future):
+            def invoke():
+                try:
+                    callback(self)
+                except Exception:
+                    # User callback exceptions must never escape on the TX worker.
+                    pass
+
+            threading.Thread(
+                target=invoke,
+                name="echocrypt-sdk-send-callback",
+                daemon=True,
+            ).start()
+
+        self._future.add_done_callback(dispatch)

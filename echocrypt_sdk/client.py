@@ -219,6 +219,8 @@ class AcousticClient:
         event: str = "*",
     ) -> Subscription:
         """Subscribe to one event name, or '*' for every event."""
+        if self._closed:
+            raise ClientClosedError("This AcousticClient has been closed")
         if not callable(callback):
             raise TypeError("callback must be callable")
         if not isinstance(event, str) or not event.strip():
@@ -307,8 +309,11 @@ class AcousticClient:
 
     def receive(self, timeout: Optional[float] = None) -> bytes:
         """Return the next validated packet, raising ReceiveTimeout on timeout."""
+        if self._closed and self._packets.empty():
+            raise ClientClosedError("This AcousticClient has been closed")
         if timeout is not None:
-            if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout < 0:
+            if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) \
+                    or not math.isfinite(timeout) or timeout < 0:
                 raise ValueError("timeout must be a finite non-negative number or None")
         try:
             return self._packets.get(timeout=timeout)
@@ -417,6 +422,9 @@ class AcousticClient:
             channel_access=channel_access,
         )
         return transmission.wait(timeout=timeout)
+
+    send_packet_async = send_async
+    send_packet = send
 
     def __enter__(self) -> "AcousticClient":
         return self.start()

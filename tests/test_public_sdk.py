@@ -203,12 +203,36 @@ class PublicSDKTests(unittest.TestCase):
         with self.assertRaises(ReceiveTimeout):
             client.receive(timeout=0.01)
 
-    def test_closed_client_cannot_be_restarted(self):
+    def test_closed_client_rejects_new_subscriptions_and_empty_receive(self):
         client = self.make_client()
         client.close()
-        self.assertTrue(client.closed)
         with self.assertRaises(ClientClosedError):
-            client.start()
+            client.on("packet_received", lambda _event: None)
+        with self.assertRaises(ClientClosedError):
+            client.receive(timeout=0)
+
+    def test_transmission_callback_runs_off_tx_completion_thread(self):
+        import threading
+
+        client = self.make_client()
+        client.start()
+        transmission = client.send_packet_async(b"callback-test")
+        callback_done = threading.Event()
+        callback_threads = []
+
+        def callback(_result):
+            callback_threads.append(threading.current_thread())
+            callback_done.set()
+            raise RuntimeError("callback error must be isolated")
+
+        transmission.add_done_callback(callback)
+        client._engine.future.set_result(0.1)
+        self.assertTrue(callback_done.wait(1))
+        self.assertIsNot(callback_threads[0], threading.current_thread())
+
+    def test_send_packet_alias_is_exposed(self):
+        self.assertTrue(callable(AcousticClient.send_packet))
+        self.assertTrue(callable(AcousticClient.send_packet_async))
 
 
 if __name__ == "__main__":

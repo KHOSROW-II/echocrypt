@@ -85,6 +85,9 @@ class AcousticConfig:
             raise ValueError("inter_frame_gap must be finite and between 0 and 10 seconds")
         object.__setattr__(self, "inter_frame_gap", gap)
 
+        if isinstance(self.gain, bool) or not isinstance(self.gain, (int, float)):
+            raise TypeError("gain must be a number")
+        object.__setattr__(self, "gain", float(self.gain))
         core = self.to_core_config()
         _validate_core_config(core)
         for rate in rates:

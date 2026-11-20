@@ -45,7 +45,7 @@ class AdaptiveSignalRecoveryEngine:
                     continue
                 seen_ratios.add(ratio)
 
-                if isinstance(last_error, PreambleNotFoundError) and strongest_header_error is None:
+                if isinstance(last_error, PreambleNotFoundError) and strongest_sync_error is None:
                     break
                 retry_budget = (
                     11 if strongest_sync_error is not None

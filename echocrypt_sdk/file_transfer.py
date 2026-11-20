@@ -16,6 +16,7 @@ from core.binary_transfer import (
     ReliableBinaryChannel,
 )
 from core.crypto import ReplayError
+from .exceptions import ClientClosedError, ReceiveTimeout
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,8 @@ class SecureFileTransfer:
         self._closed = False
 
     def _publish(self, kind, transfer_id=None, result=None, error=None):
+        if self._closed:
+            return
         event = {
             "kind": str(kind),
             "transfer_id": bytes(transfer_id).hex() if transfer_id is not None else None,
@@ -519,11 +522,39 @@ class SecureFileTransfer:
             )
 
     def receive_event(self, timeout=None):
-        try:
-            return self._events.get(timeout=timeout)
-        except queue.Empty as exc:
-            from .exceptions import ReceiveTimeout
-            raise ReceiveTimeout("No secure file-transfer event arrived") from exc
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout)) or timeout < 0
+        ):
+            raise ValueError("timeout must be a finite non-negative number or None")
+
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            if self._closed and self._events.empty():
+                raise ClientClosedError("SecureFileTransfer has been closed")
+            if deadline is None:
+                wait_for = 0.05
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    try:
+                        return self._events.get_nowait()
+                    except queue.Empty as exc:
+                        if self._closed:
+                            raise ClientClosedError(
+                                "SecureFileTransfer has been closed"
+                            ) from exc
+                        raise ReceiveTimeout(
+                            "No secure file-transfer event arrived"
+                        ) from exc
+                wait_for = min(0.05, remaining)
+            try:
+                return self._events.get(timeout=wait_for)
+            except queue.Empty:
+                if deadline is not None and time.monotonic() >= deadline:
+                    if self._closed and self._events.empty():
+                        raise ClientClosedError("SecureFileTransfer has been closed")
+                    raise ReceiveTimeout("No secure file-transfer event arrived")
 
     def progress(self, transfer_id):
         return self._channel.transfer_progress(bytes(transfer_id))

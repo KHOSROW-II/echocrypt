@@ -104,6 +104,21 @@ class DirectPeer:
         transmission = self.client.send_async(bytes(packet), **options)
         return transmission
 
+    def _observe_background_transmission(self, transmission):
+        """Record asynchronous protocol-TX failures without blocking packet RX."""
+        add_callback = getattr(transmission, "add_done_callback", None)
+        if callable(add_callback):
+            def completed(handle):
+                try:
+                    error = handle.exception()
+                except Exception as exc:
+                    error = exc
+                if error is not None:
+                    with self._lock:
+                        self.protocol_error_count += 1
+            add_callback(completed)
+        return transmission
+
     def _activate_protocol(self):
         if not self.handshake.established or self.handshake.session is None:
             return
@@ -132,9 +147,12 @@ class DirectPeer:
                 return
             if response is not None:
                 try:
-                    self._send_packet(
-                        response, handshake_control=True, label="DIRECT HANDSHAKE RETRY"
-                    ).wait()
+                    self._observe_background_transmission(
+                        self._send_packet(
+                            response, handshake_control=True,
+                            label="DIRECT HANDSHAKE RETRY",
+                        )
+                    )
                 except Exception:
                     self.protocol_error_count += 1
             return
@@ -148,9 +166,11 @@ class DirectPeer:
             return
         if response is not None:
             try:
-                self._send_packet(
-                    response, handshake_control=True, label="DIRECT HANDSHAKE"
-                ).wait()
+                self._observe_background_transmission(
+                    self._send_packet(
+                        response, handshake_control=True, label="DIRECT HANDSHAKE"
+                    )
+                )
             except Exception:
                 self.protocol_error_count += 1
                 return
@@ -184,7 +204,9 @@ class DirectPeer:
             incoming = None
         if incoming is not None:
             try:
-                self._send_packet(incoming.ack_packet, label="DIRECT TEXT ACK").wait()
+                self._observe_background_transmission(
+                    self._send_packet(incoming.ack_packet, label="DIRECT TEXT ACK")
+                )
             except Exception:
                 self.protocol_error_count += 1
                 return

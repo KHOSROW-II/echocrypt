@@ -135,6 +135,53 @@ class BroadcastCodecTests(unittest.TestCase):
             self.assertEqual(recovered, frame)
             self.assertEqual(receiver.decode(recovered).kind, BroadcastType.FILE_CHUNK)
 
+    def test_file_frames_decode_sequentially_after_weak_channel_profile_adaptation(self):
+        from core.recovery.engine import AdaptiveSignalRecoveryEngine
+        from core.recovery.profile_generator import default_profile
+
+        rng = np.random.default_rng(20261121)
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "sequential.bin"
+            source.write_bytes(bytes((index * 37 + 11) & 0xFF for index in range(817)))
+            sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=1024)
+            receiver_codec = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=1024)
+            _message_id, frames = sender.encode_file(
+                source, chunk_size=256, symbol_rate=800, hopping=False,
+            )
+            reassembler = BroadcastReassembler(
+                receiver_codec, download_dir=Path(td) / "downloads",
+            )
+            engine = AdaptiveSignalRecoveryEngine(default_profile())
+            completed = None
+
+            for index, frame in enumerate(frames):
+                # Mirror the receiver trace: the manifest arrives at the edge
+                # of the balanced profile, then subsequent file frames use the
+                # resilient profile selected from the first weak-channel frame.
+                offset = -240 if index == 0 else -360
+                waveform = modulate(
+                    frame, sample_rate=48000, symbol_rate=800,
+                    mark=1800 + offset, space=2400 + offset,
+                    gain=0.40, max_payload=1024, fec_mode="conv",
+                )
+                if index == 0:
+                    waveform = (
+                        waveform + rng.normal(0.0, 0.012, len(waveform))
+                    ).astype(np.float32)
+                recovered = demodulate(
+                    waveform, sample_rate=48000, symbol_rate=800,
+                    mark=1800, space=2400, max_payload=1024,
+                    recovery_engine=engine,
+                )
+                self.assertEqual(recovered, frame)
+                delivery = reassembler.feed(recovered)
+                if delivery is not None and delivery.path is not None:
+                    completed = delivery.path
+
+            self.assertEqual(engine.profile.name, "ASRE-RESILIENT")
+            self.assertIsNotNone(completed)
+            self.assertEqual(completed.read_bytes(), source.read_bytes())
+
     def test_public_broadcast_waveform_uses_the_same_public_hopping_schedule(self):
         from core.recovery.engine import AdaptiveSignalRecoveryEngine
         from core.recovery.profile_generator import default_profile

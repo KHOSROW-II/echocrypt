@@ -338,13 +338,43 @@ class DirectPeer:
                         self._pending_ack_id = None
                         self._pending_ack_event = None
 
+    def _receive_queue(self, target, timeout, description):
+        from .exceptions import ReceiveTimeout
+
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout)) or timeout < 0
+        ):
+            raise ValueError("timeout must be a finite non-negative number or None")
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            if self._closed and target.empty():
+                raise DirectPeerError("DirectPeer has been closed")
+            if deadline is None:
+                wait_for = 0.05
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    try:
+                        return target.get_nowait()
+                    except queue.Empty as exc:
+                        if self._closed:
+                            raise DirectPeerError("DirectPeer has been closed") from exc
+                        raise ReceiveTimeout(
+                            f"No Direct {description} arrived"
+                        ) from exc
+                wait_for = min(0.05, remaining)
+            try:
+                return target.get(timeout=wait_for)
+            except queue.Empty:
+                if deadline is not None and time.monotonic() >= deadline:
+                    if self._closed and target.empty():
+                        raise DirectPeerError("DirectPeer has been closed")
+                    raise ReceiveTimeout(f"No Direct {description} arrived")
+
     def receive_text(self, timeout=None) -> DirectMessage:
         self._ensure_open()
-        try:
-            return self._messages.get(timeout=timeout)
-        except queue.Empty as exc:
-            from .exceptions import ReceiveTimeout
-            raise ReceiveTimeout("No Direct text message arrived") from exc
+        return self._receive_queue(self._messages, timeout, "text message")
 
     def send_bytes(self, payload, *, label="DIRECT BYTES"):
         """Send one encrypted application-defined byte payload."""
@@ -362,11 +392,9 @@ class DirectPeer:
 
     def receive_bytes(self, timeout=None) -> bytes:
         self._ensure_open()
-        try:
-            return self._packets.get(timeout=timeout)
-        except queue.Empty as exc:
-            from .exceptions import ReceiveTimeout
-            raise ReceiveTimeout("No Direct application packet arrived") from exc
+        return bytes(self._receive_queue(
+            self._packets, timeout, "application packet"
+        ))
 
     def send_json(self, topic, payload):
         if not isinstance(topic, str) or not topic.strip():

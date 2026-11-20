@@ -633,30 +633,103 @@ def _send_file(channel, cfg, hop_key, symbol_rate, title="Send file", source_ove
     print(f"Estimated ideal airtime at {symbol_rate} baud: {estimate / 60:.1f} minutes")
     print("Real acoustic transfer can take longer. Sender and receiver must select the same symbol rate.")
 
-    _send_frame_wait_ack(channel, manifest_packet, m.transfer_id, 0, 0xFFFFFFFF,
-                         cfg, hop_key, symbol_rate, "FILE MANIFEST", first_fec_mode)
-    resume_packet = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
-                                 max_packet_bytes=128, hop_key=hop_key,
-                                 symbol_rate=symbol_rate)
-    next_missing = channel.verify_resume(resume_packet, m.transfer_id, m.total_chunks)
-    if next_missing >= m.total_chunks:
-        print("Receiver already has every chunk; no DATA retransmission is needed.")
-    elif next_missing:
-        print(f"Resuming at chunk {next_missing + 1}/{m.total_chunks}; earlier chunks are already stored by receiver.")
-    else:
-        print("Receiver is ready for the first chunk.")
+    def exchange_manifest():
+        _send_frame_wait_ack(
+            channel, manifest_packet, m.transfer_id, 0, 0xFFFFFFFF,
+            cfg, hop_key, symbol_rate, "FILE MANIFEST", first_fec_mode,
+        )
+        resume_packet = _receive_auto(
+            cfg, start_timeout=cfg.ack_timeout_seconds,
+            max_packet_bytes=128, hop_key=hop_key, symbol_rate=symbol_rate,
+        )
+        return channel.verify_resume(
+            resume_packet, m.transfer_id, m.total_chunks
+        )
 
-    try:
-        for index in range(next_missing, m.total_chunks):
+    def send_chunks(start_index):
+        for index in range(start_index, m.total_chunks):
             packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
-            _send_frame_wait_ack(channel, packet, m.transfer_id, 1, index,
-                                 cfg, hop_key, symbol_rate, f"FILE CHUNK {index + 1}/{m.total_chunks}",
-                                 first_fec_mode)
+            _send_frame_wait_ack(
+                channel, packet, m.transfer_id, 1, index,
+                cfg, hop_key, symbol_rate,
+                f"FILE CHUNK {index + 1}/{m.total_chunks}", first_fec_mode,
+            )
             completed = index + 1
             if completed == m.total_chunks or completed % 10 == 0:
                 print(f"Progress: {completed}/{m.total_chunks} chunks acknowledged.")
-        channel.complete_outgoing(outgoing)
-        print("\nAll file chunks were acknowledged by the receiver.")
+
+    try:
+        next_missing = exchange_manifest()
+        if next_missing >= m.total_chunks:
+            print("Receiver already has every chunk; awaiting authenticated SHA-256 completion.")
+        elif next_missing:
+            print(f"Resuming at chunk {next_missing + 1}/{m.total_chunks}; earlier chunks are already stored by receiver.")
+        else:
+            print("Receiver is ready for the first chunk.")
+
+        completion_retries = 0
+        while True:
+            if next_missing < m.total_chunks:
+                send_chunks(next_missing)
+
+            # The final per-chunk ACK proves durable chunk storage only. The
+            # receiver's authenticated completion packet proves that the
+            # complete file passed SHA-256 and was committed to its download path.
+            while True:
+                try:
+                    completion_packet = _receive_auto(
+                        cfg, start_timeout=cfg.ack_timeout_seconds,
+                        max_packet_bytes=128, hop_key=hop_key,
+                        symbol_rate=symbol_rate,
+                    )
+                except TimeoutError:
+                    if completion_retries >= cfg.max_retries:
+                        raise TimeoutError(
+                            "All chunks were acknowledged, but the receiver's "
+                            "authenticated SHA-256 completion notice was not received"
+                        )
+                    completion_retries += 1
+                    next_missing = exchange_manifest()
+                    break
+
+                try:
+                    received_id, received_digest = channel.receive_completion_packet(
+                        completion_packet
+                    )
+                except Exception:
+                    try:
+                        requested_id, requested_indexes = channel.receive_resend_request(
+                            completion_packet
+                        )
+                    except Exception:
+                        # Ignore unrelated or unauthenticated packets while
+                        # waiting for a valid completion or selective repair.
+                        continue
+                    if requested_id != m.transfer_id:
+                        continue
+                    if any(index >= m.total_chunks for index in requested_indexes):
+                        raise BinaryTransferError(
+                            "Peer requested a file chunk outside this transfer"
+                        )
+                    for index in requested_indexes:
+                        repair_packet = channel.chunk_packet(
+                            outgoing, index, cfg.max_payload
+                        )
+                        _send_frame_wait_ack(
+                            channel, repair_packet, m.transfer_id, 1, index,
+                            cfg, hop_key, symbol_rate,
+                            f"FILE REPAIR CHUNK {index + 1}/{m.total_chunks}",
+                            first_fec_mode,
+                        )
+                    continue
+
+                if received_id != m.transfer_id or received_digest != m.sha256:
+                    raise BinaryTransferError(
+                        "Receiver's authenticated completion does not match this file"
+                    )
+                channel.complete_outgoing(outgoing)
+                print("\nFILE DELIVERED · receiver SHA-256 verified.")
+                return m
     except Exception:
         print("Transfer interrupted. Keep this transfer ID for resuming:", m.transfer_id_hex)
         raise

@@ -1554,7 +1554,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                 # Retransmit with the PHY profile declared by the cached
                 # fragment descriptor, not blindly with the local default.
                 cached = codec.decode(frame)
-                retry_rate = int(cached.symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
+                retry_rate = int(cached.symbol_rate or _broadcast_symbol_rates(engine.config)[0])
                 if cached.fec_id != FEC_ID_CONVOLUTIONAL:
                     raise ValueError(f"Unsupported cached Broadcast FEC id: {cached.fec_id}")
                 resend_jobs.append((bytes(frame), retry_rate, "conv"))
@@ -1755,7 +1755,7 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                              missing_chunks=len(missing),
                              requested_indexes=",".join(str(int(x)) for x in missing[:64]))
                 maximum = min(96, max(1, (codec.max_fragment_payload - RETRY_REQUEST_V2.size) // 2))
-                retry_rate = _reliable_chat_symbol_rate_plan(engine.config)[0]
+                retry_rate = _broadcast_symbol_rates(engine.config)[0]
                 for batch_index in range(0, len(missing), maximum):
                     if stop_event.is_set():
                         break

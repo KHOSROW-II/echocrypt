@@ -890,9 +890,13 @@ class BroadcastReassembler:
         if frame.kind == BroadcastType.TEXT:
             preview = self._text_preview(partial)
             if not partial.complete:
-                return BroadcastDelivery(frame.kind, frame.sender_id, frame.message_id,
-                                         b"", False, partial.missing, preview=preview,
-                                         duplicate=duplicate, total_fragments=partial.count)
+                missing = (partial.next_missing_index,)
+                return BroadcastDelivery(
+                    frame.kind, frame.sender_id, frame.message_id,
+                    b"", False, missing, preview=preview,
+                    duplicate=duplicate, total_fragments=partial.count,
+                    missing_count=partial.missing_count,
+                )
             payload = b"".join(partial.fragments[i] for i in range(partial.count))
             try:
                 payload.decode("utf-8", errors="strict")
@@ -906,11 +910,15 @@ class BroadcastReassembler:
 
         if frame.kind == BroadcastType.FILE_CHUNK:
             if not partial.complete:
-                return BroadcastDelivery(frame.kind, frame.sender_id, frame.message_id,
-                                         b"", False, partial.missing, duplicate=duplicate,
-                                         total_fragments=partial.count,
-                                         media_kind=partial.media_kind,
-                                         codec_id=partial.codec_id)
+                missing = (partial.next_missing_index,)
+                return BroadcastDelivery(
+                    frame.kind, frame.sender_id, frame.message_id,
+                    b"", False, missing, duplicate=duplicate,
+                    total_fragments=partial.count,
+                    media_kind=partial.media_kind,
+                    codec_id=partial.codec_id,
+                    missing_count=partial.missing_count,
+                )
             completed = self._complete_file_if_ready(frame.sender_id, frame.message_id, now)
             if completed is not None:
                 return completed
@@ -922,11 +930,15 @@ class BroadcastReassembler:
 
         if frame.kind in {BroadcastType.VOICE, BroadcastType.VOICE_FRAME}:
             if not partial.complete:
-                return BroadcastDelivery(frame.kind, frame.sender_id, frame.message_id,
-                                         b"", False, partial.missing, duplicate=duplicate,
-                                         total_fragments=partial.count)
+                missing = (partial.next_missing_index,)
+                return BroadcastDelivery(
+                    frame.kind, frame.sender_id, frame.message_id,
+                    b"", False, missing, duplicate=duplicate,
+                    total_fragments=partial.count,
+                    missing_count=partial.missing_count,
+                )
             payload = b"".join(partial.fragments[i] for i in range(partial.count))
-            self._partials.pop(key, None)
+            self._remove_partial(key)
             self._remember_completed(key, now)
             return BroadcastDelivery(frame.kind, frame.sender_id, frame.message_id,
                                      payload, True, total_fragments=partial.count)

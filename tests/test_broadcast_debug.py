@@ -7,6 +7,7 @@ from interface.communication import (
     _broadcast_packet_router, _broadcast_send_frames, _broadcast_symbol_rates,
     _supported_symbol_rates, BROADCAST_INTER_FRAME_GAP_SECONDS,
     BROADCAST_FILE_MANIFEST_COPIES, BROADCAST_FILE_CHUNK_SIZE,
+    BROADCAST_RETRY_IDLE_GUARD_SECONDS, _broadcast_retry_idle_state,
 )
 
 
@@ -108,7 +109,28 @@ class BroadcastDebugTests(unittest.TestCase):
     def test_broadcast_file_manifest_is_repeated_and_frames_have_a_guard_gap(self):
         self.assertEqual(BROADCAST_FILE_MANIFEST_COPIES, 3)
         self.assertEqual(BROADCAST_FILE_CHUNK_SIZE, 256)
-        self.assertGreater(BROADCAST_INTER_FRAME_GAP_SECONDS, 0.30)
+        self.assertEqual(BROADCAST_INTER_FRAME_GAP_SECONDS, 1.25)
+        self.assertEqual(BROADCAST_RETRY_IDLE_GUARD_SECONDS, 3.0)
+
+    def test_automatic_broadcast_retry_waits_for_sustained_idle(self):
+        from types import SimpleNamespace
+
+        listener = SimpleNamespace(busy=False)
+        idle_since, ready = _broadcast_retry_idle_state(listener, None, 10.0)
+        self.assertEqual(idle_since, 10.0)
+        self.assertFalse(ready)
+
+        # A short gap between chunks is not enough to inject a retry request.
+        idle_since, ready = _broadcast_retry_idle_state(listener, idle_since, 11.25)
+        self.assertFalse(ready)
+        idle_since, ready = _broadcast_retry_idle_state(listener, idle_since, 13.0)
+        self.assertTrue(ready)
+
+        # Any incoming burst resets the idle timer.
+        listener.busy = True
+        idle_since, ready = _broadcast_retry_idle_state(listener, idle_since, 14.0)
+        self.assertIsNone(idle_since)
+        self.assertFalse(ready)
 
     def test_broadcast_router_logs_codec_rejections(self):
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

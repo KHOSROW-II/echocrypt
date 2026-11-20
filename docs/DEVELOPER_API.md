@@ -221,6 +221,11 @@ validated acoustic packets. Retry responses are transmitted automatically.
 Call \`request_missing()\` periodically to ask for missing fragments. A
 successful local Broadcast transmission is not proof that any peer received it.
 
+The SDK's default Broadcast file limit is 16 MiB. The receiver buffers incomplete
+file fragments in memory until the final digest check, so `max_file_size` must
+not exceed `max_partial_bytes`. Increase both limits deliberately if an
+application accepts the associated memory cost.
+
 For interoperability, all participants must support the selected symbol rate
 in their \`AcousticConfig.symbol_rates\`. When using \`encode_file()\` separately
 from \`send_file()\`, pass the same \`symbol_rate\` to encoding and transmission.

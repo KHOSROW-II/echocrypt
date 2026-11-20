@@ -812,6 +812,7 @@ class ContinuousAudioListener:
                 if ratio < self.tone_ratio_threshold:
                     noise_levels.append(rms)
                     if len(noise_levels) >= 6:
+                        baseline = float(np.percentile(noise_levels, 35))
                         # Do not cap the measured room floor at -48 dBFS.
                         # On louder desktops this made ambient RMS look like
                         # modem energy whenever the spectral detector dipped.
@@ -842,7 +843,7 @@ class ContinuousAudioListener:
             # windows. Once a burst is active, RMS provides a hysteresis path.
             # The adaptive room floor prevents ordinary ambient noise from
             # holding the burst open indefinitely.
-            active_rms_floor = max(rms_floor * 0.90, 0.0015)
+            active_rms_floor = max(rms_floor * 0.55, 0.0008)
             signal = (
                 ratio >= self.tone_ratio_threshold
                 or rms >= active_rms_floor

@@ -11,3 +11,11 @@ class HeaderCRCError(ValueError):
         super().__init__(message)
         self.sync_score = float(sync_score)
 
+
+class FrameCRCError(ValueError):
+    """Raised when a protected header parses but the decoded body fails CRC."""
+
+    def __init__(self, message, *, sync_score=0.0):
+        super().__init__(message)
+        self.sync_score = float(sync_score)
+

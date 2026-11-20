@@ -13,7 +13,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from core.recovery.channel_analyzer import analyze_channel
 from core.recovery.engine import AdaptiveSignalRecoveryEngine
-from core.recovery.errors import HeaderCRCError, PreambleNotFoundError
+from core.recovery.errors import FrameCRCError, HeaderCRCError, PreambleNotFoundError
 from core.recovery.frequency_recovery import estimate_frequency_offset
 from core.recovery.profile_generator import default_profile
 from core.recovery.interleaver import interleave, deinterleave
@@ -450,6 +450,7 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
     failures = []
     header_crc_failure_scores = []
     strong_header_crc_failure_scores = []
+    strong_frame_crc_failure_scores = []
     protected_header_valid = False
     # A false preamble candidate must not hide the real one. We validate the
     # duplicated protected header and final frame CRC for each bounded
@@ -625,7 +626,10 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
             if expected_crc != received_crc:
                 report("CRC", "Frame integrity check failed",
                        expected=f"{expected_crc:08x}", received=f"{received_crc:08x}")
-                raise ValueError("CRC mismatch: soft FEC decode did not recover a valid frame")
+                raise FrameCRCError(
+                    "CRC mismatch: soft FEC decode did not recover a valid frame",
+                    sync_score=sync_score,
+                )
             report("CRC", "Frame integrity verified", crc=f"{received_crc:08x}")
             report("PACKET", "Modem frame delivered to protocol layer", payload_bytes=len(payload),
                    payload_type=(payload[:4].decode("ascii", errors="replace") if payload else "empty"))
@@ -651,6 +655,8 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                 header_crc_failure_scores.append(float(sync_score))
                 if sync_score >= 0.50:
                     strong_header_crc_failure_scores.append(float(sync_score))
+            if isinstance(exc, FrameCRCError) and sync_score >= 0.50:
+                strong_frame_crc_failure_scores.append(float(sync_score))
             failures.append(f"{candidate_number}:{wire_label}@{preamble_start} score={sync_score:.3f} {type(exc).__name__}: {exc}")
             report("SYNC_CANDIDATE", "Preamble candidate failed validation; trying another candidate",
                    candidate=f"{candidate_number}/{len(candidates)}", format=wire_label,
@@ -661,11 +667,19 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
     # A strong preamble followed by a protected-header CRC error is evidence
     # of a real signal. Lower-ranked false candidates may fail as incomplete
     # or wrong-version frames; they must not erase the stronger diagnosis.
-    if strong_header_crc_failure_scores:
+    strongest_header_score = max(strong_header_crc_failure_scores, default=0.0)
+    strongest_frame_score = max(strong_frame_crc_failure_scores, default=0.0)
+    if strongest_frame_score > strongest_header_score:
+        raise FrameCRCError(
+            "Strong preamble candidate(s) decoded a protected header but failed frame CRC; "
+            f"best_sync_score={strongest_frame_score:.3f}: {detail}",
+            sync_score=strongest_frame_score,
+        )
+    if strongest_header_score:
         raise HeaderCRCError(
             "Strong preamble candidate(s) failed the protected header CRC; "
-            f"best_sync_score={max(strong_header_crc_failure_scores):.3f}: {detail}",
-            sync_score=max(strong_header_crc_failure_scores),
+            f"best_sync_score={strongest_header_score:.3f}: {detail}",
+            sync_score=strongest_header_score,
         )
     if candidates and header_crc_failure_scores and len(header_crc_failure_scores) == len(failures):
         raise HeaderCRCError(

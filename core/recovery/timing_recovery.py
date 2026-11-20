@@ -7,8 +7,9 @@ import numpy as np
 # Separate audio clocks commonly differ by tens to hundreds of ppm; jumps
 # of 1000 ppm skipped the useful region in real captures. Try fine corrections
 # first, then widen the bounded search only when CRC validation still fails.
-_CLOCK_PPM_CANDIDATES = (0, 50, -50, 100, -100, 200, -200, 300, -300,
-                         500, -500, 1000, -1000, 2000, -2000, 5000, -5000)
+# Put the 0.2% edge case within the first bounded recovery window.
+_CLOCK_PPM_CANDIDATES = (0, 50, -50, 100, -100, 200, -200, 2000, -2000,
+                         300, -300, 500, -500, 1000, -1000, 5000, -5000)
 CLOCK_RATIO_CANDIDATES = tuple(1.0 + ppm / 1_000_000.0
                                for ppm in _CLOCK_PPM_CANDIDATES)
 

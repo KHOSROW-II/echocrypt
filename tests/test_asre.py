@@ -245,6 +245,27 @@ class ASRECodecTests(unittest.TestCase):
             engine.recover(np.zeros(48000, dtype=np.float32), reject_header)
         self.assertEqual(engine.last_attempt_count, 11)
 
+    def test_strong_frame_crc_failure_recovers_a_two_thousand_ppm_clock_offset(self):
+        from types import SimpleNamespace
+        from core.recovery.errors import FrameCRCError
+
+        engine = AdaptiveSignalRecoveryEngine(default_profile())
+        attempted = []
+
+        def recover_after_clock_correction(_samples, *, sample_clock_ratio=1.0, **_kwargs):
+            attempted.append(sample_clock_ratio)
+            if abs(sample_clock_ratio - 1.002) > 1e-9:
+                raise FrameCRCError("synthetic frame CRC failure", sync_score=0.91)
+            return b"recovered-after-drift", SimpleNamespace(channel_grade="FAIR")
+
+        payload, _metrics = engine.recover(
+            np.zeros(48000, dtype=np.float32),
+            recover_after_clock_correction,
+        )
+        self.assertEqual(payload, b"recovered-after-drift")
+        self.assertEqual(engine.last_attempt_count, 8)
+        self.assertIn(1.002, attempted)
+
     def test_asre_reports_channel_metrics(self):
         payload = b"channel telemetry"
         waveform = modulate(payload)

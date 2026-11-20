@@ -6,7 +6,7 @@ import struct
 
 from .profile_generator import default_profile, profile_for_grade
 from .timing_recovery import resample_clock
-from .errors import HeaderCRCError, PreambleNotFoundError
+from .errors import FrameCRCError, HeaderCRCError, PreambleNotFoundError
 
 
 class AdaptiveSignalRecoveryEngine:
@@ -31,7 +31,7 @@ class AdaptiveSignalRecoveryEngine:
             profiles.append(balanced)
 
         last_error = None
-        strongest_header_error = None
+        strongest_sync_error = None
         started = time.monotonic()
         attempts = 0
         seen_ratios = set()
@@ -48,8 +48,8 @@ class AdaptiveSignalRecoveryEngine:
                 if isinstance(last_error, PreambleNotFoundError) and strongest_header_error is None:
                     break
                 retry_budget = (
-                    11 if strongest_header_error is not None
-                    and strongest_header_error.sync_score >= 0.50 else 5
+                    11 if strongest_sync_error is not None
+                    and strongest_sync_error.sync_score >= 0.50 else 5
                 )
                 if attempts >= retry_budget:
                     break
@@ -85,10 +85,10 @@ class AdaptiveSignalRecoveryEngine:
                     return payload, metrics
                 except (ValueError, struct.error) as exc:
                     last_error = exc
-                    if isinstance(exc, HeaderCRCError):
-                        if (strongest_header_error is None
-                                or exc.sync_score > strongest_header_error.sync_score):
-                            strongest_header_error = exc
+                    if isinstance(exc, (HeaderCRCError, FrameCRCError)):
+                        if (strongest_sync_error is None
+                                or exc.sync_score > strongest_sync_error.sync_score):
+                            strongest_sync_error = exc
                     if on_debug:
                         try:
                             on_debug("RECOVERY", "Candidate failed frame validation",
@@ -103,28 +103,29 @@ class AdaptiveSignalRecoveryEngine:
                         # to manufacture a missing preamble.
                         break
                     retry_budget = (
-                        11 if strongest_header_error is not None
-                        and strongest_header_error.sync_score >= 0.50 else 5
+                        11 if strongest_sync_error is not None
+                        and strongest_sync_error.sync_score >= 0.50 else 5
                     )
                     if attempts >= retry_budget:
                         break
 
             retry_budget = (
-                11 if strongest_header_error is not None
-                and strongest_header_error.sync_score >= 0.50 else 5
+                11 if strongest_sync_error is not None
+                and strongest_sync_error.sync_score >= 0.50 else 5
             )
             if attempts >= retry_budget or (
                     isinstance(last_error, PreambleNotFoundError)
-                    and strongest_header_error is None):
+                    and strongest_sync_error is None):
                 break
 
         self.last_attempt_count = attempts
-        if strongest_header_error is not None:
-            raise HeaderCRCError(
+        if strongest_sync_error is not None:
+            error_type = type(strongest_sync_error)
+            raise error_type(
                 f"ASRE exhausted {attempts} bounded clock candidates after a strong "
-                f"preamble/header CRC failure: {strongest_header_error}",
-                sync_score=strongest_header_error.sync_score,
-            ) from strongest_header_error
+                f"preamble/frame validation failure: {strongest_sync_error}",
+                sync_score=strongest_sync_error.sync_score,
+            ) from strongest_sync_error
         if last_error is None:
             raise ValueError("ASRE has no recovery candidates")
         raise ValueError(

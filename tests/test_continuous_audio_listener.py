@@ -306,6 +306,87 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             finally:
                 listener.stop()
 
+    def test_listener_splits_broadcast_chunks_across_high_rms_non_modem_gap(self):
+        from core.audio import _tone_band_ratio
+        from core.session_engine import BROADCAST_INTER_FRAME_GAP_SECONDS
+
+        rate = 48000
+        activity_frequencies = (1200, 1500, 1800, 2100, 2400, 2700, 3000)
+        payloads = (
+            bytes((index * 17 + 3) & 0xFF for index in range(350)),
+            bytes((index * 29 + 11) & 0xFF for index in range(350)),
+        )
+        waveforms = [
+            modulate(
+                payload, rate, 800, mark=1800, space=2400, gain=0.40,
+                max_payload=1024, fec_mode="conv", hop_key=None,
+            )
+            for payload in payloads
+        ]
+
+        # Reproduce the real failure: the modem tones disappear in the
+        # inter-frame guard interval, but strong out-of-band room noise keeps
+        # broadband RMS above the legacy 0.010 hysteresis floor.
+        gap_count = int(rate * BROADCAST_INTER_FRAME_GAP_SECONDS)
+        gap_time = np.arange(gap_count, dtype=np.float64) / rate
+        ambient_gap = (0.032 * np.sin(2 * np.pi * 500 * gap_time)).astype(np.float32)
+        self.assertGreater(float(np.sqrt(np.mean(ambient_gap ** 2))), 0.010)
+        self.assertLess(
+            _tone_band_ratio(ambient_gap, rate, activity_frequencies),
+            0.10,
+        )
+
+        class NoisyGapStream:
+            def __init__(self, *, callback, blocksize, **_kwargs):
+                self.callback = callback
+                self.blocksize = blocksize
+
+            def start(self):
+                samples = np.concatenate((
+                    np.zeros(rate // 5, dtype=np.float32),
+                    waveforms[0],
+                    ambient_gap,
+                    waveforms[1],
+                    np.zeros(rate // 2, dtype=np.float32),
+                ))
+                padded = ((len(samples) + self.blocksize - 1) // self.blocksize) * self.blocksize
+                samples = np.pad(samples, (0, padded - len(samples)))
+                for offset in range(0, len(samples), self.blocksize):
+                    block = samples[offset:offset + self.blocksize]
+                    self.callback(block.reshape(-1, 1), self.blocksize, None, None)
+
+            def stop(self):
+                return None
+
+            def close(self):
+                return None
+
+        class NoisyGapBackend:
+            def InputStream(self, **kwargs):
+                return NoisyGapStream(**kwargs)
+
+        listener = ContinuousAudioListener(
+            rate, blocksize=1024,
+            activity_frequencies=activity_frequencies,
+            quiet_seconds=0.30, pre_roll_seconds=0.65, max_frame_seconds=20,
+        )
+        with patch("core.audio._sounddevice", return_value=NoisyGapBackend()):
+            listener.start()
+            try:
+                first = listener.get_frame(timeout=4.0)
+                second = listener.get_frame(timeout=4.0)
+                self.assertEqual(
+                    demodulate(first, rate, 800, 1800, 2400, 1024),
+                    payloads[0],
+                )
+                self.assertEqual(
+                    demodulate(second, rate, 800, 1800, 2400, 1024),
+                    payloads[1],
+                )
+                self.assertEqual(listener.snapshot()["captured_frames"], 2)
+            finally:
+                listener.stop()
+
     def test_stop_joins_collector_and_restart_never_overlaps_workers(self):
         listener = ContinuousAudioListener(
             48000,

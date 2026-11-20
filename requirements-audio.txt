@@ -1,0 +1,2 @@
+# Optional hardware audio I/O. Standby mode installs this only when needed.
+sounddevice>=0.4.6

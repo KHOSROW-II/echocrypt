@@ -1,0 +1,24 @@
+[audio]
+sample_rate = 48000
+input_device = "default"
+output_device = "default"
+record_seconds = 30
+gain = 0.35
+
+[modem]
+symbol_rate = 200
+fast_symbol_rate = 800
+voice_symbol_rate = 1200
+emergency_symbol_rate = 1500
+mark_hz = 1800
+space_hz = 2400
+
+[protocol]
+max_payload = 1024
+ack_timeout_seconds = 15
+max_retries = 3
+listen_timeout_seconds = 120
+retry_listen_seconds = 18
+
+[debug]
+enabled = false

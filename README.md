@@ -328,6 +328,16 @@ logs/acoustic-debug.log
 
 Debug logging does not intentionally record plaintext message bodies, private keys, or session keys.
 
+For physical-layer troubleshooting, raw microphone bursts can be saved as PCM16 WAV files. This is **off by default** and requires acoustic debug logging to be enabled:
+
+```bash
+ECHOCrypt_CAPTURE_RX_WAV=1
+ECHOCrypt_CAPTURE_RX_WAV_LIMIT=20
+ECHOCrypt_CAPTURE_RX_WAV_DIR=logs/acoustic-captures
+```
+
+Set these variables before launching ECHOCRYPT. The capture limit defaults to 20 files and is capped at 100. WAV files contain raw microphone audio, so they may include nearby speech or other audible material; review them before sharing and delete them when no longer needed.
+
 ---
 
 ## Development and Testing

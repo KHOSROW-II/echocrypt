@@ -73,6 +73,8 @@ It requires no:
 
 Broadcast traffic is intentionally public. Its compatibility transform and frequency schedule are not secret. Anyone implementing the protocol can potentially decode, inspect, or forge Broadcast traffic.
 
+The current Broadcast PHY uses a fixed-frequency 800-baud profile without hopping. Both endpoints should run the same current build; receivers no longer spend decode time probing older Broadcast baud-rate profiles. File manifests are repeated and missing chunks can be selectively requested, but Broadcast still has no mandatory delivery acknowledgement.
+
 Do not use Broadcast for private or sensitive information.
 
 Receivers can selectively request missing fragments from the sender's bounded retransmission cache.

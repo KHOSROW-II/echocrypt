@@ -245,6 +245,67 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             finally:
                 listener.stop()
 
+    def test_listener_splits_fixed_broadcast_frames_after_guard_gap(self):
+        from core.session_engine import BROADCAST_INTER_FRAME_GAP_SECONDS
+
+        rate = 48000
+        payloads = (b"broadcast-file-frame-one", b"broadcast-file-frame-two")
+        waveforms = [
+            modulate(
+                payload, rate, 800, mark=1800, space=2400, gain=0.40,
+                max_payload=1024, fec_mode="conv", hop_key=None,
+            )
+            for payload in payloads
+        ]
+
+        class TwoFrameStream:
+            def __init__(self, *, callback, blocksize, **_kwargs):
+                self.callback = callback
+                self.blocksize = blocksize
+
+            def start(self):
+                samples = np.concatenate((
+                    np.zeros(rate // 5, dtype=np.float32),
+                    waveforms[0],
+                    np.zeros(int(rate * BROADCAST_INTER_FRAME_GAP_SECONDS), dtype=np.float32),
+                    waveforms[1],
+                    np.zeros(rate // 2, dtype=np.float32),
+                ))
+                padded = ((len(samples) + self.blocksize - 1) // self.blocksize) * self.blocksize
+                samples = np.pad(samples, (0, padded - len(samples)))
+                for offset in range(0, len(samples), self.blocksize):
+                    block = samples[offset:offset + self.blocksize]
+                    self.callback(block.reshape(-1, 1), self.blocksize, None, None)
+
+            def stop(self):
+                return None
+
+            def close(self):
+                return None
+
+        class TwoFrameBackend:
+            def InputStream(self, **kwargs):
+                return TwoFrameStream(**kwargs)
+
+        listener = ContinuousAudioListener(
+            rate, blocksize=1024,
+            activity_frequencies=(1200, 1500, 1800, 2100, 2400, 2700, 3000),
+            quiet_seconds=0.30, pre_roll_seconds=0.65, max_frame_seconds=20,
+        )
+        with patch("core.audio._sounddevice", return_value=TwoFrameBackend()):
+            listener.start()
+            try:
+                first = listener.get_frame(timeout=4.0)
+                second = listener.get_frame(timeout=4.0)
+                # The listener's responsibility here is burst separation.
+                # PHY integrity is covered independently by modem round-trip
+                # tests; inspect lengths so a merged pair cannot pass as two.
+                self.assertLess(len(first), len(waveforms[0]) + int(rate * 0.60))
+                self.assertLess(len(second), len(waveforms[1]) + int(rate * 1.05))
+                self.assertEqual(listener.snapshot()["captured_frames"], 2)
+            finally:
+                listener.stop()
+
     def test_continuous_listener_emits_debug_for_listening_detection_capture_and_resume(self):
         events = []
         listener = ContinuousAudioListener(

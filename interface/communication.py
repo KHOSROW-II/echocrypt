@@ -22,10 +22,10 @@ from core.codec2_backend import Codec2Unavailable
 from core.config import load
 from core.debug import for_config
 from core.reliability import ACK_PACKET_SIZE, ReliableTextChannel
-from core.session_engine import AudioSessionEngine
+from core.session_engine import AudioSessionEngine, BROADCAST_INTER_FRAME_GAP_SECONDS
 from core.broadcast import (BroadcastCodec, BroadcastType, BroadcastReassembler,
                             BroadcastRetransmitCache, BroadcastError,
-                            BROADCAST_HOP_KEY, MEDIA_VOICE,
+                            MEDIA_VOICE,
                             VOICE_CODEC2_1300, FEC_ID_CONVOLUTIONAL,
                             RETRY_NEED_HEADER, RETRY_NEED_DATA,
                             RETRY_REQUEST_V2)
@@ -101,6 +101,8 @@ SESSION_MENU_ITEMS = [
     ("close", "Close authenticated session"),
 ]
 
+
+BROADCAST_FILE_MANIFEST_COPIES = 3
 
 RETRY_KEY_RESULT = "__ECHOCRYPT_RETRY__"
 
@@ -1228,8 +1230,23 @@ def _supported_symbol_rates(cfg):
 
 
 def _broadcast_symbol_rates(cfg):
-    """Try the fast fixed-frequency Broadcast profile before legacy rates."""
-    return tuple(dict.fromkeys((int(cfg.fast_symbol_rate), *_supported_symbol_rates(cfg))))
+    """Return the single fixed-rate profile used by current Broadcast senders.
+
+    Trying unrelated legacy baud rates after a failed 800-baud frame needlessly
+    stalls the single decoder thread. All current Broadcast transmissions use
+    this fixed-rate profile; older Broadcast PHY profiles require an older
+    compatible application build.
+    """
+    supported = _supported_symbol_rates(cfg)
+    if not supported:
+        raise ValueError("No supported modem rate is available for Broadcast")
+    try:
+        preferred = int(cfg.fast_symbol_rate)
+    except (AttributeError, TypeError, ValueError):
+        preferred = None
+    if preferred in supported:
+        return (preferred,)
+    return (supported[0],)
 
 
 def _file_symbol_rate_plan(cfg):
@@ -1537,7 +1554,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                 # Retransmit with the PHY profile declared by the cached
                 # fragment descriptor, not blindly with the local default.
                 cached = codec.decode(frame)
-                retry_rate = int(cached.symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
+                retry_rate = int(cached.symbol_rate or _broadcast_symbol_rates(engine.config)[0])
                 if cached.fec_id != FEC_ID_CONVOLUTIONAL:
                     raise ValueError(f"Unsupported cached Broadcast FEC id: {cached.fec_id}")
                 resend_jobs.append((bytes(frame), retry_rate, "conv"))
@@ -1738,7 +1755,7 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                              missing_chunks=len(missing),
                              requested_indexes=",".join(str(int(x)) for x in missing[:64]))
                 maximum = min(96, max(1, (codec.max_fragment_payload - RETRY_REQUEST_V2.size) // 2))
-                retry_rate = _reliable_chat_symbol_rate_plan(engine.config)[0]
+                retry_rate = _broadcast_symbol_rates(engine.config)[0]
                 for batch_index in range(0, len(missing), maximum):
                     if stop_event.is_set():
                         break
@@ -2051,12 +2068,13 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     def start_engine():
         engine = AudioSessionEngine(
             cfg,
-            hop_key=BROADCAST_HOP_KEY if broadcast_mode else handshake.session.hopping_key,
+            hop_key=None if broadcast_mode else handshake.session.hopping_key,
             symbol_rates=(
                 _broadcast_symbol_rates(cfg) if broadcast_mode
                 else _supported_symbol_rates(cfg)
             ),
             max_packet_bytes=cfg.max_payload,
+            inter_frame_gap=(BROADCAST_INTER_FRAME_GAP_SECONDS if broadcast_mode else 0.20),
             on_packet=packet_handler,
             on_event=on_engine_event,
             channel_access="broadcast" if broadcast_mode else True,
@@ -2245,7 +2263,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 mid = codec.decode(frames[0]).message_id
                 remember_broadcast_event(mid, cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
-                broadcast_rate = int(getattr(cfg, "fast_symbol_rate", 800))
+                broadcast_rate = _broadcast_symbol_rates(cfg)[0]
                 broadcast_copies = 1
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text encoded and cached",
@@ -2307,7 +2325,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 _check_cancelled(cancel_event)
                 engine = engine_ref["engine"]
                 voice_transfer = description == "voice note"
-                broadcast_rate = int(getattr(engine.config, "fast_symbol_rate", 800))
+                broadcast_rate = _broadcast_symbol_rates(engine.config)[0]
                 # Public Broadcast uses a fast fixed-frequency profile. Chunk
                 # CRC, file SHA-256 validation and selective retries provide
                 # integrity/recovery; public FHSS would add no secrecy.
@@ -2327,14 +2345,14 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     trace.emit("BROADCAST_TX", "Broadcast file encoded and resend cache populated",
                                message_id=mid.hex(), filename=path.name,
                                file_bytes=size_bytes, total_frames=len(frames),
-                               chunk_frames=len(chunk_frames), manifest_frames=1,
+                               chunk_frames=len(chunk_frames), manifest_frames=1, manifest_copies=BROADCAST_FILE_MANIFEST_COPIES,
                                symbol_rate=broadcast_rate)
                 manifest_label = "BROADCAST VOICE NOTE MANIFEST" if voice_transfer else "BROADCAST FILE MANIFEST"
                 chunks_label = "BROADCAST VOICE NOTE" if voice_transfer else f"BROADCAST FILE {path.name}"
                 try:
-                    report_tx(manifest_label, 0, 1, "frames")
+                    report_tx(manifest_label, 0, BROADCAST_FILE_MANIFEST_COPIES, "frames")
                     _broadcast_send_frames(engine_ref["engine"], frames[:1],
-                        manifest_label, copies=1, symbol_rate=broadcast_rate,
+                        manifest_label, copies=BROADCAST_FILE_MANIFEST_COPIES, symbol_rate=broadcast_rate,
                         progress_callback=lambda current, total, unit: report_tx(manifest_label, current, total, unit),
                         cancel_event=cancel_event)
                     if frames[1:]:

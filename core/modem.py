@@ -510,10 +510,29 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                                              for i in range(header_symbol_count)]
                     header = _header_v2_decode(repeated_header_llrs)
                 except HeaderCRCError as first_error:
-                    # A weak cross-correlation is usually a false sync. Avoid
-                    # spending nine recovery trials on low-confidence candidates.
-                    if sync_score < 0.50:
+                    # Weak preamble correlations are usually false syncs. One
+                    # important exception is a candidate whose carrier estimate
+                    # is pinned to the configured search boundary: real acoustic
+                    # captures can have a weak sync score and still be valid.
+                    # Give only those boundary hits a small, CRC-gated header
+                    # timing/balance recovery budget; do not widen carrier search.
+                    frequency_limit = int(profile.frequency_search_limit_hz)
+                    frequency_step = int(profile.frequency_search_step_hz)
+                    boundary_hit = (
+                        frequency_limit > 0
+                        and abs(frequency_offset) >= max(0, frequency_limit - frequency_step)
+                    )
+                    weak_boundary_recovery = sync_score < 0.50 and boundary_hit
+                    if sync_score < 0.50 and not weak_boundary_recovery:
                         raise
+                    if weak_boundary_recovery:
+                        report(
+                            "HEADER_RECOVERY",
+                            "Trying bounded header recovery for a weak sync at the carrier-search boundary",
+                            sync_score=f"{sync_score:.4f}",
+                            frequency_offset_hz=frequency_offset,
+                            frequency_limit_hz=frequency_limit,
+                        )
                     # The sync is known data, so estimate the relative gain of
                     # both BFSK tones from it. Some speaker/microphone paths
                     # attenuate one tone enough to bias every subsequent bit.
@@ -524,8 +543,10 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                     # Expand fixed symbol-phase recovery to ±1/6 symbol.
                     # The old ±10-sample window was too narrow at 400 baud.
                     phase_step = max(1, sps // 12)
-                    offsets = (0, -phase_step, phase_step,
-                               -2 * phase_step, 2 * phase_step)
+                    offsets = (
+                        (0, -phase_step, phase_step) if weak_boundary_recovery
+                        else (0, -phase_step, phase_step, -2 * phase_step, 2 * phase_step)
+                    )
                     recovered = None
                     recovered_offset = 0
                     recovered_method = ""

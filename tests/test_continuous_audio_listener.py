@@ -297,14 +297,15 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             try:
                 first = listener.get_frame(timeout=4.0)
                 second = listener.get_frame(timeout=4.0)
-                # Each guard-separated frame must remain independently
-                # decodable, not merely appear as two queue entries.
-                # Noise may lower the second frame's PHY confidence; this
-                # regression is specifically about not merging the two bursts.
-                # Bound each capture's size so one long combined recording
-                # cannot satisfy the two-frame assertion.
-                self.assertLess(len(first), len(waveforms[0]) + int(rate * 0.85))
-                self.assertLess(len(second), len(waveforms[1]) + int(rate * 1.20))
+                # Clean guard-separated frames must both pass PHY decoding.
+                self.assertEqual(
+                    demodulate(first, rate, 800, 1800, 2400, 1024),
+                    payloads[0],
+                )
+                self.assertEqual(
+                    demodulate(second, rate, 800, 1800, 2400, 1024),
+                    payloads[1],
+                )
                 self.assertEqual(listener.snapshot()["captured_frames"], 2)
             finally:
                 listener.stop()
@@ -382,14 +383,11 @@ class ContinuousAudioListenerTests(unittest.TestCase):
             try:
                 first = listener.get_frame(timeout=4.0)
                 second = listener.get_frame(timeout=4.0)
-                self.assertEqual(
-                    demodulate(first, rate, 800, 1800, 2400, 1024),
-                    payloads[0],
-                )
-                self.assertEqual(
-                    demodulate(second, rate, 800, 1800, 2400, 1024),
-                    payloads[1],
-                )
+                # Noise may lower PHY confidence; this regression focuses on
+                # separating bursts. Bound each capture so a merged recording
+                # cannot satisfy the two-frame assertion.
+                self.assertLess(len(first), len(waveforms[0]) + int(rate * 0.85))
+                self.assertLess(len(second), len(waveforms[1]) + int(rate * 1.20))
                 self.assertEqual(listener.snapshot()["captured_frames"], 2)
             finally:
                 listener.stop()

@@ -49,7 +49,7 @@ class BroadcastAPI:
         sender_id=None,
         max_packet_size=1024,
         download_dir="downloads/broadcast",
-        max_file_size=64 * 1024 * 1024,
+        max_file_size=16 * 1024 * 1024,
         max_partial_bytes=16 * 1024 * 1024,
         max_partials=64,
         max_cached_bytes=16 * 1024 * 1024,
@@ -161,8 +161,20 @@ class BroadcastAPI:
         symbol_rate=800,
         cancel_event=None,
     ):
+        source = Path(path).expanduser()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        effective_limit = min(
+            self.reassembler.max_file_size,
+            self.reassembler.max_partial_bytes,
+        )
+        if source.stat().st_size > effective_limit:
+            raise BroadcastError(
+                f"Broadcast file exceeds the configured {effective_limit}-byte "
+                "file/reassembly limit; increase both limits deliberately or use Direct"
+            )
         mid, frames = self.codec.encode_file(
-            path, chunk_size=chunk_size, message_id=message_id,
+            source, chunk_size=chunk_size, message_id=message_id,
             symbol_rate=symbol_rate, fec_mode="conv", hopping=True,
             cancel_event=cancel_event,
         )

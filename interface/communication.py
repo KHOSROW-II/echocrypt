@@ -257,8 +257,14 @@ def _send_packet(packet, label, cfg, hop_key=None, symbol_rate=None, fec_mode="h
     duration = packet_duration(len(packet), cfg, fec_mode=fec_mode, symbol_rate=rate)
     print(f"{label}: {len(packet)} bytes | {rate} baud | FEC {fec_mode} | estimated {duration:.2f}s")
     if pre_transmit_delay:
-        _reliable_data_transmission_cooldown(label, pre_transmit_delay,
-                                             cancel_event=cancel_event)
+        if cancel_event is None:
+            # Preserve the legacy call contract for non-cancellable control
+            # paths and older callers that wrap this helper.
+            _reliable_data_transmission_cooldown(label, pre_transmit_delay)
+        else:
+            _reliable_data_transmission_cooldown(
+                label, pre_transmit_delay, cancel_event=cancel_event
+            )
     _check_cancelled(cancel_event)
     actual = transmit(packet, fec_mode=fec_mode, hop_key=hop_key,
                       symbol_rate=rate, cancel_event=cancel_event)

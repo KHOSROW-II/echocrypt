@@ -1743,11 +1743,14 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
             return
         sender = delivery.sender_id.hex()[:8]
         mid = delivery.message_id
+        delivery_missing_count = int(
+            getattr(delivery, "missing_count", 0) or len(delivery.missing or ())
+        )
         debug("BROADCAST_DECODE", "Broadcast payload authenticated and decoded",
               kind=int(delivery.kind), sender_id=sender, message_id=mid.hex(),
               complete=bool(delivery.complete), payload_bytes=len(delivery.payload),
               total_fragments=int(delivery.total_fragments or 0),
-              missing_fragments=len(delivery.missing or ()))
+              missing_fragments=delivery_missing_count)
         entry_key = (delivery.sender_id, mid, delivery.kind)
         if delivery.kind == BroadcastType.TEXT:
             total = max(1, int(delivery.total_fragments or 1))
@@ -1760,17 +1763,17 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                       payload_bytes=len(delivery.payload), fragments=total)
                 report("RX TEXT", total, total, "fragments", False)
             else:
-                received = max(0, total - len(delivery.missing))
+                received = max(0, total - delivery_missing_count)
                 retry = {"mode": "broadcast", "sender_id": delivery.sender_id,
                          "message_id": mid, "kind": BroadcastType.TEXT,
                          "request_flags": RETRY_NEED_HEADER | RETRY_NEED_DATA,
                          "missing": tuple(delivery.missing)}
                 add(f"[{sender}] {delivery.preview or '[partial text]'}",
-                    f"received {received}/{total} chunks · {len(delivery.missing)} missing",
+                    f"received {received}/{total} chunks · {delivery_missing_count} missing",
                     key=entry_key, retry=retry)
                 debug("BROADCAST_PARTIAL", "Partial broadcast text shown in chat UI",
                       sender_id=sender, message_id=mid.hex(), received_fragments=received,
-                      total_fragments=total, missing_fragments=len(delivery.missing))
+                      total_fragments=total, missing_fragments=delivery_missing_count)
                 report("RX TEXT", received, total, "chunks", True)
         elif delivery.kind == BroadcastType.FILE_META:
             meta = reassembler.file_metadata(delivery.sender_id, mid) or {}
@@ -1818,12 +1821,12 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
         elif delivery.kind == BroadcastType.FILE_CHUNK and not delivery.complete:
             key = (delivery.sender_id, mid, BroadcastType.FILE_CHUNK)
             meta_present = reassembler.has_file_manifest(delivery.sender_id, mid)
-            received = max(0, int(delivery.total_fragments or 0) - len(delivery.missing))
             total = int(delivery.total_fragments or 0)
+            received = max(0, total - delivery_missing_count)
             if meta_present:
                 retry_kind = BroadcastType.FILE_CHUNK
                 missing = tuple(delivery.missing)
-                retry_label = f"{len(missing)} missing"
+                retry_label = f"{delivery_missing_count} missing"
                 request_flags = RETRY_NEED_HEADER | RETRY_NEED_DATA
             else:
                 retry_kind = BroadcastType.FILE_META
@@ -1842,7 +1845,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
             debug("BROADCAST_FILE", "Broadcast file chunk stored",
                   sender_id=sender, message_id=mid.hex(), filename=name,
                   received_chunks=received, total_chunks=total,
-                  missing_chunks=len(delivery.missing), manifest_present=meta_present)
+                  missing_chunks=delivery_missing_count, manifest_present=meta_present)
             report("RX FILE", received, total, "chunks", True)
         elif delivery.kind in {BroadcastType.VOICE, BroadcastType.VOICE_FRAME}:
             total = max(1, int(delivery.total_fragments or 1))
@@ -1854,7 +1857,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                       payload_bytes=len(delivery.payload), chunks=total)
                 report("RX VOICE", total, total, "chunks", False)
             else:
-                received = max(0, total - len(delivery.missing))
+                received = max(0, total - delivery_missing_count)
                 retry = {"mode": "broadcast", "sender_id": delivery.sender_id,
                          "message_id": mid, "kind": delivery.kind,
                          "request_flags": RETRY_NEED_HEADER | RETRY_NEED_DATA,
@@ -1864,7 +1867,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                 debug("BROADCAST_VOICE", "Partial broadcast voice payload retained",
                       sender_id=sender, message_id=mid.hex(),
                       received_chunks=received, total_chunks=total,
-                      missing_chunks=len(delivery.missing))
+                      missing_chunks=delivery_missing_count)
                 report("RX VOICE", received, total, "chunks", True)
 
     return on_packet

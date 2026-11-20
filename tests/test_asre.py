@@ -95,6 +95,37 @@ class ASRECodecTests(unittest.TestCase):
             for stage, message, _ in events
         ))
 
+    def test_strong_header_crc_failure_is_not_hidden_by_false_candidates(self):
+        import core.modem as modem
+
+        payload = b"strong-sync-header-error"
+        waveform = modulate(
+            payload, RATE, 400, gain=0.4, fec_mode="conv", wire_version=3
+        )
+        calls = [0]
+
+        def fake_header_decode(_llrs):
+            calls[0] += 1
+            if calls[0] <= 5:
+                raise HeaderCRCError("strong sync header CRC mismatch", sync_score=0.90)
+            raise ValueError("false candidate has an incomplete/wrong header")
+
+        candidates = [
+            (0.90, 0, "ECF3", SYNC_V3),
+            (0.30, RATE // 400, "ECF3", SYNC_V3),
+        ]
+        with patch.object(modem, "_find_preamble_candidates", return_value=candidates):
+            with patch.object(modem, "estimate_frequency_offset", return_value=(0, 1.0)):
+                with patch.object(modem, "_estimate_preamble_tone_balance", return_value=None):
+                    with patch.object(modem, "_header_v2_decode", side_effect=fake_header_decode):
+                        with self.assertRaises(HeaderCRCError) as raised:
+                            modem._demodulate_once(
+                                waveform, RATE, 400, 1800, 2400, 1024,
+                                hop_key=b"K" * 32,
+                            )
+        self.assertAlmostEqual(raised.exception.sync_score, 0.90)
+        self.assertEqual(calls[0], 6)
+
     def test_random_noise_is_rejected_as_preamble_without_clock_retry_storm(self):
         rng = np.random.default_rng(91)
         recording = rng.normal(0.0, 0.035, int(RATE * 1.2)).astype(np.float32)
@@ -181,7 +212,30 @@ class ASRECodecTests(unittest.TestCase):
         imbalanced = np.fft.irfft(spectrum, n=len(waveform)).astype(np.float32)
         self.assertEqual(demodulate(imbalanced, RATE, 400), payload)
 
-    def test_strong_sync_header_failure_stops_timing_retry_storm(self):
+    def test_strong_sync_header_failure_tries_bounded_clock_recovery(self):
+        from types import SimpleNamespace
+
+        engine = AdaptiveSignalRecoveryEngine(default_profile())
+        attempted = []
+
+        def recover_after_clock_correction(_samples, *, sample_clock_ratio=1.0, **_kwargs):
+            attempted.append(sample_clock_ratio)
+            if abs(sample_clock_ratio - 1.0002) > 1e-9:
+                raise HeaderCRCError(
+                    "synthetic protected-header CRC failure",
+                    sync_score=0.72,
+                )
+            return b"recovered", SimpleNamespace(channel_grade="FAIR")
+
+        payload, _metrics = engine.recover(
+            np.zeros(48000, dtype=np.float32),
+            recover_after_clock_correction,
+        )
+        self.assertEqual(payload, b"recovered")
+        self.assertEqual(engine.last_attempt_count, 6)
+        self.assertIn(1.0002, attempted)
+
+    def test_persistent_strong_header_failure_is_bounded_to_eleven_clock_candidates(self):
         engine = AdaptiveSignalRecoveryEngine(default_profile())
 
         def reject_header(_samples, **_kwargs):
@@ -189,7 +243,7 @@ class ASRECodecTests(unittest.TestCase):
 
         with self.assertRaises(HeaderCRCError):
             engine.recover(np.zeros(48000, dtype=np.float32), reject_header)
-        self.assertEqual(engine.last_attempt_count, 1)
+        self.assertEqual(engine.last_attempt_count, 11)
 
     def test_asre_reports_channel_metrics(self):
         payload = b"channel telemetry"

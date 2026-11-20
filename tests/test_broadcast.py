@@ -33,6 +33,34 @@ class BroadcastCodecTests(unittest.TestCase):
             self.assertIsNone(reassembler.file_metadata(sender.sender_id, mid1))
             self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, mid2))
 
+            # Metadata eviction must also clear its completed-manifest marker;
+            # otherwise the resent manifest would be discarded as a duplicate.
+            reassembler.feed(frames1[0])
+            self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, mid1))
+
+    def test_expired_broadcast_metadata_can_be_restored_by_manifest_retry(self):
+        import tempfile
+        import time
+        from pathlib import Path
+        from core.broadcast import BroadcastCodec, BroadcastReassembler
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "payload.bin"
+            source.write_bytes(b"payload")
+            message_id, frames = sender.encode_file(source)
+            reassembler = BroadcastReassembler(
+                receiver, download_dir=Path(tmp) / "downloads", expiry_seconds=0.01
+            )
+            reassembler.feed(frames[0])
+            self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, message_id))
+            time.sleep(0.02)
+            reassembler.retry_requests(older_than=0)
+            self.assertIsNone(reassembler.file_metadata(sender.sender_id, message_id))
+            reassembler.feed(frames[0])
+            self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, message_id))
+
     def test_broadcast_file_encoding_honors_cancellation(self):
         import tempfile
         import threading

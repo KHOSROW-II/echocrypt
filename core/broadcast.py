@@ -575,14 +575,20 @@ class BroadcastReassembler:
             raise BroadcastError("Broadcast filename is empty after sanitization")
         return name
 
+    def _drop_file_metadata(self, sender_id, message_id):
+        """Drop metadata and its dedupe marker so a retry can restore it."""
+        sid, mid = bytes(sender_id), bytes(message_id)
+        self._file_meta.pop((sid, mid), None)
+        self._file_meta_updated.pop((sid, mid), None)
+        self._completed.pop((sid, mid, BroadcastType.FILE_META), None)
+
     def _expire(self, now):
         for key, partial in list(self._partials.items()):
             if now - partial.updated_at > self.expiry_seconds:
                 self._partials.pop(key, None)
         for key, updated in list(self._file_meta_updated.items()):
             if now - updated > self.expiry_seconds:
-                self._file_meta_updated.pop(key, None)
-                self._file_meta.pop(key, None)
+                self._drop_file_metadata(*key)
 
     def _make_room(self, incoming_size, *, protect_key=None, new_partial=False):
         if incoming_size < 0 or incoming_size > self.max_partial_bytes:
@@ -597,9 +603,7 @@ class BroadcastReassembler:
             key = candidates[0]
             old = self._partials.pop(key)
             if old.kind == BroadcastType.FILE_CHUNK:
-                meta_key = (old.sender_id, old.message_id)
-                self._file_meta.pop(meta_key, None)
-                self._file_meta_updated.pop(meta_key, None)
+                self._drop_file_metadata(old.sender_id, old.message_id)
 
     def _partial(self, frame):
         key = (frame.sender_id, frame.message_id, frame.kind)
@@ -806,8 +810,7 @@ class BroadcastReassembler:
             meta_key = (frame.sender_id, frame.message_id)
             if meta_key not in self._file_meta and len(self._file_meta) >= self.max_file_metadata:
                 oldest_key = min(self._file_meta_updated, key=self._file_meta_updated.get)
-                self._file_meta.pop(oldest_key, None)
-                self._file_meta_updated.pop(oldest_key, None)
+                self._drop_file_metadata(*oldest_key)
             self._file_meta[meta_key] = meta_obj
             self._file_meta_updated[meta_key] = now
             self._remember_completed(key, now)

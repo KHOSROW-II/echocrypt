@@ -697,6 +697,21 @@ class ContinuousAudioListener:
     def start(self):
         if self._running.is_set():
             return self
+        # A timed-out stop must not allow a second collector to consume the
+        # same queues. Join the previous worker before resetting shared state.
+        previous_thread = self._thread
+        if previous_thread is not None:
+            if previous_thread is threading.current_thread():
+                raise RuntimeError(
+                    "Cannot restart the audio listener from its collector callback"
+                )
+            if previous_thread.is_alive():
+                previous_thread.join(timeout=3.0)
+            if previous_thread.is_alive():
+                raise RuntimeError(
+                    "Previous audio collector is still stopping; refusing to start a second collector"
+                )
+            self._thread = None
         for pending_queue in (self._blocks, self._frames, self._errors):
             while True:
                 try:
@@ -723,7 +738,7 @@ class ContinuousAudioListener:
                 target=self._collector_loop, name="echocrypt-audio-listener", daemon=True
             )
             self._thread.start()
-        except Exception:
+        except Exception as exc:
             self._running.clear()
             if self._stream is not None:
                 try:
@@ -951,10 +966,16 @@ class ContinuousAudioListener:
                     stream.stop()
                 finally:
                     stream.close()
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
-            self._thread = None
-        # Wake a consumer blocked on the frame queue where possible.
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # Bound shutdown latency, but retain the reference if the worker
+            # has not exited. start() will refuse a second collector until it
+            # has joined, preventing concurrent consumers of the same queues.
+            thread.join(timeout=3.0)
+            if not thread.is_alive() and self._thread is thread:
+                self._thread = None
+        # If stop() runs inside a collector callback, keep the thread reference.
+        # A later start() joins it before it can create a replacement worker.
         try:
             self._frames.put_nowait(None)
         except Exception:

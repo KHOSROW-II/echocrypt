@@ -20,14 +20,15 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from core.session import Session
+from security.profiles import SecurityProfile, SecurityProfileError
 
 HELLO_MAGIC = b"ECH1"
-HELLO_VERSION = 1
-HELLO_HEADER = struct.Struct("!4sBB32s16s")
+HELLO_VERSION = 2
+HELLO_HEADER = struct.Struct("!4sBB32s16sBHHBB")
 HELLO_SIGNATURE_SIZE = 64
-HELLO_DOMAIN = b"ECHOCRYPT/HELLO/v1\x00"
-TRANSCRIPT_DOMAIN = b"ECHOCRYPT/TRANSCRIPT/v1\x00"
-CONTROL_AAD = b"ECHOCRYPT/CONTROL/v1"
+HELLO_DOMAIN = b"ECHOCRYPT/HELLO/v2\x00"
+TRANSCRIPT_DOMAIN = b"ECHOCRYPT/TRANSCRIPT/v2\x00"
+CONTROL_AAD = b"ECHOCRYPT/CONTROL/v2"
 FINISH_MAGIC = b"ECHF"
 
 
@@ -49,15 +50,21 @@ def _raw_public(key) -> bytes:
     return key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-def _create_hello(identity_private, role_code: int):
+def _create_hello(identity_private, role_code: int, security_profile: SecurityProfile):
     ephemeral = X25519PrivateKey.generate()
     nonce = os.urandom(16)
+    profile_id, symbol_rate, padding_block, flags, retries = security_profile.wire_fields()
     header = HELLO_HEADER.pack(
         HELLO_MAGIC,
         HELLO_VERSION,
         role_code,
         _raw_public(ephemeral.public_key()),
         nonce,
+        profile_id,
+        symbol_rate,
+        padding_block,
+        flags,
+        retries,
     )
     signature = identity_private.sign(HELLO_DOMAIN + header)
     return header + signature, ephemeral, nonce
@@ -73,23 +80,28 @@ def _verify_hello(packet: bytes, peer_public_raw: bytes, expected_fingerprint: s
         raise HandshakeError("Untrusted peer fingerprint")
 
     header, signature = packet[:-HELLO_SIGNATURE_SIZE], packet[-HELLO_SIGNATURE_SIZE:]
-    magic, version, role_code, ephemeral_raw, nonce = HELLO_HEADER.unpack(header)
+    (magic, version, role_code, ephemeral_raw, nonce, profile_id,
+     symbol_rate, padding_block, flags, retries) = HELLO_HEADER.unpack(header)
     if magic != HELLO_MAGIC or version != HELLO_VERSION:
-        raise HandshakeError("Unsupported HELLO format")
+        raise HandshakeError("Unsupported HELLO format; update both ECHO-CRYPT devices")
     if role_code != expected_role:
         raise HandshakeError("Unexpected peer role")
     try:
         Ed25519PublicKey.from_public_bytes(peer_public_raw).verify(signature, HELLO_DOMAIN + header)
         ephemeral = X25519PublicKey.from_public_bytes(ephemeral_raw)
+        peer_profile = SecurityProfile.from_wire(
+            profile_id, symbol_rate, padding_block, flags, retries
+        )
     except (InvalidSignature, ValueError) as exc:
-        raise HandshakeError("HELLO signature or key is invalid") from exc
-    return ephemeral, nonce
+        raise HandshakeError("HELLO signature, key or security profile is invalid") from exc
+    return ephemeral, nonce, peer_profile
 
 
 class PeerHandshake:
     """Stateful, mutual-authentication handshake bound to a pinned peer key."""
 
-    def __init__(self, role: str, identity_private, peer_public_raw: bytes, peer_fingerprint: str):
+    def __init__(self, role: str, identity_private, peer_public_raw: bytes,
+                 peer_fingerprint: str, security_profile=None):
         if role not in ("initiator", "responder"):
             raise ValueError("Role must be 'initiator' or 'responder'")
         if len(peer_public_raw) != 32:
@@ -101,6 +113,8 @@ class PeerHandshake:
         self._role_code = 0 if role == "initiator" else 1
         self._peer_role_code = 1 - self._role_code
         self.identity_private = identity_private
+        self.security_profile = SecurityProfile.from_value(security_profile)
+        self.negotiated_profile = self.security_profile
         self.peer_public_raw = bytes(peer_public_raw)
         self.peer_fingerprint = peer_fingerprint.lower()
         self.local_fingerprint = hashlib.sha256(_raw_public(identity_private.public_key())).hexdigest()
@@ -138,12 +152,16 @@ class PeerHandshake:
     def start(self) -> bytes:
         if self.role != "initiator" or self.state != HandshakeState.READY or self._hello_i is not None:
             raise HandshakeError("Only a new initiator can start the handshake")
-        self._hello_i, self._local_ephemeral, self._local_nonce = _create_hello(self.identity_private, 0)
+        self._hello_i, self._local_ephemeral, self._local_nonce = _create_hello(
+            self.identity_private, 0, self.security_profile
+        )
         self.state = HandshakeState.WAIT_REPLY
         return self._hello_i
 
     def _make_responder_hello(self) -> bytes:
-        self._hello_r, self._local_ephemeral, self._local_nonce = _create_hello(self.identity_private, 1)
+        self._hello_r, self._local_ephemeral, self._local_nonce = _create_hello(
+            self.identity_private, 1, self.negotiated_profile
+        )
         return self._hello_r
 
     def _derive_session(self):
@@ -156,15 +174,21 @@ class PeerHandshake:
             algorithm=hashes.SHA256(),
             length=96,
             salt=self._transcript_hash,
-            info=b"ECHOCRYPT/v1 directional traffic and acoustic hopping keys",
+            info=b"ECHOCRYPT/v2 directional traffic, padding and acoustic hopping keys",
         ).derive(shared)
         initiator_to_responder, responder_to_initiator = material[:32], material[32:64]
         if self.role == "initiator":
             tx_key, rx_key = initiator_to_responder, responder_to_initiator
         else:
             tx_key, rx_key = responder_to_initiator, initiator_to_responder
-        hopping_key = material[64:96]
-        self.session = Session(tx_key, rx_key, self.peer_fingerprint, hopping_key)
+        hopping_key = (
+            material[64:96] if self.negotiated_profile.frequency_hopping else None
+        )
+        self.session = Session(
+            tx_key, rx_key, self.peer_fingerprint, hopping_key,
+            padding_block=self.negotiated_profile.padding_block,
+            security_profile=self.negotiated_profile,
+        )
 
     def _make_finish(self, role_code: int) -> bytes:
         payload = FINISH_MAGIC + bytes([role_code]) + self._transcript_hash
@@ -208,9 +232,15 @@ class PeerHandshake:
             return self._finish_i
 
         if self.role == "responder" and self.state == HandshakeState.WAIT_HELLO:
-            self._peer_ephemeral, self._peer_nonce = _verify_hello(
+            self._peer_ephemeral, self._peer_nonce, peer_profile = _verify_hello(
                 packet, self.peer_public_raw, self.peer_fingerprint, expected_role=0
             )
+            try:
+                self.negotiated_profile = SecurityProfile.negotiate(
+                    self.security_profile, peer_profile
+                )
+            except SecurityProfileError as exc:
+                raise HandshakeError(str(exc)) from exc
             self._hello_i = packet
             response = self._make_responder_hello()
             self._derive_session()
@@ -218,9 +248,15 @@ class PeerHandshake:
             return response
 
         if self.role == "initiator" and self.state == HandshakeState.WAIT_REPLY:
-            self._peer_ephemeral, self._peer_nonce = _verify_hello(
+            self._peer_ephemeral, self._peer_nonce, peer_profile = _verify_hello(
                 packet, self.peer_public_raw, self.peer_fingerprint, expected_role=1
             )
+            try:
+                self.negotiated_profile = SecurityProfile.negotiate(
+                    self.security_profile, peer_profile
+                )
+            except SecurityProfileError as exc:
+                raise HandshakeError(str(exc)) from exc
             self._hello_r = packet
             self._derive_session()
             self.state = HandshakeState.WAIT_RESP_FINISH
@@ -250,7 +286,7 @@ class PeerHandshake:
         if not isinstance(max_packet_size, int) or max_packet_size < 32:
             raise ValueError("Configured modem packet limit must be at least 32 bytes")
         payload = text.encode("utf-8")
-        encrypted_size = len(payload) + 32  # 16-byte packet header + 16-byte AEAD tag
+        encrypted_size = self.session.tx.encrypted_size(len(payload))
         if encrypted_size > max_packet_size:
             raise ValueError(
                 f"Message needs {encrypted_size} packet bytes; configured modem limit is {max_packet_size} bytes"

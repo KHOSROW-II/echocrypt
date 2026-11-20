@@ -96,12 +96,13 @@ class ReliableTextChannel:
         encoded = text.encode("utf-8")
         if not encoded:
             raise ValueError("Empty messages are not sent")
-        if not isinstance(max_packet_size, int) or max_packet_size < ACK_PACKET_SIZE:
-            raise ValueError("max_packet_size is too small for reliable packets")
+        minimum_ack_size = session.tx.encrypted_size(ACK_PLAINTEXT_SIZE)
+        if not isinstance(max_packet_size, int) or max_packet_size < minimum_ack_size:
+            raise ValueError("max_packet_size is too small for this security profile's ACK frame")
 
         message_id = os.urandom(MESSAGE_ID_SIZE)
         plaintext = DATA_MAGIC + message_id + encoded
-        packet_size = len(plaintext) + 32
+        packet_size = session.tx.encrypted_size(len(plaintext))
         if packet_size > max_packet_size:
             maximum_text = max_packet_size - 32 - len(DATA_MAGIC) - MESSAGE_ID_SIZE
             raise ValueError(

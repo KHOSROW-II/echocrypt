@@ -8,6 +8,7 @@ from core.modem import modulate, demodulate
 from core.crypto import ReplayError, SecureChannel
 from core.reliability import ReliableTextChannel
 from security.peer_handshake import PeerHandshake, HandshakeError, HandshakeState
+from security.profiles import SecurityProfile
 from security.identity import raw_public
 
 
@@ -89,6 +90,66 @@ class PeerProtocolTests(unittest.TestCase):
         incoming = receiver.receive(packet)
         self.assertEqual(incoming.text, "ECHOCRYPT-PROFILE/1:peer_123")
         self.assertTrue(sender.verify_ack(incoming.ack_packet, outgoing.message_id))
+
+
+    def test_security_profile_negotiates_strongest_signed_settings(self):
+        alice_identity = Ed25519PrivateKey.generate()
+        bob_identity = Ed25519PrivateKey.generate()
+        alice_pub = raw_public(alice_identity.public_key())
+        bob_pub = raw_public(bob_identity.public_key())
+        alice_fp = hashlib.sha256(alice_pub).hexdigest()
+        bob_fp = hashlib.sha256(bob_pub).hexdigest()
+        alice = PeerHandshake(
+            "initiator", alice_identity, bob_pub, bob_fp,
+            security_profile=SecurityProfile.preset("low"),
+        )
+        bob = PeerHandshake(
+            "responder", bob_identity, alice_pub, alice_fp,
+            security_profile=SecurityProfile.preset("secure"),
+        )
+
+        hello_i = alice.start()
+        hello_r = bob.receive(hello_i)
+        finish_i = alice.receive(hello_r)
+        finish_r = bob.receive(finish_i)
+        self.assertIsNone(alice.receive(finish_r))
+        self.assertEqual(alice.negotiated_profile, SecurityProfile.preset("secure"))
+        self.assertEqual(bob.negotiated_profile, SecurityProfile.preset("secure"))
+        self.assertEqual(alice.session.tx.padding_block, 256)
+        self.assertEqual(bob.session.rx.padding_block, 256)
+        self.assertIsNotNone(alice.session.hopping_key)
+
+        secret = "profile negotiation test"
+        packet = alice.session.tx.encrypt(secret.encode(), b"profile-test")
+        self.assertEqual(len(packet), alice.session.tx.encrypted_size(len(secret.encode())))
+        self.assertEqual(bob.session.rx.decrypt(packet, b"profile-test").decode(), secret)
+
+    def test_custom_security_profile_must_match_on_both_peers(self):
+        alice_identity = Ed25519PrivateKey.generate()
+        bob_identity = Ed25519PrivateKey.generate()
+        alice_pub = raw_public(alice_identity.public_key())
+        bob_pub = raw_public(bob_identity.public_key())
+        alice = PeerHandshake(
+            "initiator", alice_identity, bob_pub, hashlib.sha256(bob_pub).hexdigest(),
+            security_profile=SecurityProfile.custom(400, 64, True, 3),
+        )
+        bob = PeerHandshake(
+            "responder", bob_identity, alice_pub, hashlib.sha256(alice_pub).hexdigest(),
+            security_profile=SecurityProfile.custom(400, 128, True, 3),
+        )
+        with self.assertRaises(HandshakeError):
+            bob.receive(alice.start())
+
+    def test_secure_channel_padding_is_authenticated_and_length_aligned(self):
+        key = b"p" * 32
+        sender = SecureChannel(key, padding_block=64)
+        receiver = SecureChannel(key, padding_block=64)
+        for message in (b"x", b"hello", b"short message", bytes(range(128))):
+            with self.subTest(length=len(message)):
+                packet = sender.encrypt(message, b"padding-test")
+                self.assertEqual(len(packet), sender.encrypted_size(len(message)))
+                self.assertEqual((len(packet) - 32) % 64, 0)
+                self.assertEqual(receiver.decrypt(packet, b"padding-test"), message)
 
     def test_wrong_peer_identity_is_rejected(self):
         alice_identity = Ed25519PrivateKey.generate()

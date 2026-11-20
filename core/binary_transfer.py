@@ -240,7 +240,7 @@ class ReliableBinaryChannel:
             "chunk_size": m.chunk_size, "total_chunks": m.total_chunks,
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         plain = META_HEAD.pack(META_MAGIC, m.transfer_id, len(payload)) + payload
-        if len(plain) + AEAD_OVERHEAD > max_packet_size:
+        if self._session().tx.encrypted_size(len(plain)) > max_packet_size:
             raise BinaryTransferError("File manifest exceeds modem frame capacity")
         return self._session().tx.encrypt(plain, META_AAD)
 
@@ -257,7 +257,7 @@ class ReliableBinaryChannel:
         if len(chunk) != expected:
             raise BinaryTransferError("Source file changed while transfer was in progress")
         plain = DATA_HEAD.pack(DATA_MAGIC, m.transfer_id, index, len(chunk)) + chunk
-        if len(plain) + AEAD_OVERHEAD > max_packet_size:
+        if self._session().tx.encrypted_size(len(plain)) > max_packet_size:
             raise BinaryTransferError("Chunk exceeds modem frame capacity")
         return self._session().tx.encrypt(plain, DATA_AAD)
 
@@ -550,7 +550,7 @@ class ReliableBinaryChannel:
         plain = REQUEST_HEAD.pack(REQUEST_MAGIC, tid, len(indexes)) + b"".join(
             REQUEST_INDEX.pack(index) for index in indexes
         )
-        if len(plain) + AEAD_OVERHEAD > max_packet_size:
+        if self._session().tx.encrypted_size(len(plain)) > max_packet_size:
             raise BinaryTransferError("Resend request exceeds acoustic frame capacity")
         return self._session().tx.encrypt(plain, REQUEST_AAD)
 

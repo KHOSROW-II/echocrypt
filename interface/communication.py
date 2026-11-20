@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from concurrent.futures import TimeoutError as FutureTimeoutError
 import re
@@ -41,6 +42,7 @@ from core.profile import get_username
 from interface.dashboard import render as render_app_header
 from interface.chat import ChatScreen, add_chat_message
 from security.peer_handshake import PeerHandshake
+from security.profiles import SecurityProfile, SecurityProfileError
 from interface.terminal import Menu
 
 
@@ -184,9 +186,10 @@ def _handshake_transmission_cooldown(label, seconds=HANDSHAKE_COOLDOWN_SECONDS):
     print(f"  Transmitting {clean_label} now.", flush=True)
 
 
-def _send_handshake_packet(packet, label, cfg, hop_key=None, symbol_rate=None):
+def _send_handshake_packet(packet, label, cfg, hop_key=None, symbol_rate=None,
+                           cooldown_seconds=HANDSHAKE_COOLDOWN_SECONDS):
     """Single enforced path for all initial and retransmitted HELLO/FINISH frames."""
-    _handshake_transmission_cooldown(label, HANDSHAKE_COOLDOWN_SECONDS)
+    _handshake_transmission_cooldown(label, cooldown_seconds)
     return _send_packet(packet, label, cfg, hop_key=hop_key,
                         symbol_rate=symbol_rate, fec_mode="conv")
 
@@ -318,22 +321,40 @@ def _wait_for_reliable_text_ack(channel, message_id, cfg, hop_key):
 
 
 def _establish(role, handshake, cfg):
-    # HELLO and FINISH frames use fixed base tones. The shared hopping key is
-    # activated only after both peers have authenticated the full transcript.
+    # The first HELLO is sent at the configured base rate so profiles can be
+    # negotiated before either device switches its modem settings.
     trace = for_config(cfg)
+
+    def local_rate():
+        profile = getattr(handshake, "security_profile", None)
+        return int(getattr(profile, "symbol_rate", cfg.symbol_rate))
+
+    def negotiated_rate():
+        profile = getattr(handshake, "negotiated_profile", None)
+        if profile is None:
+            profile = getattr(handshake, "security_profile", None)
+        return int(getattr(profile, "symbol_rate", cfg.symbol_rate))
+
+    def cooldown():
+        profile = getattr(handshake, "security_profile", None)
+        name = getattr(profile, "name", "medium")
+        return {"low": 2, "medium": 3, "secure": 5}.get(name, 3)
+
     trace.emit("PROTOCOL", "Starting authenticated acoustic handshake",
                role=role, initial_state=handshake.state.value,
-               peer_fingerprint=handshake.peer_fingerprint[:16] + "…")
+               peer_fingerprint=handshake.peer_fingerprint[:16] + "…",
+               security_profile=getattr(getattr(handshake, "security_profile", None), "name", "legacy"),
+               requested_symbol_rate=local_rate())
     if role == "initiator":
         first = handshake.start()
         trace.emit("SERIALIZE", "Created signed HELLO-I control payload", bytes=len(first),
                    state=handshake.state.value)
-        _send_handshake_packet(first, "HELLO-I", cfg)
+        _send_handshake_packet(first, "HELLO-I", cfg, cooldown_seconds=cooldown())
 
         def retry_hello_i():
-            # The responder may have timed out or may not have armed RX yet.
-            # Keep the exact same signed HELLO-I, but provide the same setup window.
-            _send_handshake_packet(first, "HELLO-I RETRY", cfg)
+            # Repeat the exact signed HELLO at the bootstrap rate.
+            _send_handshake_packet(first, "HELLO-I RETRY", cfg,
+                                   cooldown_seconds=cooldown())
 
         peer_reply = _record_packet(
             "Listening for HELLO-R", cfg,
@@ -344,21 +365,27 @@ def _establish(role, handshake, cfg):
                    expected="HELLO-R")
         finish_i = _handshake_receive(handshake, peer_reply, "HELLO-R", trace)
         trace.emit("PARSER", "HELLO-R signature verified; X25519 keys derived",
-                   state=handshake.state.value)
-        _send_handshake_packet(finish_i, "FINISH-I", cfg)
+                   state=handshake.state.value,
+                   negotiated_profile=getattr(getattr(handshake, "negotiated_profile", None), "name", "legacy"))
+        _send_handshake_packet(finish_i, "FINISH-I", cfg,
+                               symbol_rate=negotiated_rate(),
+                               cooldown_seconds=cooldown())
         while True:
-            # FINISH-R is the final handshake flight. There is no F8 retry here:
-            # the responder has already entered ESTABLISHED after sending it.
+            # FINISH-R uses the already authenticated and negotiated PHY profile.
             peer_finish = _record_packet(
                 "Listening for FINISH-R", cfg,
+                symbol_rate=negotiated_rate(),
                 retry_callback=lambda: _send_handshake_packet(
-                    finish_i, "FINISH-I RETRY", cfg
+                    finish_i, "FINISH-I RETRY", cfg,
+                    symbol_rate=negotiated_rate(),
+                    cooldown_seconds=cooldown(),
                 ),
             )
             if peer_finish == peer_reply:
-                # A delayed/retried HELLO-R: replay the cached FINISH-I safely.
                 finish_i = _handshake_receive(handshake, peer_finish, "HELLO-R RETRY", trace)
-                _send_handshake_packet(finish_i, "FINISH-I RETRY", cfg)
+                _send_handshake_packet(finish_i, "FINISH-I RETRY", cfg,
+                                       symbol_rate=negotiated_rate(),
+                                       cooldown_seconds=cooldown())
                 continue
             trace.emit("PARSER", "Passing FINISH-R to authenticated control parser",
                        bytes=len(peer_finish), expected="FINISH-R")
@@ -372,33 +399,51 @@ def _establish(role, handshake, cfg):
                    expected="HELLO-I")
         hello_r = _handshake_receive(handshake, peer_hello, "HELLO-I", trace)
         trace.emit("PARSER", "HELLO-I signature verified; response created",
-                   state=handshake.state.value)
-        _send_handshake_packet(hello_r, "HELLO-R", cfg)
+                   state=handshake.state.value,
+                   negotiated_profile=getattr(getattr(handshake, "negotiated_profile", None), "name", "legacy"))
+        _send_handshake_packet(hello_r, "HELLO-R", cfg,
+                               symbol_rate=negotiated_rate(),
+                               cooldown_seconds=cooldown())
         while True:
             peer_finish = _record_packet(
                 "Listening for FINISH-I", cfg,
-                retry_callback=lambda: _send_handshake_packet(hello_r, "HELLO-R RETRY", cfg),
+                symbol_rate=negotiated_rate(),
+                retry_callback=lambda: _send_handshake_packet(
+                    hello_r, "HELLO-R RETRY", cfg,
+                    symbol_rate=negotiated_rate(),
+                    cooldown_seconds=cooldown(),
+                ),
             )
             if peer_finish == peer_hello:
-                # Initiator retried HELLO-I; resend the exact cached HELLO-R.
                 hello_r = _handshake_receive(handshake, peer_finish, "HELLO-I RETRY", trace)
-                _send_handshake_packet(hello_r, "HELLO-R RETRY", cfg)
+                _send_handshake_packet(hello_r, "HELLO-R RETRY", cfg,
+                                       symbol_rate=negotiated_rate(),
+                                       cooldown_seconds=cooldown())
                 continue
             trace.emit("PARSER", "Passing FINISH-I to authenticated control parser",
                        bytes=len(peer_finish), expected="FINISH-I")
             finish_r = _handshake_receive(handshake, peer_finish, "FINISH-I", trace)
             trace.emit("PARSER", "FINISH-I verified; responder confirmation created",
                        state=handshake.state.value)
-            _send_handshake_packet(finish_r, "FINISH-R", cfg)
+            _send_handshake_packet(finish_r, "FINISH-R", cfg,
+                                   symbol_rate=negotiated_rate(),
+                                   cooldown_seconds=cooldown())
             break
 
     if not handshake.established:
         raise RuntimeError(f"Handshake ended in unexpected state: {handshake.state.value}")
-    trace.emit("PROTOCOL", "Authenticated handshake completed", state=handshake.state.value)
+    trace.emit("PROTOCOL", "Authenticated handshake completed", state=handshake.state.value,
+               negotiated_profile=getattr(getattr(handshake, "negotiated_profile", None), "name", "legacy"),
+               symbol_rate=negotiated_rate())
     print("\nAUTHENTICATED ACOUSTIC SESSION ESTABLISHED")
     print("Peer fingerprint:", handshake.peer_fingerprint)
-    print("Authenticated per-symbol frequency hopping is now enabled for session traffic.")
-
+    profile = getattr(handshake, "negotiated_profile", None)
+    if profile is not None:
+        print(f"Security profile: {profile.name.upper()} · {profile.symbol_rate} baud")
+        print(f"Traffic padding: {profile.padding_block or 'off'} bytes · "
+              f"secret frequency hopping: {'on' if profile.frequency_hopping else 'off'}")
+    print("Ed25519 identity authentication, ephemeral X25519, HKDF-SHA256 and "
+          "ChaCha20-Poly1305 remain enabled in every profile.")
 
 def _send_text_with_ack(channel, message, cfg, hop_key, first_fec_mode="conv"):
     outgoing = channel.prepare(message, max_packet_size=cfg.max_payload)
@@ -1126,8 +1171,8 @@ def _engine_wait_for_response(engine, packet, verify, cfg, label,
 
 
 def _reliable_chat_symbol_rate_plan(cfg, preferred=None):
-    """Return bounded PHY retries from medium to increasingly robust rates."""
-    candidates = [preferred or 400, cfg.symbol_rate, 100]
+    """Try the negotiated profile rate first, then bounded recovery rates."""
+    candidates = [preferred or cfg.symbol_rate, 400, 100]
     if getattr(cfg, "fast_symbol_rate", None):
         candidates.append(cfg.fast_symbol_rate)
     rates = []
@@ -1166,12 +1211,8 @@ def _engine_send_text(channel, engine, text, cfg, progress_callback=None, cancel
 
 
 def _supported_symbol_rates(cfg):
-    """Receive reliable chat rates first, while retaining fast-rate compatibility.
-
-    Direct reliable sends and Broadcast prefer 400 baud. Older peers may still
-    transmit at the configured fast rate, so retain it as a final fallback.
-    """
-    candidates = (400, cfg.symbol_rate, 100, cfg.fast_symbol_rate)
+    """Prefer the negotiated Direct profile while retaining compatibility rates."""
+    candidates = (cfg.symbol_rate, 400, 100, cfg.fast_symbol_rate)
     rates = []
     for raw_rate in candidates:
         try:
@@ -1185,11 +1226,10 @@ def _supported_symbol_rates(cfg):
 
 
 def _file_symbol_rate_plan(cfg):
-    """Prefer the fast profile, then fall back to a middle and robust rate."""
-    candidates = [cfg.fast_symbol_rate]
+    """Prefer the negotiated Direct profile, then fall back to faster/robust rates."""
+    candidates = [cfg.symbol_rate, cfg.fast_symbol_rate]
     if cfg.sample_rate % 400 == 0 and cfg.sample_rate // 400 >= 32:
         candidates.append(400)
-    candidates.append(cfg.symbol_rate)
     return tuple(dict.fromkeys(int(rate) for rate in candidates))
 
 
@@ -2763,6 +2803,45 @@ def _add_peer_flow():
     prompt("Press Enter to return to Connections...")
 
 
+def _choose_direct_security_profile(cfg):
+    """Select a signed, negotiated Direct traffic/security profile."""
+    choice = Menu("DIRECT SECURITY PROFILE", [
+        ("medium", "MEDIUM  ·  balanced · 400 baud · 64-byte padding · keyed hopping"),
+        ("low", "LOW  ·  fastest · 800 baud · no padding/hopping (still encrypted)"),
+        ("secure", "SECURE  ·  privacy-focused · 200 baud · 256-byte padding · keyed hopping"),
+        ("custom", "CUSTOM  ·  choose rate, padding, hopping and retries"),
+        ("back", "Back"),
+    ], header_status="DIRECT SECURITY PROFILE").run()
+    if choice in (None, "back"):
+        return None
+    if choice != "custom":
+        profile = SecurityProfile.preset(choice)
+    else:
+        def read_int(label, default):
+            raw = prompt(f"{label} [{default}]: ").strip()
+            try:
+                return int(raw) if raw else default
+            except ValueError as exc:
+                raise SecurityProfileError(f"{label} must be an integer") from exc
+
+        print("\nCustom settings are included in the signed HELLO and must match on both devices.")
+        rate = read_int("Symbol rate in baud (100/200/400/800/1200/1500)", 400)
+        padding = read_int("Traffic padding block (0/32/64/128/256)", 128)
+        hopping_choice = Menu("CUSTOM SECRET FREQUENCY HOPPING", [
+            ("on", "Enabled"),
+            ("off", "Disabled"),
+        ], header_status="CUSTOM DIRECT PROFILE").run()
+        if hopping_choice is None:
+            return None
+        retries = read_int("Maximum retry count (0–10)", 3)
+        profile = SecurityProfile.custom(
+            symbol_rate=rate, padding_block=padding,
+            frequency_hopping=(hopping_choice == "on"), retries=retries,
+        )
+    profile.validate_for_sample_rate(cfg.sample_rate)
+    return profile
+
+
 def _connect_to_contact(contact: Contact):
     if not PRIVATE.exists():
         render_app_header(session_status="LOCAL IDENTITY REQUIRED")
@@ -2781,12 +2860,23 @@ def _connect_to_contact(contact: Contact):
         if peer_fingerprint != contact.fingerprint:
             raise ValueError("Saved peer identity fingerprint changed; remove and re-add this peer.")
         cfg = load()
-        handshake = PeerHandshake(order, load_private(PRIVATE), peer_public_raw, peer_fingerprint)
+        security_profile = _choose_direct_security_profile(cfg)
+        if security_profile is None:
+            return
+        handshake = PeerHandshake(
+            order, load_private(PRIVATE), peer_public_raw, peer_fingerprint,
+            security_profile=security_profile,
+        )
         render_app_header(session_status=f"HANDSHAKE: {contact.name}")
         print(f"\nConnecting acoustically to {contact.name} ({contact.short_fingerprint})")
         print("No server, internet, sockets or direct network connection are used.")
         print("Both users must choose opposite handshake roles and be ready at the same time.")
         _establish(order, handshake, cfg)
+        negotiated = handshake.negotiated_profile
+        cfg = replace(
+            cfg, symbol_rate=negotiated.symbol_rate,
+            max_retries=negotiated.retries,
+        )
         print("\nExchanging encrypted display names...")
         text_channel = ReliableTextChannel(handshake)
         peer_username = _exchange_session_usernames(order, handshake, cfg, text_channel)

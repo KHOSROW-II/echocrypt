@@ -16,7 +16,7 @@ import numpy as np
 
 from core.audio import ContinuousAudioListener, play, stop_playback
 from core.modem import HOP_OFFSETS, SYNC_V2, demodulate, modulate
-from core.recovery.errors import HeaderCRCError
+from core.recovery.errors import FrameCRCError, HeaderCRCError
 
 
 class SessionEngineError(RuntimeError):
@@ -192,7 +192,7 @@ class AudioSessionEngine:
             config.sample_rate, config.input_device,
             activity_frequencies=tuple(sorted(frequencies)),
             max_frame_seconds=min(600.0, max(30.0, maximum_airtime)),
-            quiet_seconds=0.18,
+            quiet_seconds=0.30,
             on_error=lambda exc: self._emit("audio_error", str(exc), payload=exc),
             on_debug=self._debug if self.on_debug is not None else None,
         )
@@ -651,6 +651,7 @@ class AudioSessionEngine:
                 receive_hop_keys = tuple(self._receive_hop_keys)
             for rate in self.symbol_rates:
                 strong_header_failure = False
+                strong_frame_failure = False
                 for hop_key in receive_hop_keys:
                     try:
                         packet = demodulate(
@@ -677,12 +678,24 @@ class AudioSessionEngine:
                             # receive key, so leave this key loop immediately.
                             strong_header_failure = True
                             break
+                        if isinstance(exc, FrameCRCError) and exc.sync_score >= 0.50:
+                            # Payload hopping differs by key, so continue through
+                            # registered receive profiles before giving up.
+                            strong_frame_failure = True
                 if packet is not None:
                     break
                 if strong_header_failure:
                     self._debug(
                         "RECOVERY",
-                        "Strong preamble found but protected header CRC failed for "
+                        "Strong preamble found but protected header CRC failed; "
+                        "hopping keys cannot repair a fixed-frequency header",
+                        symbol_rate=rate,
+                    )
+                    break
+                if strong_frame_failure:
+                    self._debug(
+                        "RECOVERY",
+                        "Strong preamble and header found but frame CRC failed for "
                         "all registered hopping profiles; skipping unrelated baud rates",
                         symbol_rate=rate,
                     )

@@ -11,6 +11,7 @@ import numpy as np
 from core.crypto import SecureChannel
 from core.modem import HOP_OFFSETS
 from core.recovery.errors import HeaderCRCError
+from core.recovery.errors import HeaderCRCError
 from core.session_engine import AudioSessionEngine, PacketWaiter, SessionEngineError
 
 
@@ -112,6 +113,32 @@ class SessionEngineTests(unittest.TestCase):
         self.assertEqual(engine.channel_access.min_idle_seconds, 0.12)
         self.assertEqual(engine.channel_access.max_backoff_slots, 8)
         self.assertEqual(engine.channel_access.max_wait_seconds, 5.0)
+
+    def test_strong_header_crc_failure_skips_other_hop_keys_and_symbol_rates(self):
+        listener = FakeListener()
+        engine = AudioSessionEngine(
+            self.cfg, listener=listener, channel_access=False,
+            symbol_rates=(400, 200),
+        )
+        engine.set_hop_key(b"D" * 32)
+        engine.add_receive_hop_key(b"B" * 32)
+        attempted = []
+        decoded = threading.Event()
+
+        def fail_strong_header(*args, hop_key=None, **_kwargs):
+            attempted.append((args[2], hop_key))
+            decoded.set()
+            raise HeaderCRCError("strong preamble/header CRC failure", sync_score=0.90)
+
+        try:
+            with patch("core.session_engine.demodulate", side_effect=fail_strong_header):
+                engine.start()
+                listener.frames.put(np.zeros(4096, dtype=np.float32))
+                self.assertTrue(decoded.wait(1.0))
+                time.sleep(0.05)
+            self.assertEqual(attempted, [(400, None)])
+        finally:
+            engine.stop()
 
     def test_strong_header_crc_failure_skips_other_hop_keys_and_symbol_rates(self):
         listener = FakeListener()

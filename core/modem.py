@@ -459,10 +459,33 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
     # candidate; only a CRC-valid packet escapes this loop.
     for candidate_number, (sync_score, preamble_start, wire_label, sync_bits) in enumerate(candidates, 1):
         try:
+            frequency_limit = int(profile.frequency_search_limit_hz)
             frequency_offset, frequency_score = estimate_frequency_offset(
                 x, preamble_start, sps, sync_bits, mark, space, sample_rate,
-                search_limit_hz=profile.frequency_search_limit_hz,
+                search_limit_hz=frequency_limit,
                 step_hz=profile.frequency_search_step_hz)
+            # A best offset exactly on the search boundary is censored data:
+            # the actual carrier error may lie outside the current profile.
+            # Expand only for these boundary hits so ordinary frames retain
+            # the existing low-cost search.
+            if abs(frequency_offset) >= frequency_limit:
+                expanded_limit = min(900, max(frequency_limit + 120, frequency_limit * 2))
+                if expanded_limit > frequency_limit:
+                    expanded_offset, expanded_score = estimate_frequency_offset(
+                        x, preamble_start, sps, sync_bits, mark, space, sample_rate,
+                        search_limit_hz=expanded_limit,
+                        step_hz=profile.frequency_search_step_hz)
+                    if expanded_score > frequency_score:
+                        report(
+                            "CHANNEL",
+                            "Carrier-frequency search expanded after reaching its boundary",
+                            initial_offset_hz=frequency_offset,
+                            initial_score=f"{frequency_score:.4f}",
+                            expanded_offset_hz=expanded_offset,
+                            expanded_score=f"{expanded_score:.4f}",
+                            expanded_limit_hz=expanded_limit,
+                        )
+                        frequency_offset, frequency_score = expanded_offset, expanded_score
             report("CHANNEL", "Carrier-frequency offset estimated from the preamble",
                    offset_hz=frequency_offset, normalized_score=f"{frequency_score:.4f}")
             report("BITS", "Preamble synchronized; decoding protected frame header",

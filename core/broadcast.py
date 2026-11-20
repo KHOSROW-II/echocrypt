@@ -584,6 +584,11 @@ class BroadcastReassembler:
                 self.max_partials < 1 or self.max_file_metadata < 1 or
                 self.expiry_seconds <= 0):
             raise ValueError("Invalid broadcast reassembly limits")
+        if self.max_file_size > self.max_partial_bytes:
+            raise ValueError(
+                "max_file_size cannot exceed max_partial_bytes because file "
+                "fragments are retained in memory until final verification"
+            )
         self._partials = OrderedDict()
         self._file_meta = {}
         self._file_meta_updated = {}

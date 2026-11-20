@@ -136,6 +136,7 @@ class BroadcastCodecTests(unittest.TestCase):
             self.assertEqual(receiver.decode(recovered).kind, BroadcastType.FILE_CHUNK)
 
     def test_file_frames_decode_sequentially_after_weak_channel_profile_adaptation(self):
+        import numpy as np
         from core.recovery.engine import AdaptiveSignalRecoveryEngine
         from core.recovery.profile_generator import default_profile
 

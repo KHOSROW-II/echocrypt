@@ -240,6 +240,44 @@ class DirectSDKTests(unittest.TestCase):
 
 
 class SecureFileSDKTests(unittest.TestCase):
+    def test_close_unblocks_a_file_event_waiting_without_timeout(self):
+        class FakeSubscription:
+            def close(self):
+                pass
+
+        class FakePeer:
+            connected = True
+            handshake = SimpleNamespace()
+            client = SimpleNamespace(config=AcousticConfig(max_packet_bytes=1024))
+
+            def add_raw_packet_handler(self, _handler):
+                return FakeSubscription()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            transfer = SecureFileTransfer(
+                FakePeer(), receive_root=Path(tmp) / "recv",
+                state_root=Path(tmp) / "state",
+            )
+            entered = threading.Event()
+            errors = []
+
+            def wait_for_event():
+                entered.set()
+                try:
+                    transfer.receive_event(timeout=None)
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=wait_for_event)
+            worker.start()
+            self.assertTrue(entered.wait(0.5))
+            transfer.close()
+            worker.join(0.5)
+
+            self.assertFalse(worker.is_alive(), "close() left receive_event() blocked")
+            self.assertEqual(len(errors), 1)
+            self.assertIn("closed", str(errors[0]).lower())
+
     def test_close_unblocks_a_file_transfer_waiting_for_ack(self):
         import time
 

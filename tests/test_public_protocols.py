@@ -251,6 +251,7 @@ class SecureFileSDKTests(unittest.TestCase):
 
         class FakePeer:
             connected = True
+            handshake = SimpleNamespace()
             client = SimpleNamespace(config=AcousticConfig(max_packet_bytes=1024))
 
             def add_raw_packet_handler(self, _handler):

@@ -16,6 +16,7 @@ from core.recovery.interleaver import interleave, deinterleave
 from core.recovery.soft_decoder import fec_decode_soft
 from core.recovery.profile_generator import profile_for_grade, default_profile
 from core.recovery.engine import AdaptiveSignalRecoveryEngine
+from core.recovery.errors import HeaderCRCError
 from core.recovery.timing_recovery import CLOCK_RATIO_CANDIDATES
 
 
@@ -164,6 +165,31 @@ class ASRECodecTests(unittest.TestCase):
                     demodulate(waveform, RATE, 400, mark=1800, space=2400),
                     payload,
                 )
+
+    def test_header_decode_recovers_from_asymmetric_tone_channel_gain(self):
+        payload = bytes((index * 23 + 11) & 0xFF for index in range(96))
+        waveform = modulate(
+            payload, RATE, 400, gain=0.45, fec_mode="conv",
+            wire_version=3,
+        )
+        # Model a speaker/microphone path that attenuates the MARK band
+        # substantially more than the SPACE band.
+        spectrum = np.fft.rfft(waveform)
+        frequencies = np.fft.rfftfreq(len(waveform), d=1.0 / RATE)
+        mark_band = (frequencies >= 1500) & (frequencies <= 2100)
+        spectrum[mark_band] *= 0.25
+        imbalanced = np.fft.irfft(spectrum, n=len(waveform)).astype(np.float32)
+        self.assertEqual(demodulate(imbalanced, RATE, 400), payload)
+
+    def test_strong_sync_header_failure_stops_timing_retry_storm(self):
+        engine = AdaptiveSignalRecoveryEngine(default_profile())
+
+        def reject_header(_samples, **_kwargs):
+            raise HeaderCRCError("synthetic protected-header CRC failure", sync_score=0.72)
+
+        with self.assertRaises(HeaderCRCError):
+            engine.recover(np.zeros(48000, dtype=np.float32), reject_header)
+        self.assertEqual(engine.last_attempt_count, 1)
 
     def test_asre_reports_channel_metrics(self):
         payload = b"channel telemetry"

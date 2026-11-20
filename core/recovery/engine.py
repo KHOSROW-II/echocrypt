@@ -6,7 +6,7 @@ import struct
 
 from .profile_generator import default_profile, profile_for_grade
 from .timing_recovery import resample_clock
-from .errors import PreambleNotFoundError
+from .errors import HeaderCRCError, PreambleNotFoundError
 
 
 class AdaptiveSignalRecoveryEngine:
@@ -76,12 +76,24 @@ class AdaptiveSignalRecoveryEngine:
                     if isinstance(exc, PreambleNotFoundError):
                         # Clock resampling cannot rescue a capture that has no
                         # recognizable preamble in the full pre-roll search.
-                        # Let the caller test the next supported symbol rate.
                         break
-            if isinstance(last_error, PreambleNotFoundError):
+                    if isinstance(exc, HeaderCRCError) and (
+                            exc.sync_score >= 0.50 or attempts >= 5):
+                        # A strong, stable preamble with a failed header CRC is
+                        # not helped by blindly testing all 17 clock ratios.
+                        # Keep recovery bounded so RX can reach queued fragments.
+                        break
+            if isinstance(last_error, PreambleNotFoundError) or (
+                    isinstance(last_error, HeaderCRCError) and
+                    (last_error.sync_score >= 0.50 or attempts >= 5)):
                 break
         self.last_attempt_count = attempts
         if last_error is None:
             raise ValueError("ASRE has no recovery candidates")
+        if isinstance(last_error, HeaderCRCError):
+            raise HeaderCRCError(
+                f"ASRE stopped after {attempts} bounded candidates: {last_error}",
+                sync_score=last_error.sync_score,
+            ) from last_error
         raise ValueError(f"ASRE exhausted {attempts} recovery candidates: {last_error}") from last_error
 

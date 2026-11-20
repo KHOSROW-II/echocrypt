@@ -13,7 +13,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from core.recovery.channel_analyzer import analyze_channel
 from core.recovery.engine import AdaptiveSignalRecoveryEngine
-from core.recovery.errors import PreambleNotFoundError
+from core.recovery.errors import HeaderCRCError, PreambleNotFoundError
 from core.recovery.frequency_recovery import estimate_frequency_offset
 from core.recovery.profile_generator import default_profile
 from core.recovery.interleaver import interleave, deinterleave
@@ -113,17 +113,25 @@ def _header_v2_encode(header: bytes):
 
 
 def _header_v2_decode(llrs):
+    """Decode the duplicated, CRC-protected ECF2/ECF3 header.
+
+    The combined soft decisions remain the primary path. When one copy is
+    badly faded, independently validating each copy can still recover the
+    header without weakening its CRC requirement.
+    """
     if len(llrs) != HEADER_V2_BITS:
-        raise ValueError("Protected ECF2 header bit count mismatch")
+        raise ValueError("Protected ECF2/ECF3 header bit count mismatch")
     copy_length = HEADER_V2_COPY_BITS
-    combined = [(float(llrs[i]) + float(llrs[copy_length + i])) / 2.0
-                 for i in range(copy_length)]
-    protected = hamming1511_decode_soft(combined, HEADER_V2_BYTES)
-    header, received_crc = protected[:-4], struct.unpack("!I", protected[-4:])[0]
-    expected_crc = zlib.crc32(header) & 0xffffffff
-    if received_crc != expected_crc:
-        raise ValueError("ECF2 protected header CRC mismatch")
-    return header
+    first = [float(x) for x in llrs[:copy_length]]
+    second = [float(x) for x in llrs[copy_length:]]
+    combined = [(first[i] + second[i]) / 2.0 for i in range(copy_length)]
+    for candidate in (combined, first, second):
+        protected = hamming1511_decode_soft(candidate, HEADER_V2_BYTES)
+        header, received_crc = protected[:-4], struct.unpack("!I", protected[-4:])[0]
+        expected_crc = zlib.crc32(header) & 0xffffffff
+        if received_crc == expected_crc:
+            return header
+    raise HeaderCRCError("ECF2/ECF3 protected header CRC mismatch")
 
 
 def modulate(payload, sample_rate=48000, symbol_rate=200, mark=1800, space=2400,
@@ -201,10 +209,49 @@ def _energy(seg, f, rate):
     return abs(np.sum(seg * _reference(len(seg), f, rate))) ** 2
 
 
-def _soft_symbol_metric(seg, mark_frequency, space_frequency, sample_rate):
+def _soft_symbol_metric(seg, mark_frequency, space_frequency, sample_rate,
+                        tone_balance=None):
     e_mark = _energy(seg, mark_frequency, sample_rate)
     e_space = _energy(seg, space_frequency, sample_rate)
+    if tone_balance is not None:
+        # Normalize fixed-frequency channel gain estimated from the known sync
+        # symbols. This is used for the fixed header only; hopping payload tones
+        # have different frequencies and must not inherit this calibration.
+        mark_reference, space_reference = tone_balance
+        e_mark /= max(float(mark_reference), 1e-18)
+        e_space /= max(float(space_reference), 1e-18)
     return float((e_mark - e_space) / (e_mark + e_space + 1e-18))
+
+
+def _estimate_preamble_tone_balance(samples, start, samples_per_symbol,
+                                    sync_bits, mark, space, sample_rate,
+                                    frequency_offset=0):
+    """Estimate relative mark/space channel gain from known preamble bits."""
+    x = np.asarray(samples, dtype=np.float64).reshape(-1)
+    mark_levels = []
+    space_levels = []
+    mark_frequency = mark + frequency_offset
+    space_frequency = space + frequency_offset
+    for index, expected in enumerate(sync_bits):
+        begin = start + index * samples_per_symbol
+        segment = x[begin:begin + samples_per_symbol]
+        if len(segment) != samples_per_symbol:
+            continue
+        if expected:
+            mark_levels.append(_energy(segment, mark_frequency, sample_rate))
+        else:
+            space_levels.append(_energy(segment, space_frequency, sample_rate))
+    if len(mark_levels) < 8 or len(space_levels) < 8:
+        return None
+    mark_reference = float(np.median(mark_levels))
+    space_reference = float(np.median(space_levels))
+    if (not math.isfinite(mark_reference) or not math.isfinite(space_reference)
+            or min(mark_reference, space_reference) <= 1e-18):
+        return None
+    ratio = mark_reference / space_reference
+    if not math.isfinite(ratio) or not 0.05 <= ratio <= 20.0:
+        return None
+    return mark_reference, space_reference
 
 
 def _find_preamble_candidates(x, starts, windows, samples_per_symbol, sample_rate,
@@ -401,6 +448,7 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
 
     profile = recovery_profile or default_profile()
     failures = []
+    header_crc_failure_scores = []
     protected_header_valid = False
     # A false preamble candidate must not hide the real one. We validate the
     # duplicated protected header and final frame CRC for each bounded
@@ -420,8 +468,12 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                    candidate=f"{candidate_number}/{len(candidates)}",
                    preamble_score=f"{sync_score:.4f}")
 
-            def get_llr(symbol_index: int, hopping_seed: int = 0):
-                begin = preamble_start + symbol_index * sps
+            header_timing_offset = 0
+
+            def get_llr(symbol_index: int, hopping_seed: int = 0,
+                        *, timing_offset=None, tone_balance=None):
+                phase_offset = header_timing_offset if timing_offset is None else int(timing_offset)
+                begin = preamble_start + symbol_index * sps + phase_offset
                 segment = x[begin:begin + sps]
                 if len(segment) < sps:
                     if len(segment) < int(sps * .90):
@@ -434,7 +486,9 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                 else:
                     bit_mark = mark + frequency_offset
                     bit_space = space + frequency_offset
-                return _soft_symbol_metric(segment, bit_mark, bit_space, sample_rate)
+                return _soft_symbol_metric(
+                    segment, bit_mark, bit_space, sample_rate,
+                    tone_balance=tone_balance)
 
             header_symbol_start = len(sync_bits)
             if wire_label == "ECF1":
@@ -447,9 +501,64 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                 expected_magic = FMAG_V1
             else:
                 header_symbol_count = HEADER_V2_BITS
-                repeated_header_llrs = [get_llr(header_symbol_start + i)
-                                         for i in range(header_symbol_count)]
-                header = _header_v2_decode(repeated_header_llrs)
+                try:
+                    repeated_header_llrs = [get_llr(header_symbol_start + i)
+                                             for i in range(header_symbol_count)]
+                    header = _header_v2_decode(repeated_header_llrs)
+                except HeaderCRCError as first_error:
+                    # The sync is known data, so estimate the relative gain of
+                    # both BFSK tones from it. Some speaker/microphone paths
+                    # attenuate one tone enough to bias every subsequent bit.
+                    balance = _estimate_preamble_tone_balance(
+                        x, preamble_start, sps, sync_bits, mark, space,
+                        sample_rate, frequency_offset,
+                    )
+                    phase_step = max(1, sps // 24)
+                    offsets = (0, -phase_step, phase_step,
+                               -2 * phase_step, 2 * phase_step)
+                    recovered = None
+                    recovered_offset = 0
+                    recovered_method = ""
+                    trials = 0
+                    balance_modes = []
+                    if balance is not None:
+                        balance_modes.append(("preamble-equalized", balance))
+                    balance_modes.append(("raw-phase", None))
+                    for method, tone_balance in balance_modes:
+                        for timing_offset in offsets:
+                            if method == "raw-phase" and timing_offset == 0:
+                                continue  # already tried the baseline path
+                            trial_llrs = [
+                                get_llr(header_symbol_start + i,
+                                        timing_offset=timing_offset,
+                                        tone_balance=tone_balance)
+                                for i in range(header_symbol_count)
+                            ]
+                            trials += 1
+                            try:
+                                recovered = _header_v2_decode(trial_llrs)
+                                recovered_offset = timing_offset
+                                recovered_method = method
+                                break
+                            except HeaderCRCError:
+                                pass
+                        if recovered is not None:
+                            break
+                    if recovered is None:
+                        raise HeaderCRCError(
+                            "ECF2/ECF3 protected header CRC mismatch after "
+                            f"{trials} channel-balance/timing recovery trials",
+                            sync_score=sync_score,
+                        ) from first_error
+                    header = recovered
+                    header_timing_offset = recovered_offset
+                    report("HEADER_RECOVERY",
+                           "Protected header recovered with preamble channel calibration",
+                           method=recovered_method,
+                           symbol_offset_samples=header_timing_offset,
+                           mark_space_energy_ratio=(
+                               f"{balance[0] / balance[1]:.4f}" if balance else "unavailable"),
+                           trials=trials + 1)
                 expected_magic = FMAG_V3 if wire_label == "ECF3" else FMAG_V2
             magic, length, fec_id, seed = HEAD.unpack(header)
             report("FRAME", "Protected frame header parsed and independently validated",
@@ -531,6 +640,8 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                    timing_offset_samples=metrics.timing_offset_samples)
             return (payload, metrics) if return_metrics else payload
         except (ValueError, struct.error) as exc:
+            if isinstance(exc, HeaderCRCError):
+                header_crc_failure_scores.append(float(sync_score))
             failures.append(f"{candidate_number}:{wire_label}@{preamble_start} score={sync_score:.3f} {type(exc).__name__}: {exc}")
             report("SYNC_CANDIDATE", "Preamble candidate failed validation; trying another candidate",
                    candidate=f"{candidate_number}/{len(candidates)}", format=wire_label,
@@ -538,6 +649,12 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                    error=type(exc).__name__, detail=str(exc))
 
     detail = " | ".join(failures[:8])
+    if candidates and header_crc_failure_scores and len(header_crc_failure_scores) == len(failures):
+        raise HeaderCRCError(
+            "No preamble candidate passed the protected header CRC; "
+            f"tried={len(failures)} best_score={max(header_crc_failure_scores):.3f}: {detail}",
+            sync_score=max(header_crc_failure_scores),
+        )
     if (not candidates or candidates[0][0] < 0.30) and not protected_header_valid:
         # Weak random/noise correlations are not worth multiplying into a
         # sample-clock retry storm. A weak preamble is retained only when its

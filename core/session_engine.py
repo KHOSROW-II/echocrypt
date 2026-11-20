@@ -16,6 +16,7 @@ import numpy as np
 
 from core.audio import ContinuousAudioListener, play, stop_playback
 from core.modem import HOP_OFFSETS, SYNC_V2, demodulate, modulate
+from core.recovery.errors import HeaderCRCError
 
 
 class SessionEngineError(RuntimeError):
@@ -589,6 +590,14 @@ class AudioSessionEngine:
                     self._debug("RECOVERY", "Acoustic frame decode attempt failed",
                                 symbol_rate=rate, error=type(exc).__name__, detail=str(exc),
                                 samples=len(samples))
+                    if isinstance(exc, HeaderCRCError) and exc.sync_score >= 0.50:
+                        self._debug(
+                            "RECOVERY",
+                            "Strong preamble found but protected header CRC failed; "
+                            "skipping unrelated baud-rate guesses",
+                            symbol_rate=rate, preamble_score=f"{exc.sync_score:.4f}",
+                        )
+                        break
             if packet is None:
                 self._debug("FRAME_REJECTED", "Acoustic burst rejected at all configured symbol rates",
                             attempts=len(errors), errors=" ; ".join(errors),

@@ -98,7 +98,7 @@ class AdaptiveSignalRecoveryEngine:
                             pass
 
                     if (isinstance(exc, PreambleNotFoundError)
-                            and strongest_header_error is None):
+                            and strongest_sync_error is None):
                         # No signal was synchronized; clock correction is unlikely
                         # to manufacture a missing preamble.
                         break

@@ -206,6 +206,32 @@ class DirectSDKTests(unittest.TestCase):
         self.assertIn("closed", str(errors[0]).lower())
 
 
+    def test_close_unblocks_direct_receive_text_and_bytes(self):
+        for method_name in ("receive_text", "receive_bytes"):
+            peer_a, peer_b, _client_a, _client_b = make_connected_peers()
+            entered = threading.Event()
+            errors = []
+
+            def wait_for_data():
+                entered.set()
+                try:
+                    getattr(peer_b, method_name)(timeout=None)
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=wait_for_data)
+            worker.start()
+            self.assertTrue(entered.wait(0.5))
+            peer_b.close()
+            worker.join(0.5)
+            peer_a.close()
+
+            self.assertFalse(
+                worker.is_alive(), f"close() left {method_name}(timeout=None) blocked"
+            )
+            self.assertEqual(len(errors), 1)
+            self.assertIn("closed", str(errors[0]).lower())
+
     def test_reliable_text_is_acknowledged_and_delivered_once(self):
         peer_a, peer_b, client_a, _client_b = make_connected_peers()
         try:

@@ -164,12 +164,16 @@ class BroadcastCodecTests(unittest.TestCase):
         frames = sender.encode_text("thread safety " * 80, message_id=b"THREAD01")
         reassembler = BroadcastReassembler(receiver)
         barrier = threading.Barrier(3)
+        completed = []
 
         def feed_frames():
             barrier.wait()
             for _ in range(4):
                 for frame in frames:
-                    reassembler.feed(frame)
+                    result = reassembler.feed(frame)
+                    if (result is not None and getattr(result, "complete", False)
+                            and not getattr(result, "duplicate", False)):
+                        completed.append(result)
 
         def scan_missing():
             barrier.wait()
@@ -183,13 +187,10 @@ class BroadcastCodecTests(unittest.TestCase):
             feed.result(timeout=5)
             scan.result(timeout=5)
 
-        final = None
-        for frame in frames:
-            result = reassembler.feed(frame)
-            if result is not None and getattr(result, "complete", False):
-                final = result
-        self.assertIsNotNone(final)
-        self.assertEqual(final.payload.decode(), "thread safety " * 80)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].payload.decode(), "thread safety " * 80)
+        # The completion marker remains in the deduplication cache after
+        # concurrent retry snapshots and duplicate frames.
 
     def test_retransmit_cache_forget_removes_only_requested_kind_or_entire_message(self):
         sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)

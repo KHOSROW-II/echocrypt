@@ -335,3 +335,9 @@ Its primary objective is to make direct, network-independent data exchange possi
 ## Security
 
 Please read the [Security Policy](SECURITY.md) before using ECHO-CRYPT or reporting a vulnerability. ECHO-CRYPT is experimental: Direct mode has not received an independent security audit, and Broadcast mode is public and provides no confidentiality or cryptographic sender authentication. The current private identity key is stored unencrypted at rest.
+
+---
+
+## License
+
+ECHO-CRYPT is distributed under the MIT License. You may use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software, subject to the conditions in [LICENSE](LICENSE). The software is provided without warranty.

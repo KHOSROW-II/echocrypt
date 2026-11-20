@@ -149,6 +149,22 @@ class ASRECodecTests(unittest.TestCase):
         self.assertIn(metrics.frequency_offset_hz, (20.0, 30.0))
         self.assertGreaterEqual(metrics.mean_bit_confidence, 0.5)
 
+    def test_large_acoustic_carrier_offsets_are_recovered(self):
+        payload = bytes((index * 13 + 9) & 0xFF for index in range(64))
+        # Exercise the wider bounded search needed when two audio paths have
+        # significant end-to-end frequency error.
+        for offset in (-220, 220):
+            with self.subTest(offset_hz=offset):
+                waveform = modulate(
+                    payload, RATE, 400,
+                    mark=1800 + offset, space=2400 + offset,
+                    gain=0.45, fec_mode="conv",
+                )
+                self.assertEqual(
+                    demodulate(waveform, RATE, 400, mark=1800, space=2400),
+                    payload,
+                )
+
     def test_asre_reports_channel_metrics(self):
         payload = b"channel telemetry"
         waveform = modulate(payload)

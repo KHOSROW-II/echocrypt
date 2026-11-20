@@ -290,6 +290,9 @@ class AudioSessionEngine:
         self._debug("SESSION", "Continuous acoustic session engine started",
                     sample_rate=self.config.sample_rate,
                     symbol_rates=",".join(str(x) for x in self.symbol_rates),
+                    mark_hz=self.config.mark_hz, space_hz=self.config.space_hz,
+                    input_device=("SYSTEM DEFAULT" if self.config.input_device is None else self.config.input_device),
+                    output_device=("SYSTEM DEFAULT" if self.config.output_device is None else self.config.output_device),
                     max_packet_bytes=self.max_packet_bytes,
                     channel_access="broadcast" if isinstance(self.channel_access, AcousticChannelAccess)
                     and self.channel_access.max_wait_seconds == 5.0 else

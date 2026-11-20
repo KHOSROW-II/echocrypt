@@ -1102,14 +1102,16 @@ def _engine_send_text(channel, engine, text, cfg, progress_callback=None):
 
 
 def _supported_symbol_rates(cfg):
-    # Try the fast, still well-sampled profile first. Voice notes use the
-    # fast profile to cut airtime; ordinary text falls through to 400/default
-    # baud when its preamble is not present at the faster rate.
-    candidates = (cfg.fast_symbol_rate, 400, cfg.symbol_rate, 100)
+    """Receive reliable chat rates first, while retaining fast-rate compatibility.
+
+    Direct reliable sends and Broadcast prefer 400 baud. Older peers may still
+    transmit at the configured fast rate, so retain it as a final fallback.
+    """
+    candidates = (400, cfg.symbol_rate, 100, cfg.fast_symbol_rate)
     rates = []
-    for rate in candidates:
+    for raw_rate in candidates:
         try:
-            rate = int(rate)
+            rate = int(raw_rate)
             if rate > 0 and cfg.sample_rate % rate == 0 and cfg.sample_rate // rate >= 32:
                 if rate not in rates:
                     rates.append(rate)
@@ -1404,7 +1406,7 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                 # Retransmit with the PHY profile declared by the cached
                 # fragment descriptor, not blindly with the local default.
                 cached = codec.decode(frame)
-                retry_rate = int(cached.symbol_rate or engine.symbol_rates[0])
+                retry_rate = int(cached.symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
                 # Broadcast v2 currently validates and advertises convolutional
                 # FEC only. Keep the retransmission PHY profile identical to
                 # the descriptor instead of silently guessing another decoder.
@@ -1594,7 +1596,7 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                         request_flags=request_flags,
                     )
                     engine.submit_packet(request, fec_mode="conv",
-                                         symbol_rate=engine.symbol_rates[0], hop_key=None,
+                                         symbol_rate=_reliable_chat_symbol_rate_plan(engine.config)[0], hop_key=None,
                                          label=f"BROADCAST SELECTIVE RETRY {batch_index // maximum + 1}")
                     if on_debug is not None:
                         on_debug("BROADCAST_RETRY", "Automatic selective resend request queued",
@@ -1611,7 +1613,9 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
 def _broadcast_send_frames(engine, frames, label, *, copies=1, progress_callback=None,
                            cancel_event=None, symbol_rate=None):
     """Send public frames, reporting progress and honoring user cancellation."""
-    rate = int(symbol_rate or engine.symbol_rates[0])
+    # Broadcast has no delivery ACK: prefer the conservative reliable-chat
+    # profile rather than blindly selecting the fastest available rate.
+    rate = int(symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
     copies = max(1, min(5, int(copies)))
     total = len(frames)
     completed = 0
@@ -1927,13 +1931,15 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 frames = codec.encode_text(message)
                 mid = codec.decode(frames[0]).message_id
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
+                broadcast_rate = _reliable_chat_symbol_rate_plan(cfg)[0]
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text encoded and cached",
                                message_id=mid.hex(), payload_bytes=len(message.encode("utf-8")),
-                               fragments=len(frames), copies=3,
+                               fragments=len(frames), copies=3, symbol_rate=broadcast_rate,
                                fragment_payload_limit=codec.max_fragment_payload)
                 report_tx("BROADCAST TEXT", 0, len(frames) * 3, "frames")
                 _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=3,
+                    symbol_rate=broadcast_rate,
                     progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit))
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text transmission sequence completed",
@@ -1972,14 +1978,13 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 _check_cancelled(cancel_event)
                 engine = engine_ref["engine"]
                 voice_transfer = description == "voice note"
-                voice_rate = (800 if voice_transfer and 800 in engine.symbol_rates
-                              else engine.symbol_rates[0])
-                # Keep voice frames short enough that a lost fragment is cheap
-                # to repair; the per-fragment descriptor protects each piece.
+                broadcast_rate = _reliable_chat_symbol_rate_plan(engine.config)[0]
+                # No-ACK Broadcast uses a conservative rate for every frame,
+                # including voice, so receivers have a realistic chance to decode it.
                 chunk_size = 192 if voice_transfer else 512
                 mid, frames = codec.encode_file(
                     path, chunk_size=chunk_size,
-                    symbol_rate=voice_rate, fec_mode="conv", hopping=True,
+                    symbol_rate=broadcast_rate, fec_mode="conv", hopping=True,
                 )
                 _check_cancelled(cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.FILE_META, frames[:1])
@@ -1990,12 +1995,13 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     trace.emit("BROADCAST_TX", "Broadcast file encoded and resend cache populated",
                                message_id=mid.hex(), filename=path.name,
                                file_bytes=size_bytes, total_frames=len(frames),
-                               chunk_frames=len(chunk_frames), manifest_frames=1)
+                               chunk_frames=len(chunk_frames), manifest_frames=1,
+                               symbol_rate=broadcast_rate)
                 manifest_label = "BROADCAST VOICE NOTE MANIFEST" if voice_transfer else "BROADCAST FILE MANIFEST"
                 chunks_label = "BROADCAST VOICE NOTE" if voice_transfer else f"BROADCAST FILE {path.name}"
                 report_tx(manifest_label, 0, 1, "frames")
                 _broadcast_send_frames(engine_ref["engine"], frames[:1],
-                    manifest_label, copies=1, symbol_rate=voice_rate,
+                    manifest_label, copies=1, symbol_rate=broadcast_rate,
                     progress_callback=lambda current, total, unit: report_tx(manifest_label, current, total, unit),
                     cancel_event=cancel_event)
                 if frames[1:]:
@@ -2004,7 +2010,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     _broadcast_send_frames(engine_ref["engine"], chunk_frames,
                         chunks_label, copies=1,
                         progress_callback=lambda current, total, unit: report_tx(chunks_label, current, total, "chunks"),
-                        cancel_event=cancel_event, symbol_rate=voice_rate)
+                        cancel_event=cancel_event, symbol_rate=broadcast_rate)
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast file transmission sequence completed",
                                message_id=mid.hex(), filename=path.name,

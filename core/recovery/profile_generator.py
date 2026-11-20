@@ -10,7 +10,7 @@ from .timing_recovery import CLOCK_RATIO_CANDIDATES
 class RecoveryProfile:
     name: str
     clock_ratios: tuple[float, ...] = CLOCK_RATIO_CANDIDATES
-    frequency_search_limit_hz: int = 100
+    frequency_search_limit_hz: int = 240
     frequency_search_step_hz: int = 10
 
 
@@ -23,9 +23,9 @@ def profile_for_grade(grade: str) -> RecoveryProfile:
     normalized = str(grade).upper()
     if normalized == "GOOD":
         return RecoveryProfile("ASRE-LOW-LATENCY",
-                               (1.0, 1.00005, 0.99995, 1.0001, 0.9999), 60, 10)
+                               (1.0, 1.00005, 0.99995, 1.0001, 0.9999), 180, 10)
     if normalized == "FAIR":
         return default_profile()
     if normalized == "WEAK":
-        return RecoveryProfile("ASRE-RESILIENT", CLOCK_RATIO_CANDIDATES, 140, 10)
+        return RecoveryProfile("ASRE-RESILIENT", CLOCK_RATIO_CANDIDATES, 360, 10)
     raise ValueError("Unknown channel grade")

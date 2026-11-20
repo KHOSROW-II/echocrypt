@@ -93,6 +93,41 @@ class BroadcastDebugTests(unittest.TestCase):
         self.assertTrue(engine.calls[0][1]["disable_hopping"])
 
 
+    def test_broadcast_sender_reports_the_frame_before_playback(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        config = SimpleNamespace(sample_rate=48000, symbol_rate=200,
+                                 fast_symbol_rate=800)
+
+        class RecordingEngine:
+            def __init__(self):
+                self.config = config
+                self.calls = []
+
+            def send_packet(self, packet, **kwargs):
+                self.calls.append((bytes(packet), kwargs))
+
+        engine = RecordingEngine()
+        starts = []
+        with patch("interface.communication.packet_duration", return_value=2.5):
+            _broadcast_send_frames(
+                engine, [b"manifest", b"chunk-one"], "FILE",
+                copies=2, symbol_rate=800,
+                on_frame_start=lambda *args: starts.append(args),
+            )
+
+        self.assertEqual(len(engine.calls), 4)
+        self.assertEqual(
+            starts,
+            [
+                (1, 2, 1, 2, len(b"manifest"), 800, 2.5),
+                (1, 2, 2, 2, len(b"manifest"), 800, 2.5),
+                (2, 2, 1, 2, len(b"chunk-one"), 800, 2.5),
+                (2, 2, 2, 2, len(b"chunk-one"), 800, 2.5),
+            ],
+        )
+
     def test_broadcast_receive_uses_only_the_current_fixed_rate(self):
         from types import SimpleNamespace
 

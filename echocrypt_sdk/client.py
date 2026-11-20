@@ -368,7 +368,14 @@ class AcousticClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     try:
-                        return bytes(self._packets.get_nowait())
+                        packet = self._packets.get_nowait()
+                        if packet is _SENTINEL:
+                            if self._closed:
+                                raise ClientClosedError(
+                                    "This AcousticClient has been closed"
+                                )
+                            continue
+                        return bytes(packet)
                     except queue.Empty as exc:
                         if self._closed:
                             raise ClientClosedError(

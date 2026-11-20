@@ -1317,7 +1317,6 @@ def _engine_send_file(channel, engine, source, cfg, *,
         on_outgoing_created(outgoing)
     if progress_callback:
         progress_callback(f"{manifest.filename} · manifest", 0, 1, "frames")
-    manifest_packet = channel.manifest_packet(outgoing, cfg.max_payload)
     rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
 
     completion_result = {}
@@ -1360,6 +1359,10 @@ def _engine_send_file(channel, engine, source, cfg, *,
         # the receiver sends ACK and RESUME back-to-back.
         ack_waiter = engine.expect_packet(verify_manifest_ack)
         resume_waiter = engine.expect_packet(verify_resume)
+        # Build a fresh authenticated envelope for each logical manifest
+        # exchange. Replaying the original ciphertext after a long transfer
+        # can fall outside the receiver's bounded duplicate/replay windows.
+        manifest_packet = channel.manifest_packet(outgoing, cfg.max_payload)
         try:
             _engine_wait_for_response(
                 engine, manifest_packet, verify_manifest_ack, cfg,

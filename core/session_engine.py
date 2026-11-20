@@ -21,7 +21,7 @@ from core.recovery.errors import FrameCRCError, HeaderCRCError
 
 # Broadcast frames need a quiet gap longer than the listener's 300 ms
 # burst-ending threshold, otherwise consecutive packets can be merged.
-BROADCAST_INTER_FRAME_GAP_SECONDS = 1.0
+BROADCAST_INTER_FRAME_GAP_SECONDS = 1.25
 
 
 class SessionEngineError(RuntimeError):

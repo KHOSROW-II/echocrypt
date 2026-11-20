@@ -28,6 +28,59 @@ def _sounddevice(allow_install=True):
         raise RuntimeError(f"sounddevice could not load its PortAudio runtime. {detail}") from exc
 
 
+def _is_android_audio_runtime():
+    """Return whether this process is running inside an Android userspace."""
+    return bool(
+        os.environ.get("ANDROID_ROOT")
+        or os.environ.get("ANDROID_DATA")
+        or os.path.exists("/system/bin/app_process")
+        or os.environ.get("TERMUX_VERSION")
+    )
+
+
+def _is_termux_audio_runtime():
+    """Avoid treating inherited Termux variables inside unrelated Linux as Termux."""
+    prefix = os.environ.get("PREFIX", "")
+    return bool(
+        os.environ.get("TERMUX_VERSION")
+        and prefix.startswith("/data/data/com.termux/")
+    )
+
+
+def _explain_android_input_error(exc):
+    """Add Android-specific guidance to native microphone initialization failures."""
+    message = str(exc)
+    lowered = message.lower()
+    opensles_failure = (
+        "opensles" in lowered
+        or "paerrorcode -9999" in lowered
+        or "initializing inputstream failed" in lowered
+    )
+    if not _is_android_audio_runtime() or not opensles_failure:
+        return exc
+
+    guidance = [
+        "EchoCrypt could not open the Android microphone through PortAudio.",
+        "This happens before modem decoding or Broadcast protocol handling.",
+        "Check Android's microphone privacy toggle and the Microphone permission "
+        "for the Android app that is actually running this Python process.",
+        "Close other apps that may be holding the microphone, then retry.",
+    ]
+    if _is_termux_audio_runtime():
+        guidance.extend([
+            "Termux note: the current upstream termux-app AndroidManifest does "
+            "not declare RECORD_AUDIO. If your installed Termux APK has no "
+            "Microphone permission entry, Android cannot grant that permission "
+            "to PortAudio/OpenSL ES running inside Termux.",
+            "The RECORD_AUDIO permission of the separate Termux:API app does "
+            "not transfer to the Termux process. termux-microphone-record "
+            "writes a recording file; it is not a live PCM stream that can "
+            "replace EchoCrypt's continuous modem input.",
+        ])
+    guidance.append(f"Underlying audio error: {message}")
+    return RuntimeError("\n".join(guidance))
+
+
 def default_device_names(allow_install=False):
     """Return OS-selected default input/output names, never the first enumerated device."""
     sd = _sounddevice(allow_install=allow_install)
@@ -675,7 +728,10 @@ class ContinuousAudioListener:
                 except Exception:
                     pass
                 self._stream = None
-            raise
+            explained = _explain_android_input_error(exc)
+            if explained is exc:
+                raise
+            raise explained from exc
         return self
 
     def _collector_loop(self):

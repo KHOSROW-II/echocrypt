@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from core.audio import ContinuousAudioListener
+from core.audio import ContinuousAudioListener, _explain_android_input_error
 from core.modem import demodulate, modulate
 
 
@@ -52,6 +52,35 @@ class _FakeSoundDevice:
 
 
 class ContinuousAudioListenerTests(unittest.TestCase):
+    def test_android_opensles_input_failure_has_actionable_termux_guidance(self):
+        import os
+
+        error = RuntimeError(
+            "Error opening InputStream: Unanticipated host error "
+            "[PaErrorCode -9999]: 'Initializing inputstream failed' "
+            "[android OpenSLES error -9999]"
+        )
+        with patch.dict(os.environ, {
+            "ANDROID_ROOT": "/system",
+            "TERMUX_VERSION": "0.118",
+            "PREFIX": "/data/data/com.termux/files/usr",
+        }, clear=True), patch("core.audio.os.path.exists", return_value=False):
+            explained = _explain_android_input_error(error)
+
+        self.assertIsInstance(explained, RuntimeError)
+        self.assertIn("before modem decoding", str(explained))
+        self.assertIn("RECORD_AUDIO", str(explained))
+        self.assertIn("Termux:API", str(explained))
+        self.assertIn("live PCM stream", str(explained))
+
+    def test_non_android_input_error_is_preserved(self):
+        import os
+
+        error = RuntimeError("OpenSL ES generic backend failure")
+        with patch.dict(os.environ, {}, clear=True), patch("core.audio.os.path.exists", return_value=False):
+            explained = _explain_android_input_error(error)
+        self.assertIs(explained, error)
+
     def test_continuous_listener_segments_and_decodes_a_hopped_modem_burst(self):
         listener = ContinuousAudioListener(
             48000,

@@ -106,6 +106,31 @@ class BroadcastCodecTests(unittest.TestCase):
         self.assertEqual(decoded.kind, BroadcastType.TEXT)
         self.assertEqual(decoded.payload, "open room: درود به همه".encode())
 
+    def test_large_fixed_broadcast_file_chunk_roundtrips_at_800_baud(self):
+        # Reproduce the exact large FILE_CHUNK PHY frame size used by the
+        # previous 512-byte application chunking strategy. This validates the
+        # modem independently of listener burst segmentation and hardware.
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "payload.bin"
+            source.write_bytes(bytes(range(256)) * 2)
+            sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=1024)
+            receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=1024)
+            _mid, frames = sender.encode_file(
+                source, chunk_size=512, symbol_rate=800, hopping=False,
+            )
+            frame = frames[1]
+            waveform = modulate(
+                frame, sample_rate=48000, symbol_rate=800,
+                mark=1800, space=2400, gain=0.40, max_payload=1024,
+                fec_mode="conv", hop_key=None,
+            )
+            recovered = demodulate(
+                waveform, sample_rate=48000, symbol_rate=800,
+                mark=1800, space=2400, max_payload=1024,
+            )
+            self.assertEqual(recovered, frame)
+            self.assertEqual(receiver.decode(recovered).kind, BroadcastType.FILE_CHUNK)
+
     def test_public_broadcast_waveform_uses_the_same_public_hopping_schedule(self):
         sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

@@ -30,12 +30,9 @@ CHAT_STYLE = Style.from_dict({
     "chat.retry": "bold #d8ad72", "chat.error": "bold #d17c70",
 })
 
-# Three circles chase one another inside a hollow arrow housing. The status
-# occupies exactly one terminal row; frames replace each other in place.
-SPINNER_FRAMES = (
-    "⟦ ● ○ ○ ▷ ⟧", "⟦ ○ ● ○ ▷ ⟧", "⟦ ○ ○ ● ▷ ⟧",
-    "⟦ ○ ○ ◉ ▷ ⟧", "⟦ ○ ◉ ○ ▷ ⟧", "⟦ ◉ ○ ○ ▷ ⟧",
-)
+# Compact ten-frame Braille spinner. Keep motion separate from the
+# status text and avoid decorative arrows that consume scarce terminal width.
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 CHAT_FOOTER_TEXT = (
     "  [Enter] Send   [F2] Attach file   [F4] Voice note\n"
     "  [Space hold] Push-to-talk   [F5] Emergency PTT   [F6] More   [F7] Cancel   [F9] Play voice   [Esc] Disconnect\n"
@@ -348,7 +345,7 @@ class ChatScreen:
                 detail = ""
             else:
                 label, progress, detail = "LISTENING · READY", "", ""
-            frame = SPINNER_FRAMES[int(time.monotonic() * 7) % len(SPINNER_FRAMES)]
+            frame = SPINNER_FRAMES[int(time.monotonic() * 10) % len(SPINNER_FRAMES)]
             parts = [frame, f"  {label}"]
             if progress:
                 parts.append(progress)
@@ -405,7 +402,7 @@ class ChatScreen:
         self._app = Application(
             layout=Layout(layout, focused_element=self.input),
             key_bindings=kb, full_screen=True, erase_when_done=True,
-            refresh_interval=0.12, style=CHAT_STYLE, input=input, output=output,
+            refresh_interval=0.08, style=CHAT_STYLE, input=input, output=output,
             mouse_support=True,
         )
         # A lone ESC is otherwise buffered for prompt_toolkit's default 500 ms

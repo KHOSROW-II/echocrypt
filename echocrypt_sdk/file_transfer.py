@@ -637,6 +637,7 @@ class SecureFileTransfer:
             pending_ack = self._pending_ack
             pending_resume = self._pending_resume
             active_transmission = self._active_transmission
+            control_transmission = self._control_transmission
             self._pending_ack = None
             self._pending_resume = None
             for event in self._pending_completion.values():
@@ -653,6 +654,27 @@ class SecureFileTransfer:
                 active_transmission.cancel()
             except Exception:
                 pass
+        if control_transmission is not None:
+            try:
+                control_transmission.cancel()
+            except Exception:
+                pass
+
+        # Drop queued response batches; no protocol response is useful after
+        # close. The active transmission is cancelled above before the worker
+        # is joined.
+        while True:
+            try:
+                self._control_queue.get_nowait()
+                self._control_queue.task_done()
+            except queue.Empty:
+                break
+        try:
+            self._control_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._control_thread is not threading.current_thread():
+            self._control_thread.join(timeout=1.0)
 
     def __enter__(self):
         return self

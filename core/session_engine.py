@@ -671,7 +671,12 @@ class AudioSessionEngine:
                                     error=type(exc).__name__, detail=str(exc),
                                     samples=len(samples))
                         if isinstance(exc, HeaderCRCError) and exc.sync_score >= 0.50:
+                            # The protected header is fixed-frequency; hopping
+                            # keys affect only payload symbols. A strong header
+                            # CRC failure cannot be repaired by trying another
+                            # receive key, so leave this key loop immediately.
                             strong_header_failure = True
+                            break
                 if packet is not None:
                     break
                 if strong_header_failure:

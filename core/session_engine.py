@@ -19,6 +19,11 @@ from core.modem import HOP_OFFSETS, SYNC_V2, demodulate, modulate
 from core.recovery.errors import FrameCRCError, HeaderCRCError
 
 
+# Broadcast frames need a quiet gap longer than the listener's 300 ms
+# burst-ending threshold, otherwise consecutive packets can be merged.
+BROADCAST_INTER_FRAME_GAP_SECONDS = 0.55
+
+
 class SessionEngineError(RuntimeError):
     pass
 

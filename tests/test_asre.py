@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+import core.modem as modem
+
 from core.modem import (
     HEADER_V2_COPY_BITS, HEADER_V2_BITS,
     SYNC_V2, SYNC_V3,
@@ -196,6 +198,49 @@ class ASRECodecTests(unittest.TestCase):
                     demodulate(waveform, RATE, 400, mark=1800, space=2400),
                     payload,
                 )
+
+    def test_weak_sync_at_carrier_search_boundary_gets_crc_gated_header_recovery(self):
+        payload = bytes((index * 19 + 7) & 0xFF for index in range(72))
+        waveform = modulate(
+            payload, RATE, 800,
+            mark=1440, space=2040,
+            gain=0.45, fec_mode="conv", wire_version=3,
+        )
+        original_candidates = modem._find_preamble_candidates
+        original_header_decode = modem._header_v2_decode
+        recovery_events = []
+        header_calls = {"count": 0}
+
+        def weak_candidate(*args, **kwargs):
+            candidates = original_candidates(*args, **kwargs)
+            return [
+                (0.36, start, label, sync_bits)
+                for _score, start, label, sync_bits in candidates
+            ]
+
+        def fail_first_header_copy(llrs):
+            header_calls["count"] += 1
+            if header_calls["count"] == 1:
+                raise HeaderCRCError("injected weak-header failure", sync_score=0.36)
+            return original_header_decode(llrs)
+
+        engine = AdaptiveSignalRecoveryEngine(profile_for_grade("WEAK"))
+        with patch.object(modem, "_find_preamble_candidates", side_effect=weak_candidate):
+            with patch.object(modem, "_header_v2_decode", side_effect=fail_first_header_copy):
+                recovered = demodulate(
+                    waveform, RATE, 800, mark=1800, space=2400,
+                    recovery_engine=engine,
+                    on_debug=lambda stage, message, **fields:
+                        recovery_events.append((stage, message, fields)),
+                )
+
+        self.assertEqual(recovered, payload)
+        self.assertGreaterEqual(header_calls["count"], 2)
+        self.assertTrue(any(
+            stage == "HEADER_RECOVERY"
+            and "weak sync at the carrier-search boundary" in message
+            for stage, message, _fields in recovery_events
+        ))
 
     def test_header_decode_recovers_from_asymmetric_tone_channel_gain(self):
         payload = bytes((index * 23 + 11) & 0xFF for index in range(96))

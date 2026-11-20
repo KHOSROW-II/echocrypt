@@ -162,7 +162,9 @@ class LegacyFileCompletionTests(unittest.TestCase):
         self.assertEqual(result.file_size, len(content))
 
     def test_legacy_chat_recovers_if_first_completion_notice_is_lost(self):
-        content = b"retry completion notice" * 41
+        # Exceed the 128-packet authenticated duplicate cache so the
+        # recovery manifest must be freshly encrypted, not replayed verbatim.
+        content = b"retry completion notice" * 4000
         result = self._run_transfer(content, drop_first_completion=True)
         self.assertEqual(result.sha256, hashlib.sha256(content).hexdigest())
 

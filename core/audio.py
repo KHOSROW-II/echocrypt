@@ -347,7 +347,7 @@ def record_until_packet(rate, device=None, start_timeout=120.0,
                         max_record_seconds=80.0, silence_seconds=0.45,
                         blocksize=1024, calibration_seconds=0.15,
                         pre_roll_seconds=0.65, activity_frequencies=(1800, 2400),
-                        on_debug=None):
+                        on_debug=None, cancel_event=None):
     """Arm input and capture a modem frame using tone-aware activity detection.
 
     Detection uses energy around the modem's MARK/SPACE frequencies rather than
@@ -367,6 +367,11 @@ def record_until_packet(rate, device=None, start_timeout=120.0,
     if not activity_frequencies or any(not 100 < float(f) < rate / 2 for f in activity_frequencies):
         raise ValueError("Invalid modem activity-detection frequencies")
 
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Acoustic receive cancelled")
+
+    check_cancelled()
     sd = _sounddevice()
     calibration_count = max(4, int(math.ceil(calibration_seconds * rate / blocksize)))
     pre_roll_count = max(4, int(math.ceil(pre_roll_seconds * rate / blocksize)))
@@ -384,6 +389,7 @@ def record_until_packet(rate, device=None, start_timeout=120.0,
         tone_levels = []
         started_at = time.monotonic()
         for _ in range(calibration_count):
+            check_cancelled()
             block, overflowed = stream.read(blocksize)
             if overflowed:
                 raise RuntimeError("Audio input overflowed during microphone calibration")
@@ -434,6 +440,7 @@ def record_until_packet(rate, device=None, start_timeout=120.0,
         best_ratio = max(tone_levels) if tone_levels else 0.0
 
         while True:
+            check_cancelled()
             now = time.monotonic()
             elapsed = now - started_at
             if not active and elapsed >= start_timeout:

@@ -12,8 +12,8 @@ import numpy as np
 from prompt_toolkit import prompt
 
 from core.audio import play, record, MicrophoneRecorder
-from core.binary_transfer import (ReliableBinaryChannel, BinaryTransferError, ACK_BODY,
-                                  AEAD_OVERHEAD, DATA_HEAD)
+from core.binary_transfer import (ReliableBinaryChannel, BinaryTransferError,
+                                  ChunkIntegrityError, ACK_BODY, AEAD_OVERHEAD, DATA_HEAD)
 from core.codec import (encode_voice_message, encode_emergency_voice_message,
                         encode_codec2_1300_message, decode_voice_message,
                         write_voice_wav, VOICE_MAGIC, VOICE2_MAGIC, VOICE3_MAGIC)
@@ -230,8 +230,8 @@ def _handshake_receive(handshake, packet, expected_label, trace):
 
 RELIABLE_DATA_COOLDOWN_SECONDS = 5
 
-
-def _reliable_data_transmission_cooldown(label, seconds=RELIABLE_DATA_COOLDOWN_SECONDS):
+def _reliable_data_transmission_cooldown(label, seconds=RELIABLE_DATA_COOLDOWN_SECONDS,
+                                         cancel_event=None):
     """Give the peer time to arm its microphone before a reliable DATA frame."""
     seconds = max(0, int(seconds))
     clean_label = str(label).strip().upper()
@@ -240,22 +240,29 @@ def _reliable_data_transmission_cooldown(label, seconds=RELIABLE_DATA_COOLDOWN_S
         flush=True,
     )
     for remaining in range(seconds, 0, -1):
+        _check_cancelled(cancel_event)
         print(f"  {clean_label} starts in {remaining}s...", flush=True)
-        time.sleep(1)
+        if cancel_event is not None:
+            if cancel_event.wait(1.0):
+                raise TransferCancelled("cancelled by user")
+        else:
+            time.sleep(1)
+    _check_cancelled(cancel_event)
     print(f"  Transmitting {clean_label} now.", flush=True)
 
-
 def _send_packet(packet, label, cfg, hop_key=None, symbol_rate=None, fec_mode="hamming",
-                 pre_transmit_delay=0):
+                 pre_transmit_delay=0, cancel_event=None):
     rate = cfg.symbol_rate if symbol_rate is None else int(symbol_rate)
     render_app_header(session_status=f"TRANSMITTING: {label[:24]}")
     duration = packet_duration(len(packet), cfg, fec_mode=fec_mode, symbol_rate=rate)
     print(f"{label}: {len(packet)} bytes | {rate} baud | FEC {fec_mode} | estimated {duration:.2f}s")
     if pre_transmit_delay:
-        _reliable_data_transmission_cooldown(label, pre_transmit_delay)
-    actual = transmit(packet, fec_mode=fec_mode, hop_key=hop_key, symbol_rate=rate)
+        _reliable_data_transmission_cooldown(label, pre_transmit_delay,
+                                             cancel_event=cancel_event)
+    _check_cancelled(cancel_event)
+    actual = transmit(packet, fec_mode=fec_mode, hop_key=hop_key,
+                      symbol_rate=rate, cancel_event=cancel_event)
     print(f"Playback finished ({actual:.2f}s).")
-
 
 def _send_authenticated_ack(packet, label, cfg, hop_key=None, symbol_rate=None):
     """Send short authenticated ACK control frames with the robust FEC profile."""
@@ -336,7 +343,12 @@ def _establish(role, handshake, cfg):
         while True:
             # FINISH-R is the final handshake flight. There is no F8 retry here:
             # the responder has already entered ESTABLISHED after sending it.
-            peer_finish = _record_packet("Listening for FINISH-R", cfg)
+            peer_finish = _record_packet(
+                "Listening for FINISH-R", cfg,
+                retry_callback=lambda: _send_handshake_packet(
+                    finish_i, "FINISH-I RETRY", cfg
+                ),
+            )
             if peer_finish == peer_reply:
                 # A delayed/retried HELLO-R: replay the cached FINISH-I safely.
                 finish_i = _handshake_receive(handshake, peer_finish, "HELLO-R RETRY", trace)
@@ -407,7 +419,7 @@ def _send_text_with_ack(channel, message, cfg, hop_key, first_fec_mode="conv"):
 PROFILE_PREFIX = "ECHOCRYPT-PROFILE/1:"
 
 
-def _receive_session_username(channel, cfg, hop_key):
+def _receive_session_username(channel, cfg, hop_key, handshake=None):
     """Receive the encrypted profile frame across sender-side FEC retries.
 
     A modem/CRC or AEAD failure does not end the profile exchange. The sender
@@ -456,6 +468,13 @@ def _receive_session_username(channel, cfg, hop_key):
             break
 
         try:
+            if (incoming is None and handshake is not None
+                    and handshake.role == "responder"
+                    and packet == getattr(handshake, "_finish_i", None)):
+                cached_finish_r = handshake.receive(packet)
+                _send_handshake_packet(cached_finish_r, "FINISH-R RETRY", cfg)
+                last_error = ValueError("Duplicate FINISH-I acknowledged with cached FINISH-R")
+                continue
             if incoming is None:
                 incoming = channel.receive(packet)
         except KeyboardInterrupt:
@@ -502,9 +521,9 @@ def _exchange_session_usernames(role, handshake, cfg, channel=None):
     if role == "initiator":
         _send_text_with_ack(channel, local_payload, cfg, handshake.session.hopping_key,
                             first_fec_mode="conv")
-        peer_name = _receive_session_username(channel, cfg, handshake.session.hopping_key)
+        peer_name = _receive_session_username(channel, cfg, handshake.session.hopping_key, handshake=handshake)
     else:
-        peer_name = _receive_session_username(channel, cfg, handshake.session.hopping_key)
+        peer_name = _receive_session_username(channel, cfg, handshake.session.hopping_key, handshake=handshake)
         _send_text_with_ack(channel, local_payload, cfg, handshake.session.hopping_key,
                             first_fec_mode="conv")
     return peer_name
@@ -547,23 +566,25 @@ def _receive_reliable_text(channel, cfg, hop_key, on_message=None):
 
 
 def _send_frame_wait_ack(channel, packet, transfer_id, kind, index, cfg,
-                         hop_key, symbol_rate, label, first_fec_mode="conv"):
+                         hop_key, symbol_rate, label, first_fec_mode="conv",
+                         cancel_event=None):
     last_error = None
     fec_plan = AdaptiveFECController().plan(first_fec_mode, cfg.max_retries + 1)
     for attempt, fec_mode in enumerate(fec_plan, start=1):
+        _check_cancelled(cancel_event)
         # The manifest is received through a manual Enter-to-arm prompt. Once
         # accepted, the receiver stays in its automatic chunk receive loop, so
         # per-chunk cooldowns would only waste airtime and reduce throughput.
         arm_window = RELIABLE_DATA_COOLDOWN_SECONDS if kind == 0 else 0
         _send_packet(packet, f"{label} ({attempt}/{cfg.max_retries + 1})", cfg,
                      hop_key, symbol_rate, fec_mode,
-                     pre_transmit_delay=arm_window)
+                     pre_transmit_delay=arm_window, cancel_event=cancel_event)
         try:
             render_app_header(session_status="WAITING FOR FILE ACK")
             print(f"\nWaiting for ACK: {label}")
             ack = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
                                max_packet_bytes=128, hop_key=hop_key,
-                               symbol_rate=symbol_rate)
+                               symbol_rate=symbol_rate, cancel_event=cancel_event)
             channel.verify_ack(ack, transfer_id, kind, index)
             return
         except Exception as exc:
@@ -722,39 +743,65 @@ def _receive_file(channel, cfg, hop_key, symbol_rate, title="Receive file", cont
         print("Waiting for the next emergency voice burst / file manifest...")
 
 
-def _send_hybrid_file(binary_channel, text_channel, cfg, hop_key):
-    source_text = prompt("Path to file or ECV voice clip: ").strip().strip('"')
+def _send_hybrid_file(binary_channel, text_channel, cfg, hop_key, *,
+                      source_override=None, text_override=None,
+                      resume_id_override=None, cancel_event=None):
+    source_text = (
+        prompt("Path to file or ECV voice clip: ").strip().strip('"')
+        if source_override is None else str(source_override)
+    )
     if not source_text:
         return
-    message = prompt("Text to transmit simultaneously on the second FDM band: ")
+    message = (
+        prompt("Text to transmit simultaneously on the second FDM band: ")
+        if text_override is None else str(text_override)
+    )
     if not message:
-        print("Hybrid FDM requires a non-empty text lane.")
-        return
-    resume_id = prompt("Resume transfer ID (blank = new transfer): ").strip()
-    outgoing = binary_channel.create_outgoing(Path(source_text).expanduser(), transfer_id=resume_id or None)
+        raise ValueError("Hybrid FDM requires a non-empty text lane.")
+    resume_id = (
+        prompt("Resume transfer ID (blank = new transfer): ").strip()
+        if resume_id_override is None else str(resume_id_override).strip()
+    )
+    _check_cancelled(cancel_event)
+    outgoing = binary_channel.create_outgoing(
+        Path(source_text).expanduser(), transfer_id=resume_id or None,
+        cancel_event=cancel_event,
+    )
     m = outgoing.manifest
     manifest_packet = binary_channel.manifest_packet(outgoing, cfg.max_payload)
     print(f"\nFDM transfer: {m.filename} | {m.file_size:,} bytes | {m.total_chunks} chunks")
     print("The manifest is sent first; the first file-data chunk and encrypted text then share one composite waveform.")
-    _send_frame_wait_ack(binary_channel, manifest_packet, m.transfer_id, 0,
-                         0xFFFFFFFF, cfg, hop_key, cfg.symbol_rate, "FDM FILE MANIFEST")
-    resume_packet = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
-                                 max_packet_bytes=128, hop_key=hop_key)
+    _send_frame_wait_ack(
+        binary_channel, manifest_packet, m.transfer_id, 0, 0xFFFFFFFF,
+        cfg, hop_key, cfg.symbol_rate, "FDM FILE MANIFEST",
+        cancel_event=cancel_event,
+    )
+    resume_packet = _receive_auto(
+        cfg, start_timeout=cfg.ack_timeout_seconds,
+        max_packet_bytes=128, hop_key=hop_key, cancel_event=cancel_event,
+    )
     next_missing = binary_channel.verify_resume(resume_packet, m.transfer_id, m.total_chunks)
     text_out = text_channel.prepare(message, max_packet_size=cfg.max_payload)
 
     if next_missing >= m.total_chunks:
         # Manifest reception already armed the peer's automatic FDM sample capture.
-        composite = transmit_hybrid(text_out.packet, None, symbol_rate=cfg.symbol_rate)
+        _check_cancelled(cancel_event)
+        composite = transmit_hybrid(
+            text_out.packet, None, symbol_rate=cfg.symbol_rate, cancel_event=cancel_event
+        )
         print(f"FDM text-only frame transmitted ({composite:.2f}s).")
-        ack = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
-                           max_packet_bytes=ACK_PACKET_SIZE, hop_key=hop_key)
+        ack = _receive_auto(
+            cfg, start_timeout=cfg.ack_timeout_seconds,
+            max_packet_bytes=ACK_PACKET_SIZE, hop_key=hop_key, cancel_event=cancel_event,
+        )
         text_channel.verify_ack(ack, text_out.message_id)
     else:
         for index in range(next_missing, m.total_chunks):
+            _check_cancelled(cancel_event)
             media_packet = binary_channel.chunk_packet(outgoing, index, cfg.max_payload)
             last_error = None
             for attempt in range(1, cfg.max_retries + 2):
+                _check_cancelled(cancel_event)
                 fec_mode = AdaptiveFECController().mode_for_attempt(
                     attempt, "hamming", cfg.max_retries + 1)
                 duration = max(
@@ -764,18 +811,28 @@ def _send_hybrid_file(binary_channel, text_channel, cfg, hop_key):
                 print(f"\nFDM: text + media lane {index + 1}/{m.total_chunks} | estimated {duration:.2f}s")
                 # The same authenticated text ciphertext accompanies every media
                 # frame. The receiver is already in automatic sample capture.
-                transmit_hybrid(text_out.packet, media_packet,
-                                symbol_rate=cfg.symbol_rate, fec_mode=fec_mode)
+                transmit_hybrid(
+                    text_out.packet, media_packet, symbol_rate=cfg.symbol_rate,
+                    fec_mode=fec_mode, cancel_event=cancel_event,
+                )
                 try:
-                    text_ack = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
-                                             max_packet_bytes=ACK_PACKET_SIZE, hop_key=hop_key)
+                    text_ack = _receive_auto(
+                        cfg, start_timeout=cfg.ack_timeout_seconds,
+                        max_packet_bytes=ACK_PACKET_SIZE, hop_key=hop_key,
+                        cancel_event=cancel_event,
+                    )
                     text_channel.verify_ack(text_ack, text_out.message_id)
-                    file_ack = _receive_auto(cfg,start_timeout=cfg.ack_timeout_seconds,
-                                            max_packet_bytes=128, hop_key=hop_key)
+                    file_ack = _receive_auto(
+                        cfg, start_timeout=cfg.ack_timeout_seconds,
+                        max_packet_bytes=128, hop_key=hop_key,
+                        cancel_event=cancel_event,
+                    )
                     binary_channel.verify_ack(file_ack, m.transfer_id, 1, index)
                     last_error = None
                     break
                 except Exception as exc:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise TransferCancelled("cancelled by user") from exc
                     last_error = exc
                     if attempt <= cfg.max_retries:
                         print("One or both FDM lane ACKs were not confirmed; retrying both exact ciphertexts.")
@@ -1081,7 +1138,7 @@ def _reliable_chat_symbol_rate_plan(cfg, preferred=None):
     return tuple(rates[:3])
 
 
-def _engine_send_text(channel, engine, text, cfg, progress_callback=None):
+def _engine_send_text(channel, engine, text, cfg, progress_callback=None, cancel_event=None):
     outgoing = channel.prepare(text, max_packet_size=cfg.max_payload)
 
     def verify(packet):
@@ -1095,7 +1152,8 @@ def _engine_send_text(channel, engine, text, cfg, progress_callback=None):
         progress_callback("TEXT", 0, 1, "frames")
     _engine_wait_for_response(engine, outgoing.packet, verify, cfg,
                               "RELIABLE TEXT", first_fec_mode="conv",
-                              symbol_rate=rates[0], fallback_rates=rates)
+                              symbol_rate=rates[0], fallback_rates=rates,
+                              cancel_event=cancel_event)
     if progress_callback:
         progress_callback("TEXT", 1, 1, "frames")
     return outgoing.message_id
@@ -1131,9 +1189,11 @@ def _file_symbol_rate_plan(cfg):
 
 def _engine_send_file(channel, engine, source, cfg, *,
                       progress_callback=None, on_outgoing_created=None,
-                      cancel_event=None):
+                      cancel_event=None, transfer_id=None, preferred_symbol_rate=None):
     _check_cancelled(cancel_event)
-    outgoing = channel.create_outgoing(source)
+    outgoing = channel.create_outgoing(
+        source, transfer_id=transfer_id, cancel_event=cancel_event
+    )
     manifest = outgoing.manifest
     if on_outgoing_created is not None:
         on_outgoing_created(outgoing)
@@ -1163,7 +1223,7 @@ def _engine_send_file(channel, engine, source, cfg, *,
     ack_waiter = engine.expect_packet(verify_manifest_ack)
     resume_waiter = engine.expect_packet(verify_resume)
     try:
-        rates = _reliable_chat_symbol_rate_plan(cfg)
+        rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
         _engine_wait_for_response(engine, manifest_packet, verify_manifest_ack,
                                   cfg, "FILE MANIFEST", first_fec_mode="conv",
                                   waiter=ack_waiter, symbol_rate=rates[0],
@@ -1188,7 +1248,7 @@ def _engine_send_file(channel, engine, source, cfg, *,
             except Exception:
                 return False
 
-        rates = _reliable_chat_symbol_rate_plan(cfg)
+        rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
         _engine_wait_for_response(engine, packet, verify_chunk_ack, cfg,
                                   f"FILE CHUNK {index + 1}/{manifest.total_chunks}",
                                   first_fec_mode="conv", symbol_rate=rates[0],
@@ -1226,7 +1286,7 @@ def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_call
 
 def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, lock,
                           incoming_transfers=None, on_resend_request=None,
-                          on_progress=None):
+                          on_integrity_failure=None, on_progress=None):
     """Classify authenticated DATA/control packets and expose receive progress."""
     incoming_transfers = incoming_transfers if incoming_transfers is not None else {}
 
@@ -1296,6 +1356,10 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
 
         try:
             chunk = reliable_binary.receive_chunk(packet)
+        except ChunkIntegrityError as exc:
+            if on_integrity_failure is not None:
+                on_integrity_failure(exc.transfer_id, exc.indexes)
+            return
         except Exception:
             chunk = None
         if chunk is not None:
@@ -1339,7 +1403,7 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
 
 def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                              messages, lock, partial_messages, on_progress=None,
-                             on_debug=None):
+                             on_debug=None, on_resend_frames=None):
     def debug(stage, message, **fields):
         if on_debug is not None:
             try:
@@ -1402,25 +1466,42 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
                 raise
             debug("BROADCAST_RETRY", "Resend cache lookup completed",
                   available_frames=len(frames), requested_chunks=len(indexes))
-            for index, frame in enumerate(frames, 1):
+            resend_jobs = []
+            for frame in frames:
                 # Retransmit with the PHY profile declared by the cached
                 # fragment descriptor, not blindly with the local default.
                 cached = codec.decode(frame)
                 retry_rate = int(cached.symbol_rate or _reliable_chat_symbol_rate_plan(engine.config)[0])
-                # Broadcast v2 currently validates and advertises convolutional
-                # FEC only. Keep the retransmission PHY profile identical to
-                # the descriptor instead of silently guessing another decoder.
                 if cached.fec_id != FEC_ID_CONVOLUTIONAL:
                     raise ValueError(f"Unsupported cached Broadcast FEC id: {cached.fec_id}")
-                retry_fec = "conv"
-                engine.submit_packet(frame, fec_mode=retry_fec,
-                                     symbol_rate=retry_rate, hop_key=None,
-                                     label=f"BROADCAST RETRY {index}/{len(frames)} @ {retry_rate}",
-                                     channel_access=(index == 1))
-                debug("BROADCAST_TX", "Requested broadcast frame queued for retransmission",
-                      frame_number=index, frame_count=len(frames), frame_bytes=len(frame))
-                report("TX BROADCAST RESEND", index, len(frames), "frames",
-                       index < len(frames))
+                resend_jobs.append((bytes(frame), retry_rate, "conv"))
+            if on_resend_frames is not None:
+                # Production chat owns serialized transmission. Invoke it even
+                # on a cache miss so the sender gets an explicit diagnostic.
+                on_resend_frames(
+                    target_sender, target_mid, target_kind, tuple(indexes),
+                    tuple(resend_jobs),
+                )
+                if resend_jobs:
+                    debug("BROADCAST_TX", "Requested broadcast frames handed to serialized resend worker",
+                          requested_chunks=len(indexes), queued_frames=len(resend_jobs))
+                else:
+                    debug("BROADCAST_RETRY", "No requested Broadcast frames are available in the sender cache",
+                          target_sender=bytes(target_sender).hex()[:12],
+                          message_id=bytes(target_mid).hex(), kind=int(target_kind),
+                          requested_chunks=len(indexes))
+            else:
+                # Compatibility fallback for standalone router callers. Production
+                # chat supplies a worker that sends these frames sequentially.
+                for index, (frame, retry_rate, retry_fec) in enumerate(resend_jobs, 1):
+                    engine.submit_packet(frame, fec_mode=retry_fec,
+                                         symbol_rate=retry_rate, hop_key=None,
+                                         label=f"BROADCAST RETRY {index}/{len(resend_jobs)} @ {retry_rate}",
+                                         channel_access=(index == 1))
+                    debug("BROADCAST_TX", "Requested broadcast frame queued for retransmission",
+                          frame_number=index, frame_count=len(resend_jobs), frame_bytes=len(frame))
+                    report("TX BROADCAST RESEND", index, len(resend_jobs), "frames",
+                           index < len(resend_jobs))
             if not frames:
                 debug("BROADCAST_RETRY", "No requested broadcast frames remain in resend cache",
                       requested_chunks=len(indexes))
@@ -1589,20 +1670,29 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                              missing_chunks=len(missing),
                              requested_indexes=",".join(str(int(x)) for x in missing[:64]))
                 maximum = min(96, max(1, (codec.max_fragment_payload - RETRY_REQUEST_V2.size) // 2))
+                retry_rate = _reliable_chat_symbol_rate_plan(engine.config)[0]
                 for batch_index in range(0, len(missing), maximum):
+                    if stop_event.is_set():
+                        break
                     batch = missing[batch_index:batch_index + maximum]
                     request = codec.encode_retry_request(
                         target_sender, message_id, kind, batch,
                         request_flags=request_flags,
                     )
-                    engine.submit_packet(request, fec_mode="conv",
-                                         symbol_rate=_reliable_chat_symbol_rate_plan(engine.config)[0], hop_key=None,
-                                         label=f"BROADCAST SELECTIVE RETRY {batch_index // maximum + 1}")
+                    duration = packet_duration(
+                        len(request), engine.config, fec_mode="conv", symbol_rate=retry_rate
+                    )
+                    future = engine.submit_packet(
+                        request, fec_mode="conv", symbol_rate=retry_rate, hop_key=None,
+                        label=f"BROADCAST SELECTIVE RETRY {batch_index // maximum + 1}",
+                        cancel_event=stop_event,
+                    )
+                    _wait_future_or_cancel(future, stop_event, duration + 30.0)
                     if on_debug is not None:
-                        on_debug("BROADCAST_RETRY", "Automatic selective resend request queued",
+                        on_debug("BROADCAST_RETRY", "Automatic selective resend request transmitted",
                                  batch=batch_index // maximum + 1,
                                  batch_chunks=len(batch), packet_bytes=len(request))
-                last_requested[key] = now
+                last_requested[key] = time.monotonic()
             except Exception as exc:
                 if on_debug is not None:
                     on_debug("BROADCAST_RETRY_ERROR", "Automatic selective resend request failed",
@@ -1665,7 +1755,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     tx_stop = threading.Event()
     tx_state_lock = threading.RLock()
     rx_state_lock = threading.RLock()
-    tx_state = {"active": False, "label": "", "progress": ""}
+    tx_state = {"active": False, "label": "", "progress": "",
+                "cancel_event": None, "entry": None, "cancelable": False}
     rx_state = {"active": False, "label": "", "progress": ""}
     ptt_state = {"recorder": None, "started": 0.0, "phase": "idle",
                  "cancel_event": None, "entry": None, "path": None,
@@ -1700,6 +1791,18 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             rx_state["label"] = str(label).upper()
             rx_state["progress"] = f"{int(current)}/{int(total)} {unit}"
 
+    def cancel_operation(cancel_event, entry=None):
+        if cancel_event is None or cancel_event.is_set():
+            return False
+        cancel_event.set()
+        if entry is not None:
+            with messages_lock:
+                entry["status"] = "cancelling · stopping transmission"
+        current = engine_ref.get("engine")
+        if current is not None:
+            current.cancel_transmission(cancel_event)
+        return True
+
     def launch_worker(title, entry, operation, success_status, *,
                       cancel_event=None, cancelable=False, cleanup_path=None):
         control = {
@@ -1707,18 +1810,33 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             "cancelable": bool(cancelable),
             "cleanup_path": Path(cleanup_path) if cleanup_path is not None else None,
         }
+        if control["cancelable"] and cancel_event is not None:
+            with messages_lock:
+                entry["cancelable"] = True
+                entry["cancel_action"] = (
+                    lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
+                )
         try:
             tx_jobs.put_nowait((title, entry, operation, success_status, control))
         except queue.Full:
             with messages_lock:
                 entry["status"] = "FAILED · outgoing queue is full"
+                entry["cancelable"] = False
+                entry.pop("cancel_action", None)
             if cancelable and cancel_event is not None:
                 cancel_event.set()
             raise RuntimeError("Outgoing queue is full")
         return control
 
     def on_direct_resend_request(transfer_id, indexes):
-        outgoing = direct_outgoing.get(bytes(transfer_id))
+        with messages_lock:
+            outgoing = direct_outgoing.get(bytes(transfer_id))
+        if trace.enabled:
+            trace.emit("DIRECT_RETRY", "Authenticated resend request received",
+                       transfer_id=bytes(transfer_id).hex(),
+                       requested_chunks=len(indexes),
+                       requested_indexes=",".join(str(int(x)) for x in tuple(indexes)[:64]),
+                       cache_hit=outgoing is not None)
         if outgoing is None:
             append_message("system", f"Peer requested unavailable transfer {bytes(transfer_id).hex()[:12]}",
                            "resend source is no longer cached")
@@ -1731,22 +1849,94 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 report_tx(label, current, total, unit)
                 with messages_lock:
                     entry["status"] = f"resending {current}/{total} requested chunks"
-            _engine_resend_chunks(reliable_binary_channel, engine_ref["engine"],
-                                  outgoing, indexes, cfg, progress_callback=progress)
+            sent = _engine_resend_chunks(reliable_binary_channel, engine_ref["engine"],
+                                         outgoing, indexes, cfg, progress_callback=progress)
+            if trace.enabled:
+                trace.emit("DIRECT_RETRY", "Requested Direct chunks resent and authenticated ACKs received",
+                           transfer_id=bytes(transfer_id).hex(), chunks_sent=sent)
         launch_worker("direct-resend", entry, operation,
                       "requested chunks resent · authenticated ACKs received")
+
+    def queue_broadcast_resend(target_sender, target_mid, target_kind, indexes, resend_jobs):
+        if not resend_jobs:
+            append_message("system", "Broadcast resend request received, but requested frames are not cached.",
+                           "source cache miss or expired transfer")
+            return
+        entry = append_message(
+            "system",
+            f"Peer requested {len(resend_jobs)} Broadcast frame(s) for {bytes(target_mid).hex()[:12]}",
+            "resend queued · Broadcast has no delivery ACK",
+        )
+        def operation():
+            current = engine_ref["engine"]
+            total = len(resend_jobs)
+            for index, (frame, rate, fec_mode) in enumerate(resend_jobs, 1):
+                duration = packet_duration(
+                    len(frame), current.config, fec_mode=fec_mode, symbol_rate=rate
+                )
+                current.send_packet(
+                    frame, fec_mode=fec_mode, symbol_rate=rate, hop_key=None,
+                    label=f"BROADCAST RETRY {index}/{total} @ {rate}",
+                    timeout=duration + 30.0,
+                    channel_access=True,
+                )
+                report_tx("BROADCAST RESEND", index, total, "frames")
+                with messages_lock:
+                    entry["status"] = f"retransmitted {index}/{total} frames · no delivery receipt"
+        launch_worker(
+            "broadcast-resend", entry, operation,
+            "requested Broadcast frames retransmitted · delivery remains unconfirmed",
+        )
+
+    def on_direct_integrity_failure(transfer_id, indexes):
+        tid = bytes(transfer_id)
+        requested = tuple(sorted(set(int(index) for index in indexes)))
+        if not requested:
+            return
+        entry = append_message(
+            "system",
+            f"File integrity check failed for {tid.hex()[:12]}",
+            f"requesting fresh ciphertext for {len(requested)} damaged chunk(s)",
+        )
+        def operation():
+            maximum = max(1, (cfg.max_payload - AEAD_OVERHEAD - 22) // 4)
+            batches = [requested[i:i + maximum] for i in range(0, len(requested), maximum)]
+            for batch_index, batch in enumerate(batches, 1):
+                request = reliable_binary_channel.make_resend_request_packet(
+                    tid, batch, max_packet_size=cfg.max_payload
+                )
+                current = engine_ref["engine"]
+                rate = current.symbol_rates[0]
+                duration = packet_duration(
+                    len(request), current.config, fec_mode="conv", symbol_rate=rate
+                )
+                current.send_packet(
+                    request, fec_mode="conv", symbol_rate=rate,
+                    label=f"FILE INTEGRITY REPAIR REQUEST {batch_index}/{len(batches)}",
+                    timeout=duration + 30.0, channel_access=True,
+                )
+            with messages_lock:
+                entry["status"] = (
+                    f"repair request transmitted · {len(requested)} chunks · waiting for peer resend"
+                )
+        launch_worker(
+            "file-integrity-repair", entry, operation,
+            "integrity repair request sent · waiting for retransmitted chunks",
+        )
 
     if broadcast_mode:
         packet_handler = _broadcast_packet_router(
             engine_ref, codec, reassembler, retransmit_cache,
             messages, messages_lock, partial_broadcast_messages, on_progress=report_rx,
             on_debug=trace.emit if trace.enabled else None,
+            on_resend_frames=queue_broadcast_resend,
         )
     else:
         packet_handler = _direct_packet_router(
             engine_ref, reliable_text_channel, reliable_binary_channel,
             messages, messages_lock, incoming_transfers=incoming_transfers,
-            on_resend_request=on_direct_resend_request, on_progress=report_rx,
+            on_resend_request=on_direct_resend_request,
+            on_integrity_failure=on_direct_integrity_failure, on_progress=report_rx,
         )
 
     def on_engine_event(event):
@@ -1787,7 +1977,11 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 title, entry, operation, success_status, control = job
                 cancel_event = control.get("cancel_event")
                 with tx_state_lock:
-                    tx_state.update(active=True, label=title.upper(), progress="0/1 steps")
+                    tx_state.update(
+                        active=True, label=title.upper(), progress="0/1 steps",
+                        cancel_event=cancel_event, entry=entry,
+                        cancelable=bool(control.get("cancelable") and cancel_event is not None),
+                    )
                 if cancel_event is not None:
                     with ptt_state["lock"]:
                         if ptt_state.get("cancel_event") is cancel_event:
@@ -1801,8 +1995,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     _check_cancelled(cancel_event)
                     if control is not None:
                         control["started"] = True
+                    # Successful completion is authoritative. A cancel
+                    # arriving after the operation's final ACK/playback must not
+                    # retroactively turn a completed delivery into "cancelled".
                     operation()
-                    _check_cancelled(cancel_event)
                     with messages_lock:
                         entry["status"] = success_status
                 except Exception as exc:
@@ -1811,10 +2007,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     with messages_lock:
                         if cancelled and control.get("cancelable") and control.get("started"):
                             entry["status"] = (
-                                "CANCELLED · transfer stopped; partial voice data may remain at listeners"
+                                "CANCELLED · transmission stopped; partial data may remain at receivers"
                             )
                         elif cancelled and control.get("cancelable"):
-                            entry["status"] = "CANCELLED · voice note was not sent"
+                            entry["status"] = "CANCELLED · transmission was not sent"
                         elif cancelled:
                             entry["status"] = f"CANCELLED · {title}"
                         else:
@@ -1826,7 +2022,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                             pass
             finally:
                 with tx_state_lock:
-                    tx_state.update(active=False, label="", progress="")
+                    tx_state.update(active=False, label="", progress="",
+                                    cancel_event=None, entry=None, cancelable=False)
                 if cancel_event is not None:
                     with ptt_state["lock"]:
                         if ptt_state.get("cancel_event") is cancel_event:
@@ -1891,10 +2088,16 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             rx_label = str(rx_state["label"])
             rx_progress = str(rx_state["progress"])
         if tx_active and rx_active:
+            with tx_state_lock:
+                can_cancel = bool(tx_state.get("cancelable"))
             return {"label": f"TX {tx_label}", "progress": tx_progress,
-                    "detail": f"RX {rx_label} {rx_progress}"}
+                    "detail": f"RX {rx_label} {rx_progress}",
+                    "cancelable": can_cancel}
         if tx_active:
-            return {"label": f"TX {tx_label}", "progress": tx_progress}
+            with tx_state_lock:
+                can_cancel = bool(tx_state.get("cancelable"))
+            return {"label": f"TX {tx_label}", "progress": tx_progress,
+                    "cancelable": can_cancel}
         if rx_active:
             return {"label": f"RX {rx_label}", "progress": rx_progress}
         current = engine_ref.get("engine")
@@ -1907,6 +2110,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
 
     def stop_tx_worker():
         tx_stop.set()
+        with tx_state_lock:
+            active_event = tx_state.get("cancel_event")
+        if active_event is not None:
+            active_event.set()
         if tx_thread.is_alive():
             tx_thread.join(timeout=3.0)
         while True:
@@ -1925,9 +2132,11 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 tx_jobs.task_done()
 
     def send_text(message):
-        entry = append_message("me", message, "queued")
+        entry = append_message("me", message, "queued · cancellable")
+        cancel_event = threading.Event()
         if broadcast_mode:
             def operation():
+                _check_cancelled(cancel_event)
                 frames = codec.encode_text(message)
                 mid = codec.decode(frames[0]).message_id
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
@@ -1940,22 +2149,30 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 report_tx("BROADCAST TEXT", 0, len(frames) * 3, "frames")
                 _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=3,
                     symbol_rate=broadcast_rate,
-                    progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit))
+                    progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit),
+                    cancel_event=cancel_event)
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text transmission sequence completed",
                                message_id=mid.hex(), fragments=len(frames), copies=3)
             launch_worker("broadcast-text", entry, operation,
-                          "broadcast on air · delivery is not acknowledged")
+                          "broadcast on air · delivery is not acknowledged",
+                          cancel_event=cancel_event, cancelable=True)
         else:
             def operation():
                 _engine_send_text(reliable_text_channel, engine_ref["engine"],
                                   message, cfg,
-                                  progress_callback=lambda label, current, total, unit: report_tx(label, current, total, unit))
+                                  progress_callback=lambda label, current, total, unit: report_tx(label, current, total, unit),
+                                  cancel_event=cancel_event)
             launch_worker("direct-text", entry, operation,
-                          "delivered · authenticated ACK")
+                          "delivered · authenticated ACK",
+                          cancel_event=cancel_event, cancelable=True)
 
     def send_file(path, description="attachment", *, cancel_event=None,
-                  cancelable=False, cleanup_on_cancel=False, voice_duration=None):
+                  cancelable=True, cleanup_on_cancel=False, voice_duration=None,
+                  resume_id_override=None, preferred_symbol_rate=None):
+        if cancel_event is None:
+            cancel_event = threading.Event()
+        cancelable = bool(cancelable)
         size_bytes = path.stat().st_size
         if size_bytes > LARGE_FILE_WARNING_BYTES:
             append_message("system",
@@ -1985,6 +2202,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 mid, frames = codec.encode_file(
                     path, chunk_size=chunk_size,
                     symbol_rate=broadcast_rate, fec_mode="conv", hopping=True,
+                    cancel_event=cancel_event,
                 )
                 _check_cancelled(cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.FILE_META, frames[:1])
@@ -2018,7 +2236,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             if cancelable:
                 entry["status"] = "queued · cancellable"
                 entry["cancelable"] = True
-                entry["cancel_action"] = lambda: cancel_voice_operation()
+                entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
                 with ptt_state["lock"]:
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
@@ -2034,7 +2252,11 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             else:
                 entry = append_message("me", f"{description}: {path.name}", "sending · chunked transfer")
             def remember_outgoing(outgoing):
-                direct_outgoing[outgoing.manifest.transfer_id] = outgoing
+                with messages_lock:
+                    direct_outgoing[outgoing.manifest.transfer_id] = outgoing
+                    while len(direct_outgoing) > 64:
+                        oldest = next(iter(direct_outgoing))
+                        direct_outgoing.pop(oldest, None)
             def operation():
                 manifest = _engine_send_file(reliable_binary_channel,
                     engine_ref["engine"], path, cfg,
@@ -2043,12 +2265,14 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                         if description == "voice note" else label,
                         current, total, unit),
                     on_outgoing_created=remember_outgoing,
-                    cancel_event=cancel_event)
+                    cancel_event=cancel_event,
+                    transfer_id=resume_id_override,
+                    preferred_symbol_rate=preferred_symbol_rate)
                 if description != "voice note":
                     entry["body"] = f"{description}: {manifest.filename} ({manifest.file_size:,} bytes)"
             if cancelable:
                 entry["cancelable"] = True
-                entry["cancel_action"] = lambda: cancel_voice_operation()
+                entry["cancel_action"] = lambda ev=cancel_event, item=entry: cancel_operation(ev, item)
                 with ptt_state["lock"]:
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
@@ -2120,7 +2344,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                    batch_count=len(batches), requested_chunks=len(batch))
                     report_tx("BROADCAST RESEND REQUEST", batch_index, len(batches), "requests")
                 with messages_lock:
-                    entry["status"] = f"resend request #{request_count} sent · {len(missing)} chunks requested"
+                    entry["status"] = (
+                        f"resend request #{request_count} transmitted · {len(missing)} chunks requested "
+                        "· sender response cannot be confirmed in Broadcast"
+                    )
         launch_worker("resend-request", entry, operation,
                       f"resend request #{request_count} transmitted")
 
@@ -2206,29 +2433,34 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                  path=None, duration=0.0)
             raise
 
-    def cancel_voice_operation():
+    def cancel_active_operation():
         with ptt_state["lock"]:
             phase = ptt_state.get("phase", "idle")
-            cancel_event = ptt_state.get("cancel_event")
-            entry = ptt_state.get("entry")
-            path = ptt_state.get("path")
+            voice_event = ptt_state.get("cancel_event")
+            voice_entry = ptt_state.get("entry")
             recorder_active = ptt_state.get("recorder") is not None
-            if phase == "idle" or cancel_event is None:
-                return False
-            cancel_event.set()
-            if entry is not None:
-                with messages_lock:
-                    entry["status"] = "cancelling · stopping voice transfer"
-        current = engine_ref.get("engine")
-        if recorder_active:
-            # The ChatScreen routes a live recording through its asynchronous
-            # on_ptt_cancel callback; this branch is a safe fallback.
-            stop_ptt_recording(discard=True)
-        elif current is not None:
-            current.cancel_transmission(cancel_event)
-        # Do not unlink here: the encoder/queued worker may currently have the
-        # file open. The owning stage removes it after observing cancel_event.
-        return True
+        if phase != "idle" and voice_event is not None:
+            if recorder_active:
+                # Discard an active recording instead of accidentally sending it.
+                stop_ptt_recording(discard=True)
+                return True
+            return cancel_operation(voice_event, voice_entry)
+
+        with tx_state_lock:
+            active_event = tx_state.get("cancel_event")
+            active_entry = tx_state.get("entry")
+        if active_event is not None:
+            return cancel_operation(active_event, active_entry)
+        # F7 also works while a cancellable send is still waiting in the
+        # application FIFO and has not yet become the engine's active job.
+        queued_entry = next(
+            (item for item in reversed(list(messages))
+             if item.get("cancelable") and callable(item.get("cancel_action"))),
+            None,
+        )
+        if queued_entry is not None:
+            return bool(queued_entry["cancel_action"]())
+        return False
 
 
     try:
@@ -2248,7 +2480,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 on_ptt_start=start_ptt_recording,
                 on_ptt_stop=lambda: stop_ptt_recording(discard=False),
                 on_ptt_cancel=lambda: stop_ptt_recording(discard=True),
-                on_cancel=cancel_voice_operation,
+                on_cancel=cancel_active_operation,
             ).run() or ("disconnect", None)
             engine = engine_ref["engine"]
             if action == "disconnect":
@@ -2318,27 +2550,77 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 if choice == "peer":
                     append_message("system", f"Peer fingerprint: {handshake.peer_fingerprint}")
                     continue
-                if choice in {"send_hybrid", "receive_hybrid", "send_fast", "receive_fast", "resume"}:
-                    engine.stop()
+                if choice in {"resume", "send_fast"}:
                     try:
-                        action_map = {"send_fast": "send_file_fast", "receive_fast": "receive_file_fast"}
                         if choice == "resume":
                             raw = prompt("Original file path: ").strip().strip('"')
                             transfer_id = prompt("Transfer ID: ").strip()
                             if raw and transfer_id:
                                 source = Path(raw).expanduser()
-                                _send_file(reliable_binary_channel, cfg, handshake.session.hopping_key,
-                                           cfg.symbol_rate, title="Resume file transfer",
-                                           source_override=source, ask_resume_id=False,
-                                           resume_id_override=transfer_id)
+                                send_file(source, "attachment",
+                                          resume_id_override=transfer_id)
                         else:
-                            _run_session_action(action_map.get(choice, choice), reliable_text_channel,
-                                                reliable_binary_channel, cfg,
-                                                handshake.session.hopping_key, handshake)
+                            raw = prompt("Path to file (fast 800 baud): ").strip().strip('"')
+                            if raw:
+                                source = Path(raw).expanduser()
+                                if not source.is_file():
+                                    raise FileNotFoundError(source)
+                                send_file(source, "attachment",
+                                          preferred_symbol_rate=cfg.fast_symbol_rate)
+                    except Exception as exc:
+                        append_message("system", f"Experimental operation failed: {exc}")
+                    continue
+
+                if choice == "send_hybrid":
+                    try:
+                        raw = prompt("Path to file or ECV voice clip: ").strip().strip('"')
+                        if not raw:
+                            continue
+                        source = Path(raw).expanduser()
+                        if not source.is_file():
+                            raise FileNotFoundError(source)
+                        message = prompt("Text to transmit simultaneously on the second FDM band: ")
+                        if not message:
+                            raise ValueError("Hybrid FDM requires a non-empty text lane.")
+                        transfer_id = prompt("Resume transfer ID (blank = new transfer): ").strip()
+                        cancel_event = threading.Event()
+                        entry = append_message(
+                            "me", f"FDM: {source.name} + text",
+                            "queued · cancellable · experimental dual-band transfer",
+                        )
+                        def hybrid_operation():
+                            previous = engine_ref["engine"]
+                            previous.stop(wait=True)
+                            try:
+                                _send_hybrid_file(
+                                    reliable_binary_channel, reliable_text_channel, cfg,
+                                    handshake.session.hopping_key, source_override=source,
+                                    text_override=message, resume_id_override=transfer_id,
+                                    cancel_event=cancel_event,
+                                )
+                            finally:
+                                if not tx_stop.is_set() and not disconnect_requested:
+                                    engine_ref["engine"] = start_engine()
+                        launch_worker(
+                            "hybrid-text-media", entry, hybrid_operation,
+                            "FDM text and file transfer completed · dual ACKs verified",
+                            cancel_event=cancel_event, cancelable=True,
+                        )
+                    except Exception as exc:
+                        append_message("system", f"Hybrid transfer rejected: {exc}")
+                    continue
+
+                if choice in {"receive_hybrid", "receive_fast"}:
+                    engine.stop()
+                    try:
+                        action_map = {"receive_fast": "receive_file_fast"}
+                        _run_session_action(action_map.get(choice, choice), reliable_text_channel,
+                                            reliable_binary_channel, cfg,
+                                            handshake.session.hopping_key, handshake)
                     except Exception as exc:
                         append_message("system", f"Experimental operation failed: {exc}")
                     engine = start_engine()
-                continue
+                    continue
     finally:
         retry_stop.set()
         if disconnect_requested:

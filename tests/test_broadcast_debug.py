@@ -1,13 +1,47 @@
 import threading
 import unittest
 
-from core.broadcast import BroadcastCodec, BroadcastReassembler
+from core.broadcast import (BroadcastCodec, BroadcastReassembler,
+                             BroadcastRetransmitCache, BroadcastType)
 from interface.communication import (
     _broadcast_packet_router, _broadcast_send_frames, _supported_symbol_rates,
 )
 
 
 class BroadcastDebugTests(unittest.TestCase):
+    def test_resend_router_hands_frames_to_serialized_sender_callback(self):
+        import tempfile
+        from pathlib import Path
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "payload.bin"
+            source.write_bytes(bytes(range(256)) * 3)
+            message_id, frames = sender.encode_file(source, chunk_size=128)
+            cache = BroadcastRetransmitCache(sender)
+            cache.remember(message_id, BroadcastType.FILE_CHUNK, frames[1:])
+            captured = []
+            handler = _broadcast_packet_router(
+                {"engine": object()}, receiver, BroadcastReassembler(receiver),
+                cache, [], threading.RLock(), {},
+                on_resend_frames=lambda *args: captured.append(args),
+            )
+            request = receiver.encode_retry_request(
+                sender.sender_id, message_id, BroadcastType.FILE_CHUNK, (1, 3)
+            )
+            handler(request)
+
+        self.assertEqual(len(captured), 1)
+        target_sender, target_mid, target_kind, indexes, resend_jobs = captured[0]
+        self.assertEqual(target_sender, sender.sender_id)
+        self.assertEqual(target_mid, message_id)
+        self.assertEqual(target_kind, BroadcastType.FILE_CHUNK)
+        self.assertEqual(indexes, (1, 3))
+        self.assertEqual([item[0] for item in resend_jobs], [frames[2], frames[4]])
+        self.assertTrue(all(item[2] == "conv" for item in resend_jobs))
+
+
     def test_broadcast_router_reports_receive_decode_and_delivery_without_plaintext(self):
         sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

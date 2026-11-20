@@ -44,6 +44,18 @@ class BinaryTransferError(ValueError):
     """Malformed, unauthenticated, or inconsistent file transfer."""
 
 
+class ChunkIntegrityError(BinaryTransferError):
+    """Final file hash failed; these chunk indexes must be retransmitted."""
+
+    def __init__(self, transfer_id: bytes, indexes):
+        self.transfer_id = bytes(transfer_id)
+        self.indexes = tuple(sorted({int(index) for index in indexes}))
+        super().__init__(
+            "Completed file SHA-256 mismatch; requesting fresh ciphertext for "
+            + ", ".join(str(index) for index in self.indexes)
+        )
+
+
 @dataclass(frozen=True)
 class TransferManifest:
     transfer_id: bytes
@@ -84,11 +96,15 @@ class ChunkResult:
     bytes_received: int
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, cancel_event=None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("File preparation cancelled")
             digest.update(block)
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("File preparation cancelled")
     return digest.hexdigest()
 
 
@@ -160,7 +176,7 @@ class ReliableBinaryChannel:
         return session
 
     def create_outgoing(self, source, chunk_size: int | None = None,
-                        transfer_id: str | bytes | None = None) -> OutgoingTransfer:
+                        transfer_id: str | bytes | None = None, cancel_event=None) -> OutgoingTransfer:
         path = Path(source).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Not a regular file: {path}")
@@ -168,7 +184,7 @@ class ReliableBinaryChannel:
         if size > self.max_file_size:
             raise BinaryTransferError(f"File exceeds configured limit ({self.max_file_size} bytes)")
         safe_name = _safe_filename(path.name)
-        digest = _file_sha256(path)
+        digest = _file_sha256(path, cancel_event=cancel_event)
         if transfer_id is None or transfer_id == "":
             tid = uuid.uuid4().bytes
         elif isinstance(transfer_id, str):
@@ -181,6 +197,8 @@ class ReliableBinaryChannel:
         if len(tid) != TRANSFER_ID_SIZE:
             raise ValueError("Transfer ID must be 16 bytes / 32 hexadecimal characters")
         state_path = self.outgoing_state / f"{tid.hex()}.json"
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("File preparation cancelled")
         # Preserve the original chunk layout when resuming a Stage 9.x transfer.
         # New transfers use smaller acoustic frames for better recovery.
         if state_path.exists():
@@ -425,7 +443,25 @@ class ReliableBinaryChannel:
         completed_path = Path(state["final_path"]) if state.get("completed") else None
         if not state.get("completed") and len(state.get("chunks", {})) == m.total_chunks:
             if _file_sha256(part_path) != m.sha256:
-                raise BinaryTransferError("Completed file SHA-256 mismatch; transfer is retained for diagnosis")
+                invalid_indexes = []
+                with part_path.open("rb") as stream:
+                    for raw_index, expected_hash in state.get("chunks", {}).items():
+                        chunk_index = int(raw_index)
+                        stream.seek(chunk_index * m.chunk_size)
+                        expected_size = min(
+                            m.chunk_size, m.file_size - chunk_index * m.chunk_size
+                        )
+                        actual = stream.read(expected_size)
+                        if hashlib.sha256(actual).hexdigest() != expected_hash:
+                            invalid_indexes.append(chunk_index)
+                if not invalid_indexes:
+                    # The manifest and chunk journal disagree. Force a clean
+                    # replay instead of retaining a non-completable partial.
+                    invalid_indexes = list(range(m.total_chunks))
+                for invalid_index in invalid_indexes:
+                    state["chunks"].pop(str(invalid_index), None)
+                _atomic_json(state_path, state)
+                raise ChunkIntegrityError(tid, invalid_indexes)
             self.receive_root.mkdir(parents=True, exist_ok=True)
             destination = self._unique_destination(self.receive_root / m.filename)
             os.replace(part_path, destination)

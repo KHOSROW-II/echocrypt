@@ -12,6 +12,44 @@ from core.modem import demodulate, modulate
 
 
 class BroadcastCodecTests(unittest.TestCase):
+    def test_broadcast_metadata_cache_is_bounded_and_evicts_oldest(self):
+        import tempfile
+        from pathlib import Path
+        from core.broadcast import BroadcastCodec, BroadcastReassembler
+
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first.bin"
+            second = Path(tmp) / "second.bin"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            mid1, frames1 = sender.encode_file(first)
+            mid2, frames2 = sender.encode_file(second)
+            reassembler = BroadcastReassembler(receiver, max_file_metadata=1)
+            reassembler.feed(frames1[0])
+            self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, mid1))
+            reassembler.feed(frames2[0])
+            self.assertIsNone(reassembler.file_metadata(sender.sender_id, mid1))
+            self.assertIsNotNone(reassembler.file_metadata(sender.sender_id, mid2))
+
+    def test_broadcast_file_encoding_honors_cancellation(self):
+        import tempfile
+        import threading
+        from pathlib import Path
+        from core.broadcast import BroadcastCodec, BroadcastError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "payload.bin"
+            source.write_bytes(b"payload")
+            cancelled = threading.Event()
+            cancelled.set()
+            with self.assertRaises(BroadcastError):
+                BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256).encode_file(
+                    source, cancel_event=cancelled
+                )
+
+
     def test_public_broadcast_roundtrip_without_peer_key_exchange(self):
         alice = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         bob = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

@@ -168,11 +168,23 @@ class PeerHandshake:
             raise HandshakeError("Key confirmation transcript mismatch")
 
     def receive(self, packet: bytes):
-        if self.state in (HandshakeState.ESTABLISHED, HandshakeState.CLOSED):
-            raise HandshakeError("Handshake is no longer accepting packets")
+        if self.state == HandshakeState.CLOSED:
+            raise HandshakeError("Handshake is closed")
         if not isinstance(packet, (bytes, bytearray, memoryview)):
             raise TypeError("Handshake packet must be bytes-like")
         packet = bytes(packet)
+
+        # FINISH-R is the last handshake flight. If it was lost, the initiator
+        # retries the exact FINISH-I. Only that previously authenticated
+        # transcript can replay the cached final packet.
+        if (self.role == "responder" and self.state == HandshakeState.ESTABLISHED
+                and self._finish_i is not None and packet == self._finish_i):
+            return self._finish_r
+        if (self.role == "initiator" and self.state == HandshakeState.ESTABLISHED
+                and self._finish_r is not None and packet == self._finish_r):
+            return None
+        if self.state == HandshakeState.ESTABLISHED:
+            raise HandshakeError("Handshake is no longer accepting packets")
 
         # Idempotent retransmission handling: retry must resend the exact prior
         # control frame, not create a new ephemeral key or transcript.
@@ -205,12 +217,14 @@ class PeerHandshake:
 
         if self.role == "responder" and self.state == HandshakeState.WAIT_INIT_FINISH:
             self._verify_finish(packet, expected_role_code=0)
+            self._finish_i = packet
             self._finish_r = self._make_finish(role_code=1)
             self.state = HandshakeState.ESTABLISHED
             return self._finish_r
 
         if self.role == "initiator" and self.state == HandshakeState.WAIT_RESP_FINISH:
             self._verify_finish(packet, expected_role_code=1)
+            self._finish_r = packet
             self.state = HandshakeState.ESTABLISHED
             return None
 

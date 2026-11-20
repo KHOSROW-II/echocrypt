@@ -397,13 +397,15 @@ class BroadcastCodec:
         ]
 
     def encode_file(self, path, *, chunk_size=None, message_id=None,
-                    symbol_rate=800, fec_mode="conv", hopping=True):
+                    symbol_rate=800, fec_mode="conv", hopping=True, cancel_event=None):
         source = Path(path).expanduser()
         if not source.is_file():
             raise FileNotFoundError(source)
         name = source.name
         if not name or len(name) > 200 or name in {".", ".."}:
             raise BroadcastError("Invalid broadcast filename")
+        if cancel_event is not None and cancel_event.is_set():
+            raise BroadcastError("Broadcast file encoding cancelled")
         size = source.stat().st_size
         media_kind = MEDIA_VOICE if source.suffix.casefold() == ".ecv" else MEDIA_FILE
         if media_kind == MEDIA_VOICE:
@@ -429,7 +431,11 @@ class BroadcastCodec:
         digest = hashlib.sha256()
         with source.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise BroadcastError("Broadcast file encoding cancelled")
                 digest.update(block)
+        if cancel_event is not None and cancel_event.is_set():
+            raise BroadcastError("Broadcast file encoding cancelled")
         mid = bytes(message_id or os.urandom(8))
         # A compact, compressed manifest keeps small transfers usable on
         # lower max-packet profiles. Per-fragment headers duplicate the codec,
@@ -449,6 +455,8 @@ class BroadcastCodec:
                               message_id=mid, fragment_header=descriptor)]
         with source.open("rb") as stream:
             for index in range(total):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise BroadcastError("Broadcast file encoding cancelled")
                 chunk = stream.read(chunk_size)
                 frames.append(self.encode(
                     BroadcastType.FILE_CHUNK, chunk, message_id=mid,
@@ -537,15 +545,17 @@ class BroadcastReassembler:
 
     def __init__(self, codec: BroadcastCodec, *, download_dir="downloads/broadcast",
                  max_file_size=64 * 1024 * 1024, max_partial_bytes=16 * 1024 * 1024,
-                 max_partials=64, expiry_seconds=90.0):
+                 max_partials=64, max_file_metadata=256, expiry_seconds=90.0):
         self.codec = codec
         self.download_dir = Path(download_dir)
         self.max_file_size = int(max_file_size)
         self.max_partial_bytes = int(max_partial_bytes)
         self.max_partials = int(max_partials)
+        self.max_file_metadata = int(max_file_metadata)
         self.expiry_seconds = float(expiry_seconds)
         if (self.max_file_size < 0 or self.max_partial_bytes < 1 or
-                self.max_partials < 1 or self.expiry_seconds <= 0):
+                self.max_partials < 1 or self.max_file_metadata < 1 or
+                self.expiry_seconds <= 0):
             raise ValueError("Invalid broadcast reassembly limits")
         self._partials = OrderedDict()
         self._file_meta = {}
@@ -785,6 +795,10 @@ class BroadcastReassembler:
                         "hopping": bool(meta.get("hopping", bool(frame.fragment_flags & FRAGMENT_FLAG_FHSS))),
                         "fragment_header_version": fragment_header_version}
             meta_key = (frame.sender_id, frame.message_id)
+            if meta_key not in self._file_meta and len(self._file_meta) >= self.max_file_metadata:
+                oldest_key = min(self._file_meta_updated, key=self._file_meta_updated.get)
+                self._file_meta.pop(oldest_key, None)
+                self._file_meta_updated.pop(oldest_key, None)
             self._file_meta[meta_key] = meta_obj
             self._file_meta_updated[meta_key] = now
             self._remember_completed(key, now)

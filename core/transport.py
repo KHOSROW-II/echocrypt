@@ -29,18 +29,58 @@ def packet_duration(packet_bytes, config=None, fec_mode="hamming", symbol_rate=N
 
 
 def transmit(packet, fec_mode="hamming", hop_key=None, symbol_rate=None,
-             mark_hz=None, space_hz=None, gain=None):
-    from core.audio import play
-
+             mark_hz=None, space_hz=None, gain=None, cancel_event=None):
     c = load()
     rate = c.symbol_rate if symbol_rate is None else int(symbol_rate)
     mark = c.mark_hz if mark_hz is None else int(mark_hz)
     space = c.space_hz if space_hz is None else int(space_hz)
     amplitude = c.gain if gain is None else float(gain)
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("Acoustic transmission cancelled before modulation")
     wave = modulate(packet, c.sample_rate, rate, mark, space, amplitude,
                     c.max_payload, fec_mode=fec_mode, hop_key=hop_key)
-    play(wave, c.sample_rate, c.output_device)
+    _play_with_cancel(wave, c.sample_rate, c.output_device, cancel_event)
     return len(wave) / c.sample_rate
+
+
+def _play_with_cancel(wave, rate, device, cancel_event=None):
+    """Play one waveform and interrupt PortAudio playback when cancelled."""
+    import threading
+    from core.audio import play, stop_playback
+
+    if cancel_event is None:
+        play(wave, rate, device)
+        return
+    if cancel_event.is_set():
+        raise InterruptedError("Acoustic transmission cancelled before playback")
+    errors = []
+    finished = threading.Event()
+
+    def playback():
+        try:
+            play(wave, rate, device)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=playback, name="echocrypt-legacy-playback", daemon=True)
+    worker.start()
+    while not finished.wait(0.05):
+        if cancel_event.is_set():
+            try:
+                stop_playback()
+            except Exception:
+                pass
+            finished.wait(2.0)
+            if worker.is_alive():
+                raise RuntimeError("Audio playback did not stop after cancellation")
+            raise InterruptedError("Acoustic transmission cancelled during playback")
+    worker.join()
+    if errors:
+        raise errors[0]
+    if cancel_event.is_set():
+        raise InterruptedError("Acoustic transmission cancelled after playback")
 
 
 def receive(seconds=None):
@@ -58,7 +98,7 @@ def receive(seconds=None):
 
 def receive_auto(start_timeout=120.0, max_packet_bytes=None, max_record_seconds=None,
                  hop_key=None, symbol_rate=None, mark_hz=None, space_hz=None,
-                 on_debug=None):
+                 on_debug=None, cancel_event=None):
     """Detect one incoming acoustic frame, then decode its in-band FEC/hop header."""
     from core.audio import record_until_packet
 
@@ -89,7 +129,7 @@ def receive_auto(start_timeout=120.0, max_packet_bytes=None, max_record_seconds=
                                   calibration_seconds=0.15,
                                   pre_roll_seconds=max(0.65, 64 / rate + 0.20),
                                   activity_frequencies=activity_tones,
-                                  on_debug=on_debug)
+                                  on_debug=on_debug, cancel_event=cancel_event)
     if on_debug:
         on_debug("RX", "Audio capture returned; passing samples to demodulator",
                  samples=len(samples), seconds=f"{len(samples) / c.sample_rate:.3f}")
@@ -102,16 +142,18 @@ def receive_auto(start_timeout=120.0, max_packet_bytes=None, max_record_seconds=
         raise
 
 
-def transmit_hybrid(text_packet, media_packet, symbol_rate=None, fec_mode="hamming"):
-    """Transmit two simultaneous FDM lanes in one acoustic waveform."""
-    from core.audio import play
+def transmit_hybrid(text_packet, media_packet, symbol_rate=None, fec_mode="hamming",
+                    cancel_event=None):
+    """Transmit two simultaneous FDM lanes in one cancellable acoustic waveform."""
     from core.hybrid import modulate_hybrid
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("Hybrid transmission cancelled before modulation")
     c = load()
     rate = c.symbol_rate if symbol_rate is None else int(symbol_rate)
     wave = modulate_hybrid(text_packet, media_packet, c.sample_rate, rate,
                            max_payload=c.max_payload, fec_mode=fec_mode)
-    play(wave, c.sample_rate, c.output_device)
+    _play_with_cancel(wave, c.sample_rate, c.output_device, cancel_event)
     return len(wave) / c.sample_rate
 
 

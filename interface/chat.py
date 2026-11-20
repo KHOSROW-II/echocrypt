@@ -72,7 +72,14 @@ class ChatScreen:
         self._ptt_watcher_running = False
         self._ptt_lock = False
         if len(self.messages) > 80:
-            del self.messages[:-80]
+            recent = list(self.messages[-80:])
+            recent_ids = {id(entry) for entry in recent}
+            protected = [
+                entry for entry in self.messages[:-80]
+                if entry.get("cancelable") and callable(entry.get("cancel_action"))
+                and id(entry) not in recent_ids
+            ]
+            self.messages[:] = protected + recent
 
         self.input = TextArea(height=1, prompt="  Message  › ", multiline=False,
                               wrap_lines=False, style="class:chat.input")
@@ -268,7 +275,15 @@ class ChatScreen:
                     ("class:chat.system", "  Type a message and press Enter; attach files with F2.\n"),
                 ]
             output = [("class:chat.title", "  CONVERSATION\n")]
-            for entry in list(self.messages)[-24:]:
+            snapshot = list(self.messages)
+            recent = snapshot[-24:]
+            recent_ids = {id(entry) for entry in recent}
+            protected = [
+                entry for entry in snapshot[:-24]
+                if entry.get("cancelable") and callable(entry.get("cancel_action"))
+                and id(entry) not in recent_ids
+            ]
+            for entry in protected + recent:
                 speaker = entry.get("speaker", "system")
                 body = str(entry.get("body", ""))
                 stamp = str(entry.get("time", ""))
@@ -300,7 +315,7 @@ class ChatScreen:
                 if entry.get("voice_path") and self.on_play_voice is not None:
                     output.append(("class:chat.button", f"{' ' * pad}▶  Play voice [F9]\n", mouse_play_voice(entry)))
                 if entry.get("cancelable") and callable(entry.get("cancel_action")):
-                    output.append(("class:chat.error", f"{' ' * pad}×  Cancel voice transfer [F7]\n", mouse_cancel(entry)))
+                    output.append(("class:chat.error", f"{' ' * pad}×  Cancel sending [F7]\n", mouse_cancel(entry)))
             return output
 
         def activity_fragments():
@@ -426,5 +441,13 @@ def add_chat_message(messages, speaker: str, body: str, status: str = ""):
     entry = {"speaker": speaker, "body": str(body),
              "time": datetime.now().strftime("%H:%M:%S"), "status": str(status)}
     messages.append(entry)
-    del messages[:-80]
+    if len(messages) > 80:
+        recent = list(messages[-80:])
+        recent_ids = {id(item) for item in recent}
+        protected = [
+            item for item in messages[:-80]
+            if item.get("cancelable") and callable(item.get("cancel_action"))
+            and id(item) not in recent_ids
+        ]
+        messages[:] = protected + recent
     return entry

@@ -399,6 +399,27 @@ class BroadcastSDKTests(unittest.TestCase):
             receiver.close()
             self.assertNotIn(BROADCAST_HOP_KEY, client.receive_hop_keys)
 
+    def test_broadcast_rejects_size_limit_larger_than_partial_memory_budget(self):
+        from core.broadcast import BroadcastCodec, BroadcastReassembler
+
+        codec = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
+        with self.assertRaisesRegex(ValueError, "cannot exceed max_partial_bytes"):
+            BroadcastReassembler(
+                codec, max_file_size=513, max_partial_bytes=512
+            )
+
+    def test_broadcast_api_rejects_file_before_encoding_when_over_memory_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "too-large.bin"
+            source.write_bytes(b"x" * 513)
+            api = BroadcastAPI(
+                sender_id=b"SENDER01", max_packet_size=256,
+                max_file_size=512, max_partial_bytes=512,
+            )
+            with self.assertRaisesRegex(ValueError, "reassembly limit"):
+                api.encode_file(source)
+
     def test_broadcast_file_manifest_and_chunks_are_cached_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

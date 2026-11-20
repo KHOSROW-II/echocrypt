@@ -103,6 +103,7 @@ SESSION_MENU_ITEMS = [
 
 
 BROADCAST_FILE_MANIFEST_COPIES = 3
+BROADCAST_RETRY_IDLE_GUARD_SECONDS = 3.0
 # Shorter file fragments are more robust over real acoustic paths. A 512-byte
 # chunk produced ~13-second frames at 800 baud and repeatedly overwhelmed RX.
 BROADCAST_FILE_CHUNK_SIZE = 256
@@ -1731,16 +1732,32 @@ def _broadcast_packet_router(engine_ref, codec, reassembler, retransmit_cache,
     return on_packet
 
 
+def _broadcast_retry_idle_state(listener, idle_since, now):
+    """Require sustained channel silence before injecting a selective retry.
+
+    The 1.25-second packet guard intentionally creates short idle windows
+    between chunks. Those windows are not safe opportunities to transmit a
+    reverse-direction retry request because the sender may immediately start
+    its next chunk.
+    """
+    if listener is None or bool(getattr(listener, "busy", False)):
+        return None, False
+    if idle_since is None:
+        return float(now), False
+    return float(idle_since), float(now) - float(idle_since) >= BROADCAST_RETRY_IDLE_GUARD_SECONDS
+
+
 def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug=None):
     last_requested = {}
+    idle_since = None
     while engine_ref["engine"] is not None and engine_ref["engine"].running and not stop_event.is_set():
         engine = engine_ref["engine"]
         now = time.monotonic()
         listener = getattr(engine, "listener", None)
-        # Do not inject an automatic request into an active incoming burst. A
-        # chunk can take tens of seconds at conservative symbol rates; the
-        # receiver must first hear the sender's already queued next chunk.
-        if bool(getattr(listener, "busy", False)):
+        # Do not inject a reverse-direction request in the brief silence
+        # between file chunks. Wait for several seconds of continuous idleness.
+        idle_since, retry_ready = _broadcast_retry_idle_state(listener, idle_since, now)
+        if not retry_ready:
             stop_event.wait(0.5)
             continue
         for target_sender, message_id, kind, missing in reassembler.retry_requests(older_than=12.0):
@@ -1782,6 +1799,7 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                                  batch=batch_index // maximum + 1,
                                  batch_chunks=len(batch), packet_bytes=len(request))
                 last_requested[key] = time.monotonic()
+                idle_since = None
             except Exception as exc:
                 if on_debug is not None:
                     on_debug("BROADCAST_RETRY_ERROR", "Automatic selective resend request failed",

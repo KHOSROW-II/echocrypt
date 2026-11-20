@@ -331,3 +331,7 @@ ECHO-CRYPT is an actively developed experimental acoustic communication project.
 Its primary objective is to make direct, network-independent data exchange possible through ordinary audio hardware while improving reliability under real-world acoustic conditions.
 
 **No conventional network transport is used. Communication takes place through the acoustic path only.**
+
+## Security
+
+Please read the [Security Policy](SECURITY.md) before using ECHO-CRYPT or reporting a vulnerability. ECHO-CRYPT is experimental: Direct mode has not received an independent security audit, and Broadcast mode is public and provides no confidentiality or cryptographic sender authentication. The current private identity key is stored unencrypted at rest.

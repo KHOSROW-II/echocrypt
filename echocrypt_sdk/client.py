@@ -299,6 +299,8 @@ class AcousticClient:
         )
 
     def _handle_packet(self, packet: bytes) -> None:
+        if self._closed:
+            return
         raw = bytes(packet)
         try:
             self._packets.put_nowait(raw)
@@ -345,17 +347,52 @@ class AcousticClient:
                     self._callback_errors += 1
 
     def receive(self, timeout: Optional[float] = None) -> bytes:
-        """Return the next validated packet, raising ReceiveTimeout on timeout."""
-        if self._closed and self._packets.empty():
-            raise ClientClosedError("This AcousticClient has been closed")
+        """Return the next validated packet, or fail promptly when the client closes."""
         if timeout is not None:
             if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) \
                     or not math.isfinite(timeout) or timeout < 0:
                 raise ValueError("timeout must be a finite non-negative number or None")
-        try:
-            return self._packets.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise ReceiveTimeout("No acoustic packet arrived before the timeout") from exc
+
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            if self._closed and self._packets.empty():
+                raise ClientClosedError("This AcousticClient has been closed")
+
+            if deadline is None:
+                wait_for = 0.05
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    try:
+                        return bytes(self._packets.get_nowait())
+                    except queue.Empty as exc:
+                        if self._closed:
+                            raise ClientClosedError(
+                                "This AcousticClient has been closed"
+                            ) from exc
+                        raise ReceiveTimeout(
+                            "No acoustic packet arrived before the timeout"
+                        ) from exc
+                wait_for = min(0.05, remaining)
+
+            try:
+                packet = self._packets.get(timeout=wait_for)
+            except queue.Empty:
+                if deadline is not None and time.monotonic() >= deadline:
+                    if self._closed and self._packets.empty():
+                        raise ClientClosedError("This AcousticClient has been closed")
+                    raise ReceiveTimeout(
+                        "No acoustic packet arrived before the timeout"
+                    )
+                continue
+
+            # The client currently queues raw bytes only. Keep this guard so a
+            # future close sentinel can never escape as an application packet.
+            if packet is _SENTINEL:
+                if self._closed:
+                    raise ClientClosedError("This AcousticClient has been closed")
+                continue
+            return bytes(packet)
 
     def expect_packet(self, predicate: Callable[[bytes], bool]) -> PacketWaiter:
         """Register a one-shot packet waiter before sending a request."""

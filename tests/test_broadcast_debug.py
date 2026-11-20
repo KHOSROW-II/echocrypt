@@ -6,7 +6,7 @@ from core.broadcast import (BroadcastCodec, BroadcastReassembler,
 from interface.communication import (
     _broadcast_packet_router, _broadcast_send_frames, _broadcast_symbol_rates,
     _supported_symbol_rates, BROADCAST_INTER_FRAME_GAP_SECONDS,
-    BROADCAST_FILE_MANIFEST_COPIES,
+    BROADCAST_FILE_MANIFEST_COPIES, BROADCAST_FILE_CHUNK_SIZE,
 )
 
 
@@ -107,6 +107,7 @@ class BroadcastDebugTests(unittest.TestCase):
 
     def test_broadcast_file_manifest_is_repeated_and_frames_have_a_guard_gap(self):
         self.assertEqual(BROADCAST_FILE_MANIFEST_COPIES, 3)
+        self.assertEqual(BROADCAST_FILE_CHUNK_SIZE, 256)
         self.assertGreater(BROADCAST_INTER_FRAME_GAP_SECONDS, 0.30)
 
     def test_broadcast_router_logs_codec_rejections(self):

@@ -57,8 +57,6 @@ def request_microphone_permission(*, recorder: str | None = None) -> tuple[str, 
         "-f", str(output_file),
         "-l", "1",
         "-e", "aac",
-        "-r", "48000",
-        "-c", "1",
     ]
 
     try:

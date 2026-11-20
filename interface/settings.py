@@ -70,7 +70,7 @@ def _request_termux_android_microphone():
         if detail:
             print("\n" + detail)
         if status == "permission_required":
-            prompt("\nAllow microphone access in the Android dialog, return here, then press Enter to retry...")
+            prompt("\nAllow microphone access in Android. If no dialog appears, enable Microphone for Termux:API in Android Settings, return here, then press Enter to retry...")
             status, detail = request_microphone_permission()
             if detail:
                 print("\n" + detail)

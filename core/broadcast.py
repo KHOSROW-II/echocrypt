@@ -138,10 +138,17 @@ class _PartialMessage:
     fragment_flags: int = 0
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
+    next_missing_index: int = 0
+    bytes_size: int = 0
 
     @property
     def missing(self):
+        """Exact missing indexes; intended for explicit retry snapshots."""
         return tuple(i for i in range(self.count) if i not in self.fragments)
+
+    @property
+    def missing_count(self):
+        return self.count - len(self.fragments)
 
     @property
     def complete(self):
@@ -162,6 +169,7 @@ class BroadcastDelivery:
     total_fragments: int = 0
     media_kind: int = MEDIA_FILE
     codec_id: int = VOICE_CODEC_NONE
+    missing_count: int = 0
 
 
 class BroadcastCodec:
@@ -590,6 +598,7 @@ class BroadcastReassembler:
                 "fragments are retained in memory until final verification"
             )
         self._partials = OrderedDict()
+        self._partial_bytes = 0
         self._file_meta = {}
         self._file_meta_updated = {}
         self._completed = OrderedDict()
@@ -612,10 +621,19 @@ class BroadcastReassembler:
         self._file_meta_updated.pop((sid, mid), None)
         self._completed.pop((sid, mid, BroadcastType.FILE_META), None)
 
+    def _remove_partial(self, key):
+        partial = self._partials.pop(key, None)
+        if partial is not None:
+            self._partial_bytes -= partial.bytes_size
+            if self._partial_bytes < 0:
+                # Defensive invariant guard; this should never occur.
+                self._partial_bytes = 0
+        return partial
+
     def _expire(self, now):
         for key, partial in list(self._partials.items()):
             if now - partial.updated_at > self.expiry_seconds:
-                self._partials.pop(key, None)
+                self._remove_partial(key)
         for key, updated in list(self._file_meta_updated.items()):
             if now - updated > self.expiry_seconds:
                 self._drop_file_metadata(*key)
@@ -623,16 +641,14 @@ class BroadcastReassembler:
     def _make_room(self, incoming_size, *, protect_key=None, new_partial=False):
         if incoming_size < 0 or incoming_size > self.max_partial_bytes:
             raise BroadcastError("Broadcast fragment exceeds the reassembly memory limit")
-        def used():
-            return sum(sum(len(x) for x in p.fragments.values()) for p in self._partials.values())
         while ((new_partial and len(self._partials) >= self.max_partials) or
-               used() + incoming_size > self.max_partial_bytes):
+               self._partial_bytes + incoming_size > self.max_partial_bytes):
             candidates = [key for key in self._partials if key != protect_key]
             if not candidates:
                 raise BroadcastError("Broadcast reassembly memory limit exceeded")
             key = candidates[0]
-            old = self._partials.pop(key)
-            if old.kind == BroadcastType.FILE_CHUNK:
+            old = self._remove_partial(key)
+            if old is not None and old.kind == BroadcastType.FILE_CHUNK:
                 self._drop_file_metadata(old.sender_id, old.message_id)
 
     def _partial(self, frame):
@@ -661,19 +677,31 @@ class BroadcastReassembler:
         if prior is None:
             self._make_room(len(frame.payload), protect_key=key)
             partial.fragments[frame.index] = frame.payload
+            partial.bytes_size += len(frame.payload)
+            self._partial_bytes += len(frame.payload)
+            # Advance the contiguous-prefix cursor amortized O(1): across an
+            # in-order transfer each fragment is visited by this loop once.
+            if frame.index == partial.next_missing_index:
+                while (partial.next_missing_index < partial.count and
+                       partial.next_missing_index in partial.fragments):
+                    partial.next_missing_index += 1
         partial.updated_at = time.monotonic()
         self._partials.move_to_end(key)
         return key, partial, prior is not None
 
     @staticmethod
-    def _text_preview(partial):
+    def _text_preview(partial, max_fragments=8):
+        # Preview only a bounded prefix. Rebuilding every fragment into a
+        # preview after each incoming frame made long messages quadratic.
         parts = []
-        for index in range(partial.count):
+        for index in range(min(partial.count, max_fragments)):
             fragment = partial.fragments.get(index)
             if fragment is None:
                 parts.append(f"⟦missing {index + 1}⟧")
             else:
                 parts.append(fragment.decode("utf-8", errors="replace"))
+        if partial.count > max_fragments:
+            parts.append(" …")
         return "".join(parts)
 
     def has_file_manifest(self, sender_id, message_id):
@@ -719,7 +747,7 @@ class BroadcastReassembler:
                 partial.codec_id != int(meta.get("codec_id", VOICE_CODEC_NONE))):
             raise BroadcastError("File chunk media/codec descriptor differs from manifest")
         path = self._write_file(meta["filename"], payload)
-        self._partials.pop(key, None)
+        self._remove_partial(key)
         self._file_meta.pop((sender_id, message_id), None)
         self._file_meta_updated.pop((sender_id, message_id), None)
         self._remember_completed(key, now)
@@ -844,7 +872,7 @@ class BroadcastReassembler:
             self._file_meta[meta_key] = meta_obj
             self._file_meta_updated[meta_key] = now
             self._remember_completed(key, now)
-            self._partials.pop(key, None)
+            self._remove_partial(key)
             if size == 0:
                 path = self._write_file(filename, b"")
                 self._file_meta.pop(meta_key, None)
@@ -870,7 +898,7 @@ class BroadcastReassembler:
                 payload.decode("utf-8", errors="strict")
             except UnicodeDecodeError as exc:
                 raise BroadcastError("Reassembled broadcast text is not valid UTF-8") from exc
-            self._partials.pop(key, None)
+            self._remove_partial(key)
             self._remember_completed(key, now)
             return BroadcastDelivery(frame.kind, frame.sender_id, frame.message_id,
                                      payload, True, preview=payload.decode("utf-8"),

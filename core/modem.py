@@ -465,49 +465,6 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                 x, preamble_start, sps, sync_bits, mark, space, sample_rate,
                 search_limit_hz=frequency_limit,
                 step_hz=frequency_step)
-
-            # A best-fit offset pinned to the edge is not a reliable estimate:
-            # it usually means the real acoustic clock/carrier displacement is
-            # outside the current profile's search window. Expand the search
-            # only for those boundary hits. The extended candidate is still
-            # provisional; the protected header CRC below remains mandatory.
-            boundary_hit = (
-                frequency_limit > 0
-                and abs(frequency_offset) >= max(0, frequency_limit - frequency_step)
-            )
-            if boundary_hit:
-                extended_limit = min(max(frequency_limit * 2, frequency_limit + 240), 900)
-                extended_offset, extended_score = estimate_frequency_offset(
-                    x, preamble_start, sps, sync_bits, mark, space, sample_rate,
-                    search_limit_hz=extended_limit,
-                    step_hz=frequency_step)
-                extended_is_interior = (
-                    abs(extended_offset) < max(0, extended_limit - frequency_step)
-                )
-                if extended_is_interior and extended_score > frequency_score + 1e-6:
-                    report(
-                        "FREQUENCY_RECOVERY",
-                        "Carrier estimate moved off the search boundary after bounded expansion",
-                        initial_offset_hz=frequency_offset,
-                        initial_score=f"{frequency_score:.4f}",
-                        recovered_offset_hz=extended_offset,
-                        recovered_score=f"{extended_score:.4f}",
-                        initial_limit_hz=frequency_limit,
-                        expanded_limit_hz=extended_limit,
-                    )
-                    frequency_offset, frequency_score = extended_offset, extended_score
-                else:
-                    report(
-                        "FREQUENCY_RECOVERY",
-                        "Expanded carrier search did not find a better interior estimate",
-                        initial_offset_hz=frequency_offset,
-                        initial_score=f"{frequency_score:.4f}",
-                        expanded_offset_hz=extended_offset,
-                        expanded_score=f"{extended_score:.4f}",
-                        initial_limit_hz=frequency_limit,
-                        expanded_limit_hz=extended_limit,
-                    )
-
             report("CHANNEL", "Carrier-frequency offset estimated from the preamble",
                    offset_hz=frequency_offset, normalized_score=f"{frequency_score:.4f}")
             report("BITS", "Preamble synchronized; decoding protected frame header",
@@ -578,6 +535,61 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                             frequency_offset_hz=frequency_offset,
                             frequency_limit_hz=frequency_limit,
                         )
+                    # Do not replace an estimate just because a broader search
+                    # scores marginally better: ordinary frames can have noisy
+                    # edge scores. Only after the protected header rejects the
+                    # first estimate do we test one expanded candidate. The
+                    # candidate is adopted solely if the header CRC validates.
+                    recovered = None
+                    recovered_offset = 0
+                    recovered_method = ""
+                    trials = 0
+                    if boundary_hit:
+                        expanded_limit = min(max(frequency_limit * 2, frequency_limit + 240), 900)
+                        expanded_offset, expanded_score = estimate_frequency_offset(
+                            x, preamble_start, sps, sync_bits, mark, space, sample_rate,
+                            search_limit_hz=expanded_limit,
+                            step_hz=frequency_step,
+                        )
+                        expanded_is_interior = (
+                            abs(expanded_offset) < max(0, expanded_limit - frequency_step)
+                        )
+                        report(
+                            "FREQUENCY_RECOVERY",
+                            "Testing expanded carrier estimate after protected-header CRC failure",
+                            initial_offset_hz=frequency_offset,
+                            initial_score=f"{frequency_score:.4f}",
+                            expanded_offset_hz=expanded_offset,
+                            expanded_score=f"{expanded_score:.4f}",
+                            initial_limit_hz=frequency_limit,
+                            expanded_limit_hz=expanded_limit,
+                        )
+                        if expanded_is_interior and expanded_score > frequency_score + 1e-6:
+                            original_frequency_offset = frequency_offset
+                            frequency_offset = expanded_offset
+                            expanded_header_llrs = [
+                                get_llr(header_symbol_start + i)
+                                for i in range(header_symbol_count)
+                            ]
+                            trials += 1
+                            try:
+                                recovered = _header_v2_decode(expanded_header_llrs)
+                                recovered_method = "expanded-carrier-search"
+                                report(
+                                    "FREQUENCY_RECOVERY",
+                                    "Expanded carrier estimate recovered a CRC-valid protected header",
+                                    original_offset_hz=original_frequency_offset,
+                                    accepted_offset_hz=frequency_offset,
+                                    trials=trials,
+                                )
+                            except HeaderCRCError:
+                                frequency_offset = original_frequency_offset
+                                report(
+                                    "FREQUENCY_RECOVERY",
+                                    "Expanded carrier estimate also failed protected-header CRC",
+                                    attempted_offset_hz=expanded_offset,
+                                    trials=trials,
+                                )
                     # The sync is known data, so estimate the relative gain of
                     # both BFSK tones from it. Some speaker/microphone paths
                     # attenuate one tone enough to bias every subsequent bit.
@@ -592,34 +604,31 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
                         (0, -phase_step, phase_step) if weak_boundary_recovery
                         else (0, -phase_step, phase_step, -2 * phase_step, 2 * phase_step)
                     )
-                    recovered = None
-                    recovered_offset = 0
-                    recovered_method = ""
-                    trials = 0
                     balance_modes = []
                     if balance is not None:
                         balance_modes.append(("preamble-equalized", balance))
                     balance_modes.append(("raw-phase", None))
-                    for method, tone_balance in balance_modes:
-                        for timing_offset in offsets:
-                            if method == "raw-phase" and timing_offset == 0:
-                                continue  # already tried the baseline path
-                            trial_llrs = [
-                                get_llr(header_symbol_start + i,
-                                        timing_offset=timing_offset,
-                                        tone_balance=tone_balance)
-                                for i in range(header_symbol_count)
-                            ]
-                            trials += 1
-                            try:
-                                recovered = _header_v2_decode(trial_llrs)
-                                recovered_offset = timing_offset
-                                recovered_method = method
+                    if recovered is None:
+                        for method, tone_balance in balance_modes:
+                            for timing_offset in offsets:
+                                if method == "raw-phase" and timing_offset == 0:
+                                    continue  # already tried the baseline path
+                                trial_llrs = [
+                                    get_llr(header_symbol_start + i,
+                                            timing_offset=timing_offset,
+                                            tone_balance=tone_balance)
+                                    for i in range(header_symbol_count)
+                                ]
+                                trials += 1
+                                try:
+                                    recovered = _header_v2_decode(trial_llrs)
+                                    recovered_offset = timing_offset
+                                    recovered_method = method
+                                    break
+                                except HeaderCRCError:
+                                    pass
+                            if recovered is not None:
                                 break
-                            except HeaderCRCError:
-                                pass
-                        if recovered is not None:
-                            break
                     if recovered is None:
                         raise HeaderCRCError(
                             "ECF2/ECF3 protected header CRC mismatch after "

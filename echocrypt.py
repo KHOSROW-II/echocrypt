@@ -382,7 +382,13 @@ def main():
             # The audio service is refreshed on every launch because Android may
             # stop PulseAudio while ECHO-CRYPT is not running.
             missing = _missing_imports(Path(sys.executable), TERMUX_IMPORTS)
-            needs_bootstrap = bootstrap_requested or bool(missing) or _saved_mode() != "rootless"
+            termux_api_cli_missing = shutil.which("termux-microphone-record") is None
+            needs_bootstrap = (
+                bootstrap_requested
+                or bool(missing)
+                or termux_api_cli_missing
+                or _saved_mode() != "rootless"
+            )
             if not needs_bootstrap:
                 try:
                     _verify_termux_audio_runtime()

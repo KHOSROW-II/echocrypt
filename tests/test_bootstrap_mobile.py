@@ -102,12 +102,13 @@ class MobileBootstrapTests(unittest.TestCase):
         self.assertNotIn("apt-get", flattened)
         self.assertNotIn("-m venv", flattened)
 
-    def test_termux_launch_refreshes_audio_bridge_without_reinstalling_packages(self):
+    def test_termux_launch_checks_audio_without_reinstall_when_api_cli_exists(self):
         with patch.object(echocrypt.sys, "argv", ["echocrypt.py"]), \
              patch.object(echocrypt, "_choose_mode", return_value="rootless"), \
              patch.object(echocrypt, "_is_termux", return_value=True), \
              patch.object(echocrypt, "_missing_imports", return_value=[]), \
              patch.object(echocrypt, "_saved_mode", return_value="rootless"), \
+             patch.object(echocrypt.shutil, "which", return_value="/termux/bin/termux-microphone-record"), \
              patch.object(echocrypt, "_verify_termux_audio_runtime") as verify, \
              patch.object(echocrypt, "_bootstrap") as bootstrap, \
              patch("interface.menu.main") as app_main:
@@ -116,12 +117,28 @@ class MobileBootstrapTests(unittest.TestCase):
         bootstrap.assert_not_called()
         app_main.assert_called_once_with()
 
+    def test_termux_launch_bootstraps_when_termux_api_cli_is_missing(self):
+        with patch.object(echocrypt.sys, "argv", ["echocrypt.py"]), \
+             patch.object(echocrypt, "_choose_mode", return_value="rootless"), \
+             patch.object(echocrypt, "_is_termux", return_value=True), \
+             patch.object(echocrypt, "_missing_imports", return_value=[]), \
+             patch.object(echocrypt, "_saved_mode", return_value="rootless"), \
+             patch.object(echocrypt.shutil, "which", side_effect=lambda name: None if name == "termux-microphone-record" else "/termux/bin/" + name), \
+             patch.object(echocrypt, "_verify_termux_audio_runtime") as verify, \
+             patch.object(echocrypt, "_bootstrap") as bootstrap, \
+             patch("interface.menu.main") as app_main:
+            echocrypt.main()
+        verify.assert_not_called()
+        bootstrap.assert_called_once_with("rootless")
+        app_main.assert_called_once_with()
+
     def test_termux_launch_repairs_bootstrap_when_audio_self_test_raises(self):
         with patch.object(echocrypt.sys, "argv", ["echocrypt.py"]), \
              patch.object(echocrypt, "_choose_mode", return_value="rootless"), \
              patch.object(echocrypt, "_is_termux", return_value=True), \
              patch.object(echocrypt, "_missing_imports", return_value=[]), \
              patch.object(echocrypt, "_saved_mode", return_value="rootless"), \
+             patch.object(echocrypt.shutil, "which", return_value="/termux/bin/termux-microphone-record"), \
              patch.object(echocrypt, "_verify_termux_audio_runtime", side_effect=RuntimeError("PortAudio unavailable")), \
              patch.object(echocrypt, "_bootstrap") as bootstrap, \
              patch("interface.menu.main") as app_main, \

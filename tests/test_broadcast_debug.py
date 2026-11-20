@@ -4,7 +4,8 @@ import unittest
 from core.broadcast import (BroadcastCodec, BroadcastReassembler,
                              BroadcastRetransmitCache, BroadcastType)
 from interface.communication import (
-    _broadcast_packet_router, _broadcast_send_frames, _supported_symbol_rates,
+    _broadcast_packet_router, _broadcast_send_frames, _broadcast_symbol_rates,
+    _supported_symbol_rates,
 )
 
 
@@ -88,6 +89,15 @@ class BroadcastDebugTests(unittest.TestCase):
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual(engine.calls[0][1]["symbol_rate"], 800)
         self.assertTrue(engine.calls[0][1]["disable_hopping"])
+
+
+    def test_broadcast_receive_prioritizes_fast_rate_before_legacy_rates(self):
+        from types import SimpleNamespace
+
+        config = SimpleNamespace(
+            sample_rate=48000, symbol_rate=200, fast_symbol_rate=800,
+        )
+        self.assertEqual(_broadcast_symbol_rates(config), (800, 200, 400, 100))
 
     def test_broadcast_router_logs_codec_rejections(self):
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

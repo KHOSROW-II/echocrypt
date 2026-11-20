@@ -41,6 +41,22 @@ It uses:
 - Key-derived frequency hopping.
 - Reliable message and file delivery with bounded retries.
 
+
+#### Direct security profiles
+
+When connecting to a saved peer, choose a negotiated Direct profile:
+
+| Profile | Initial modem rate | Traffic padding | Keyed frequency hopping | Retry budget |
+|---|---:|---:|---|---:|
+| Low | 800 baud | Off | Off | 1 |
+| Medium | 400 baud | 64-byte blocks | On | 3 |
+| Secure | 200 baud | 256-byte blocks | On | 5 |
+| Custom | User-defined | 0/32/64/128/256-byte blocks | User-defined | 0–10 |
+
+Every profile retains the same authenticated cryptographic primitives: Ed25519 identity signatures, ephemeral X25519 key agreement, HKDF-SHA256, and directional ChaCha20-Poly1305 channels. Padding makes ciphertext lengths less precise; keyed hopping changes the acoustic symbol schedule. Neither feature makes the cipher itself stronger, and neither guarantees anonymity or resistance to a capable acoustic observer.
+
+The selected profile is carried inside the signed HELLO exchange. Different preset selections negotiate the stronger preset; Custom must match exactly on both devices. The new Direct HELLO protocol is version 2, so **both devices must update to the same current release/commit** before opening a Direct session. Version 1 peers are not wire-compatible with version 2.
+
 Both devices must import and explicitly trust each other's public identity before establishing a session.
 
 ### Broadcast

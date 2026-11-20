@@ -1227,6 +1227,11 @@ def _supported_symbol_rates(cfg):
     return tuple(rates)
 
 
+def _broadcast_symbol_rates(cfg):
+    """Try the fast fixed-frequency Broadcast profile before legacy rates."""
+    return tuple(dict.fromkeys((int(cfg.fast_symbol_rate), *_supported_symbol_rates(cfg))))
+
+
 def _file_symbol_rate_plan(cfg):
     """Prefer the negotiated Direct profile, then fall back to faster/robust rates."""
     candidates = [cfg.symbol_rate, cfg.fast_symbol_rate]
@@ -1748,7 +1753,7 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
                     future = engine.submit_packet(
                         request, fec_mode="conv", symbol_rate=retry_rate, hop_key=None,
                         label=f"BROADCAST SELECTIVE RETRY {batch_index // maximum + 1}",
-                        cancel_event=stop_event,
+                        cancel_event=stop_event, disable_hopping=True,
                     )
                     _wait_future_or_cancel(future, stop_event, duration + 30.0)
                     if on_debug is not None:
@@ -2047,7 +2052,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         engine = AudioSessionEngine(
             cfg,
             hop_key=BROADCAST_HOP_KEY if broadcast_mode else handshake.session.hopping_key,
-            symbol_rates=_supported_symbol_rates(cfg),
+            symbol_rates=(
+                _broadcast_symbol_rates(cfg) if broadcast_mode
+                else _supported_symbol_rates(cfg)
+            ),
             max_packet_bytes=cfg.max_payload,
             on_packet=packet_handler,
             on_event=on_engine_event,

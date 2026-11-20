@@ -107,6 +107,9 @@ class BroadcastCodecTests(unittest.TestCase):
         self.assertEqual(decoded.payload, "open room: درود به همه".encode())
 
     def test_large_fixed_broadcast_file_chunk_roundtrips_at_800_baud(self):
+        from core.recovery.engine import AdaptiveSignalRecoveryEngine
+        from core.recovery.profile_generator import default_profile
+
         # Reproduce the exact large FILE_CHUNK PHY frame size used by the
         # previous 512-byte application chunking strategy. This validates the
         # modem independently of listener burst segmentation and hardware.
@@ -127,11 +130,15 @@ class BroadcastCodecTests(unittest.TestCase):
             recovered = demodulate(
                 waveform, sample_rate=48000, symbol_rate=800,
                 mark=1800, space=2400, max_payload=1024,
+                recovery_engine=AdaptiveSignalRecoveryEngine(default_profile()),
             )
             self.assertEqual(recovered, frame)
             self.assertEqual(receiver.decode(recovered).kind, BroadcastType.FILE_CHUNK)
 
     def test_public_broadcast_waveform_uses_the_same_public_hopping_schedule(self):
+        from core.recovery.engine import AdaptiveSignalRecoveryEngine
+        from core.recovery.profile_generator import default_profile
+
         sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)
         frame = sender.encode_text("common public hop schedule")[0]
@@ -144,6 +151,7 @@ class BroadcastCodecTests(unittest.TestCase):
             waveform, sample_rate=48000, symbol_rate=800,
             mark=1800, space=2400, max_payload=1024,
             hop_key=BROADCAST_HOP_KEY,
+            recovery_engine=AdaptiveSignalRecoveryEngine(default_profile()),
         )
         self.assertEqual(receiver.decode(recovered).payload,
                          sender.decode(frame).payload)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import shutil
+import threading
 import textwrap
 import time
 
@@ -53,10 +54,11 @@ class ChatScreen:
                  on_send=None, activity_provider=None, on_retry=None,
                  on_play_voice=None,
                  on_ptt_start=None, on_ptt_stop=None, on_ptt_cancel=None,
-                 on_cancel=None, input=None, output=None):
+                 on_cancel=None, messages_lock=None, input=None, output=None):
         self.peer_name = str(peer_name)
         self.username = str(username)
         self.messages = messages if messages is not None else []
+        self.messages_lock = messages_lock if messages_lock is not None else threading.RLock()
         self.on_send = on_send
         self.activity_provider = activity_provider
         self.on_retry = on_retry
@@ -71,15 +73,16 @@ class ChatScreen:
         self._ptt_seen_repeat = False
         self._ptt_watcher_running = False
         self._ptt_lock = False
-        if len(self.messages) > 80:
-            recent = list(self.messages[-80:])
-            recent_ids = {id(entry) for entry in recent}
-            protected = [
-                entry for entry in self.messages[:-80]
-                if entry.get("cancelable") and callable(entry.get("cancel_action"))
-                and id(entry) not in recent_ids
-            ]
-            self.messages[:] = protected + recent
+        with self.messages_lock:
+            if len(self.messages) > 80:
+                recent = list(self.messages[-80:])
+                recent_ids = {id(entry) for entry in recent}
+                protected = [
+                    entry for entry in self.messages[:-80]
+                    if entry.get("cancelable") and callable(entry.get("cancel_action"))
+                    and id(entry) not in recent_ids
+                ]
+                self.messages[:] = protected + recent
 
         self.input = TextArea(height=1, prompt="  Message  › ", multiline=False,
                               wrap_lines=False, style="class:chat.input")
@@ -101,7 +104,7 @@ class ChatScreen:
                     if callback is not None:
                         await asyncio.to_thread(callback)
                 except Exception as exc:
-                    add_chat_message(self.messages, "system", f"Voice note failed: {exc}", "VOICE ERROR")
+                    self._append_message("system", f"Voice note failed: {exc}", "VOICE ERROR")
                 finally:
                     self._ptt_lock = False
                     self._app.invalidate()
@@ -130,7 +133,7 @@ class ChatScreen:
                     self._ptt_watcher_running = True
                     app.create_background_task(watch_keyboard_hold())
             except Exception as exc:
-                add_chat_message(self.messages, "system", f"Could not start voice recording: {exc}", "VOICE ERROR")
+                self._append_message("system", f"Could not start voice recording: {exc}", "VOICE ERROR")
                 self._app.invalidate()
 
         async def watch_keyboard_hold():
@@ -170,7 +173,7 @@ class ChatScreen:
             try:
                 self.on_send(value)
             except Exception as exc:
-                add_chat_message(self.messages, "system", f"Could not queue message: {exc}", "SEND FAILED")
+                self._append_message("system", f"Could not queue message: {exc}", "SEND FAILED")
             self._app.invalidate()
 
         self.submit_message = submit_message
@@ -200,7 +203,7 @@ class ChatScreen:
                 try:
                     self.on_cancel()
                 except Exception as exc:
-                    add_chat_message(self.messages, "system", f"Could not cancel voice operation: {exc}", "CANCEL FAILED")
+                    self._append_message("system", f"Could not cancel voice operation: {exc}", "CANCEL FAILED")
                 self._app.invalidate()
 
         self.cancel_voice_action = cancel_voice_action
@@ -224,13 +227,19 @@ class ChatScreen:
 
         @kb.add("f8")
         def _(event):
-            target = next((m for m in reversed(self.messages) if m.get("retry_request")), None)
+            target = next(
+                (entry for entry, view in reversed(self._message_snapshot(copy_entries=True))
+                 if view.get("retry_request")), None
+            )
             if target is not None:
                 self._invoke_retry(target)
 
         @kb.add("f9")
         def _(event):
-            target = next((m for m in reversed(self.messages) if m.get("voice_path")), None)
+            target = next(
+                (entry for entry, view in reversed(self._message_snapshot(copy_entries=True))
+                 if view.get("voice_path")), None
+            )
             if target is not None:
                 self._invoke_play_voice(target)
 
@@ -253,7 +262,8 @@ class ChatScreen:
         def mouse_cancel(entry):
             def handler(mouse_event):
                 if mouse_event.event_type == MouseEventType.MOUSE_UP:
-                    action = entry.get("cancel_action")
+                    with self.messages_lock:
+                        action = entry.get("cancel_action")
                     if callable(action):
                         action()
                     self._app.invalidate()
@@ -268,26 +278,26 @@ class ChatScreen:
         def history_fragments():
             width = max(48, shutil.get_terminal_size((100, 24)).columns)
             inner = max(18, min(68, int((width - 8) * 0.68)))
-            if not self.messages:
+            snapshot = self._message_snapshot(copy_entries=True)
+            if not snapshot:
                 return [
                     ("class:chat.system", "  No messages yet.\n"),
                     ("class:chat.system", "  The acoustic listener is active in the background.\n"),
                     ("class:chat.system", "  Type a message and press Enter; attach files with F2.\n"),
                 ]
             output = [("class:chat.title", "  CONVERSATION\n")]
-            snapshot = list(self.messages)
             recent = snapshot[-24:]
-            recent_ids = {id(entry) for entry in recent}
+            recent_ids = {id(entry) for entry, _view in recent}
             protected = [
-                entry for entry in snapshot[:-24]
-                if entry.get("cancelable") and callable(entry.get("cancel_action"))
+                (entry, view) for entry, view in snapshot[:-24]
+                if view.get("cancelable") and callable(view.get("cancel_action"))
                 and id(entry) not in recent_ids
             ]
-            for entry in protected + recent:
-                speaker = entry.get("speaker", "system")
-                body = str(entry.get("body", ""))
-                stamp = str(entry.get("time", ""))
-                status = str(entry.get("status", ""))
+            for entry, view in protected + recent:
+                speaker = view.get("speaker", "system")
+                body = str(view.get("body", ""))
+                stamp = str(view.get("time", ""))
+                status = str(view.get("status", ""))
                 if speaker == "system":
                     output.append(("class:chat.system", f"  • {stamp}  {body}\n"))
                     if status:
@@ -309,12 +319,12 @@ class ChatScreen:
                     output.append(("class:muted", f"{' ' * pad}╰─ {status}\n"))
                 else:
                     output.append((style, f"{' ' * pad}╰─\n"))
-                retry = entry.get("retry_request")
+                retry = view.get("retry_request")
                 if retry and self.on_retry is not None:
                     output.append(("class:chat.retry", f"{' ' * pad}↻  Request resend [F8]\n", mouse_retry(entry)))
-                if entry.get("voice_path") and self.on_play_voice is not None:
+                if view.get("voice_path") and self.on_play_voice is not None:
                     output.append(("class:chat.button", f"{' ' * pad}▶  Play voice [F9]\n", mouse_play_voice(entry)))
-                if entry.get("cancelable") and callable(entry.get("cancel_action")):
+                if view.get("cancelable") and callable(view.get("cancel_action")):
                     output.append(("class:chat.error", f"{' ' * pad}×  Cancel sending [F7]\n", mouse_cancel(entry)))
             return output
 
@@ -410,28 +420,44 @@ class ChatScreen:
         try:
             self.on_retry(entry)
         except Exception as exc:
-            entry["status"] = f"Retry request failed: {exc}"
+            with self.messages_lock:
+                entry["status"] = f"Retry request failed: {exc}"
         self._app.invalidate()
 
     def _invoke_play_voice(self, entry):
-        if self.on_play_voice is None or not entry.get("voice_path"):
-            return
+        with self.messages_lock:
+            if self.on_play_voice is None or not entry.get("voice_path"):
+                return
         async def play_in_background():
             try:
                 wav_path = await asyncio.to_thread(self.on_play_voice, entry)
-                if wav_path is not None:
-                    entry["wav_path"] = str(wav_path)
-                    name = getattr(wav_path, "name", str(wav_path).rsplit("/", 1)[-1])
-                    entry["status"] = f"played · standard WAV saved: {name}"
-                else:
-                    entry["status"] = "voice message played"
+                with self.messages_lock:
+                    if wav_path is not None:
+                        entry["wav_path"] = str(wav_path)
+                        name = getattr(wav_path, "name", str(wav_path).rsplit("/", 1)[-1])
+                        entry["status"] = f"played · standard WAV saved: {name}"
+                    else:
+                        entry["status"] = "voice message played"
             except Exception as exc:
-                entry["status"] = f"VOICE PLAYBACK FAILED · {exc}"
+                with self.messages_lock:
+                    entry["status"] = f"VOICE PLAYBACK FAILED · {exc}"
             finally:
                 self._app.invalidate()
-        entry["status"] = "playing voice message"
+        with self.messages_lock:
+            entry["status"] = "playing voice message"
         self._app.create_background_task(play_in_background())
         self._app.invalidate()
+
+    def _message_snapshot(self, *, copy_entries=False):
+        """Take a consistent snapshot while RX/TX workers may update history."""
+        with self.messages_lock:
+            if copy_entries:
+                return [(entry, dict(entry)) for entry in self.messages]
+            return list(self.messages)
+
+    def _append_message(self, speaker, body, status=""):
+        with self.messages_lock:
+            return add_chat_message(self.messages, speaker, body, status)
 
     def run(self):
         return self._app.run()

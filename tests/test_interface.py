@@ -1,9 +1,12 @@
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from prompt_toolkit import Application
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
+from interface.chat import ChatScreen
 from interface.terminal import MENU_STYLE, Menu, build_menu_fragments
 
 
@@ -39,6 +42,51 @@ class TerminalMenuTests(unittest.TestCase):
             )
             pipe.send_text("\r")
             self.assertEqual(app.run(), "start")
+
+    def test_chat_history_snapshot_and_append_share_the_rx_lock(self):
+        class TrackingLock:
+            def __init__(self):
+                self._lock = threading.RLock()
+                self.entries = 0
+
+            def __enter__(self):
+                self._lock.acquire()
+                self.entries += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                self._lock.release()
+
+        messages = []
+        shared_lock = TrackingLock()
+        with create_pipe_input() as pipe:
+            chat = ChatScreen(
+                "peer", "local", messages,
+                messages_lock=shared_lock,
+                input=pipe, output=DummyOutput(),
+            )
+            before = shared_lock.entries
+
+            def writer():
+                for index in range(300):
+                    chat._append_message("peer", f"message {index}")
+
+            def reader():
+                for _ in range(300):
+                    snapshot = chat._message_snapshot(copy_entries=True)
+                    self.assertTrue(all(
+                        isinstance(view.get("body"), str) for _entry, view in snapshot
+                    ))
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                write_future = pool.submit(writer)
+                read_future = pool.submit(reader)
+                write_future.result(timeout=5)
+                read_future.result(timeout=5)
+
+            self.assertGreater(shared_lock.entries, before)
+            self.assertLessEqual(len(messages), 80)
+            self.assertEqual(messages[-1]["body"], "message 299")
 
     def test_invalid_empty_menu_is_rejected(self):
         with self.assertRaises(ValueError):

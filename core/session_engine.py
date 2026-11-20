@@ -6,10 +6,13 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+import os
 import queue
 import random
 import threading
 import time
+import wave
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -22,6 +25,23 @@ from core.recovery.errors import FrameCRCError, HeaderCRCError
 # Broadcast frames need a quiet gap longer than the listener's 300 ms
 # burst-ending threshold, otherwise consecutive packets can be merged.
 BROADCAST_INTER_FRAME_GAP_SECONDS = 1.25
+
+
+def _write_debug_rx_wav(samples, sample_rate, directory, frame_index=None):
+    """Persist one raw RX burst as PCM16 WAV for opt-in physical-layer analysis."""
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = time.time_ns()
+    index = int(frame_index or 0)
+    path = target / f"rx-{stamp}-frame-{index:04d}.wav"
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2", copy=False)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(int(sample_rate))
+        output.writeframes(pcm.tobytes())
+    return path
 
 
 class SessionEngineError(RuntimeError):
@@ -169,6 +189,7 @@ class AudioSessionEngine:
                  on_debug=None):
         self.config = config
         self.on_debug = on_debug
+        self._debug_capture_count = 0
         self.hop_key = bytes(hop_key) if hop_key is not None else None
         self._hop_key_lock = threading.RLock()
         self._additional_receive_hop_keys = []
@@ -652,6 +673,29 @@ class AudioSessionEngine:
                         samples=len(samples), duration=f"{len(samples) / self.config.sample_rate:.3f}s",
                         frame_index=frame_index,
                         peak=f"{float(np.max(np.abs(samples))):.6f}" if len(samples) else "0")
+            capture_enabled = os.environ.get("ECHOCrypt_CAPTURE_RX_WAV", "").strip().lower()
+            if (self.on_debug is not None and capture_enabled in {"1", "true", "yes", "on"}):
+                try:
+                    capture_limit = max(1, min(100, int(
+                        os.environ.get("ECHOCrypt_CAPTURE_RX_WAV_LIMIT", "20")
+                    )))
+                    if self._debug_capture_count < capture_limit:
+                        capture_dir = os.environ.get(
+                            "ECHOCrypt_CAPTURE_RX_WAV_DIR", "logs/acoustic-captures"
+                        )
+                        capture_path = _write_debug_rx_wav(
+                            samples, self.config.sample_rate, capture_dir, frame_index
+                        )
+                        self._debug_capture_count += 1
+                        self._debug(
+                            "CAPTURE_DUMP",
+                            "Saved raw receive burst for offline physical-layer analysis",
+                            path=str(capture_path), frame_index=frame_index,
+                            samples=len(samples), sample_rate=self.config.sample_rate,
+                        )
+                except Exception as exc:
+                    self._debug("CAPTURE_DUMP_ERROR", "Could not save raw receive burst",
+                                error=type(exc).__name__, detail=str(exc))
             with self._hop_key_lock:
                 receive_hop_keys = tuple(self._receive_hop_keys)
             for rate in self.symbol_rates:

@@ -210,6 +210,8 @@ class PublicSDKTests(unittest.TestCase):
             client.on("packet_received", lambda _event: None)
         with self.assertRaises(ClientClosedError):
             client.receive(timeout=0)
+        with self.assertRaises(ClientClosedError):
+            client.start()
 
     def test_transmission_callback_runs_off_tx_completion_thread(self):
         import threading
@@ -230,6 +232,37 @@ class PublicSDKTests(unittest.TestCase):
         self.assertTrue(callback_done.wait(1))
         self.assertIsNot(callback_threads[0], threading.current_thread())
 
+    def test_per_send_channel_access_cannot_override_global_disable(self):
+        client = self.make_client(config=AcousticConfig(channel_access=False))
+        client.start()
+        with self.assertRaises(ValueError):
+            client.send_async(b"test", channel_access=True)
+        self.assertEqual(client._engine.sent, [])
+
+    def test_debug_callback_runs_on_dispatcher_thread(self):
+        import threading
+
+        client = self.make_client()
+        callback_done = threading.Event()
+        callback_threads = []
+
+        def debug_callback(_stage, _message, **_fields):
+            callback_threads.append(threading.current_thread())
+            callback_done.set()
+
+        client.close()
+        client = AcousticClient(on_debug=debug_callback)
+        self.addCleanup(client.close)
+        client.start()
+        client._engine.on_event(SimpleNamespace(
+            kind="noop", message="", payload=None, timestamp=3.0, metadata={}
+        ))
+        # Feed a debug diagnostic through the engine's callback installed by
+        # the client, without starting a hardware or demodulator path.
+        client._handle_debug("RX", "synthetic debug event", sample_count=12)
+        self.assertTrue(callback_done.wait(1))
+        self.assertIsNot(callback_threads[0], threading.current_thread())
+    
     def test_send_packet_alias_is_exposed(self):
         self.assertTrue(callable(AcousticClient.send_packet))
         self.assertTrue(callable(AcousticClient.send_packet_async))

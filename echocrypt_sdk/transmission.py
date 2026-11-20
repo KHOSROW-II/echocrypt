@@ -34,6 +34,11 @@ class Transmission:
         self._cancel_callback = cancel_callback
         self.payload_bytes = int(payload_bytes)
         self.label = str(label)
+        self._completed_at = None
+        self._future.add_done_callback(self._mark_completed)
+
+    def _mark_completed(self, _future) -> None:
+        self._completed_at = time.time()
 
     def wait(self, timeout: Optional[float] = None) -> TransmissionResult:
         """Wait for completion and return local frame playback duration.
@@ -51,7 +56,7 @@ class Transmission:
             payload_bytes=self.payload_bytes,
             duration_seconds=float(duration),
             label=self.label,
-            completed_at=time.time(),
+            completed_at=self._completed_at or time.time(),
         )
 
     result = wait

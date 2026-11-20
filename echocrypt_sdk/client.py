@@ -128,6 +128,7 @@ class AcousticClient:
         self._dropped_packets = 0
         self._dropped_events = 0
         self._callback_errors = 0
+        self._debug_callback = on_debug
 
         self._engine = AudioSessionEngine(
             config.to_core_config(),
@@ -137,7 +138,7 @@ class AcousticClient:
             on_event=self._handle_engine_event,
             inter_frame_gap=config.inter_frame_gap,
             channel_access=config.channel_access,
-            on_debug=on_debug,
+            on_debug=self._handle_debug if on_debug is not None else None,
         )
 
     @property
@@ -270,6 +271,16 @@ class AcousticClient:
             )
         )
 
+    def _handle_debug(self, stage: str, message: str, **fields) -> None:
+        self._publish(
+            AcousticEvent(
+                name="debug",
+                message=str(message),
+                data={"stage": str(stage)},
+                metadata=dict(fields),
+            )
+        )
+
     def _handle_packet(self, packet: bytes) -> None:
         raw = bytes(packet)
         try:
@@ -298,6 +309,15 @@ class AcousticClient:
             event = self._events.get()
             if event is _SENTINEL:
                 return
+            if event.name == "debug" and self._debug_callback is not None:
+                try:
+                    self._debug_callback(
+                        event.data.get("stage", ""),
+                        event.message,
+                        **dict(event.metadata),
+                    )
+                except Exception:
+                    self._callback_errors += 1
             with self._callback_lock:
                 callbacks = list(self._callbacks.get(event.name, {}).values())
                 callbacks.extend(self._callbacks.get("*", {}).values())
@@ -377,6 +397,10 @@ class AcousticClient:
             hop_key = bytes(hop_key)
         if channel_access is not None and not isinstance(channel_access, bool):
             raise TypeError("channel_access must be bool or None")
+        if channel_access is True and self.config.channel_access is False:
+            raise ValueError(
+                "channel_access is disabled for this client; enable it in AcousticConfig first"
+            )
 
         clean_label = str(label).strip() or "DATA"
         cancel_event = threading.Event()

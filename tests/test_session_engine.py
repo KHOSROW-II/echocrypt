@@ -2,6 +2,8 @@ import queue
 import threading
 import time
 import unittest
+import tempfile
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,7 +14,9 @@ from core.crypto import SecureChannel
 from core.modem import HOP_OFFSETS
 from core.recovery.errors import HeaderCRCError
 from core.recovery.errors import HeaderCRCError
-from core.session_engine import AudioSessionEngine, PacketWaiter, SessionEngineError
+from core.session_engine import (
+    AudioSessionEngine, PacketWaiter, SessionEngineError, _write_debug_rx_wav,
+)
 
 
 class FakeListener:
@@ -46,6 +50,18 @@ class SessionEngineTests(unittest.TestCase):
             sample_rate=48000, symbol_rate=200, mark_hz=1800, space_hz=2400,
             gain=0.55, max_payload=1024, input_device=None, output_device=None,
         )
+
+    def test_debug_rx_capture_writes_bounded_pcm16_wav(self):
+        samples = np.asarray([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_debug_rx_wav(samples, 48000, directory, frame_index=7)
+            with wave.open(str(path), "rb") as capture:
+                self.assertEqual(capture.getnchannels(), 1)
+                self.assertEqual(capture.getsampwidth(), 2)
+                self.assertEqual(capture.getframerate(), 48000)
+                self.assertEqual(capture.getnframes(), len(samples))
+                decoded = np.frombuffer(capture.readframes(len(samples)), dtype="<i2")
+            self.assertEqual(decoded.tolist(), [-32767, -16383, 0, 16383, 32767])
 
     def test_cancelled_packet_waiter_raises_instead_of_returning_none(self):
         waiter = PacketWaiter(lambda _packet: True)

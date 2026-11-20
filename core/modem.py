@@ -13,7 +13,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from core.recovery.channel_analyzer import analyze_channel
 from core.recovery.engine import AdaptiveSignalRecoveryEngine
-from core.recovery.errors import FrameCRCError, HeaderCRCError, PreambleNotFoundError
+from core.recovery.errors import (
+    FrameCRCError, HeaderCRCError, HoppingKeyRequiredError, PreambleNotFoundError,
+)
 from core.recovery.frequency_recovery import estimate_frequency_offset
 from core.recovery.profile_generator import default_profile
 from core.recovery.interleaver import interleave, deinterleave
@@ -587,7 +589,9 @@ def _demodulate_once(samples, sample_rate=48000, symbol_rate=200, mark=1800,
             if wire_label == "ECF1" and fec_mode == "conv":
                 raise ValueError("Convolutional FEC is not valid in legacy ECF1 frames")
             if seed and hop_key is None:
-                raise ValueError("Frame requires the authenticated hopping key")
+                raise HoppingKeyRequiredError(
+                    "Frame requires the authenticated hopping key before payload decoding"
+                )
             if seed:
                 for offset in HOP_OFFSETS:
                     if (min(mark + frequency_offset + offset,

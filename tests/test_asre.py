@@ -245,6 +245,27 @@ class ASRECodecTests(unittest.TestCase):
             engine.recover(np.zeros(48000, dtype=np.float32), reject_header)
         self.assertEqual(engine.last_attempt_count, 11)
 
+    def test_hopping_key_required_does_not_trigger_clock_recovery_retries(self):
+        from core.recovery.errors import HoppingKeyRequiredError
+
+        engine = AdaptiveSignalRecoveryEngine(default_profile())
+        waveform = modulate(
+            b"broadcast-hop-key-required",
+            RATE,
+            400,
+            fec_mode="conv",
+            hop_key=b"H" * 32,
+        )
+        with self.assertRaises(HoppingKeyRequiredError):
+            demodulate(
+                waveform,
+                RATE,
+                400,
+                hop_key=None,
+                recovery_engine=engine,
+            )
+        self.assertEqual(engine.last_attempt_count, 1)
+
     def test_strong_frame_crc_failure_recovers_a_two_thousand_ppm_clock_offset(self):
         from types import SimpleNamespace
         from core.recovery.errors import FrameCRCError

@@ -19,3 +19,7 @@ class FrameCRCError(ValueError):
         super().__init__(message)
         self.sync_score = float(sync_score)
 
+
+class HoppingKeyRequiredError(ValueError):
+    """Raised when a valid modem header says payload hopping needs a key."""
+

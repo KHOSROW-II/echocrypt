@@ -6,7 +6,9 @@ import struct
 
 from .profile_generator import default_profile, profile_for_grade
 from .timing_recovery import resample_clock
-from .errors import FrameCRCError, HeaderCRCError, PreambleNotFoundError
+from .errors import (
+    FrameCRCError, HeaderCRCError, HoppingKeyRequiredError, PreambleNotFoundError,
+)
 
 
 class AdaptiveSignalRecoveryEngine:
@@ -85,6 +87,11 @@ class AdaptiveSignalRecoveryEngine:
                     return payload, metrics
                 except (ValueError, struct.error) as exc:
                     last_error = exc
+                    if isinstance(exc, HoppingKeyRequiredError):
+                        # This is a protocol-profile mismatch, not a timing
+                        # problem. The caller can immediately try another key.
+                        self.last_attempt_count = attempts
+                        raise
                     if isinstance(exc, (HeaderCRCError, FrameCRCError)):
                         if (strongest_sync_error is None
                                 or exc.sync_score > strongest_sync_error.sync_score):

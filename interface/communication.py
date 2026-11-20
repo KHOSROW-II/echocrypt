@@ -634,8 +634,11 @@ def _send_file(channel, cfg, hop_key, symbol_rate, title="Send file", source_ove
     print("Real acoustic transfer can take longer. Sender and receiver must select the same symbol rate.")
 
     def exchange_manifest():
+        # Retries use a fresh AEAD nonce. Replaying an old manifest ciphertext
+        # after a long transfer may be outside the receiver's replay window.
+        retry_manifest_packet = channel.manifest_packet(outgoing, cfg.max_payload)
         _send_frame_wait_ack(
-            channel, manifest_packet, m.transfer_id, 0, 0xFFFFFFFF,
+            channel, retry_manifest_packet, m.transfer_id, 0, 0xFFFFFFFF,
             cfg, hop_key, symbol_rate, "FILE MANIFEST", first_fec_mode,
         )
         resume_packet = _receive_auto(

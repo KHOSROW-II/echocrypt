@@ -1379,6 +1379,17 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
         if on_progress is not None:
             on_progress(label, received, total, unit, active)
 
+    def send_completion(manifest, engine, symbol_rate):
+        """Notify the sender only after the receiver has committed a verified file."""
+        packet = reliable_binary.make_completion_packet(
+            manifest.transfer_id, manifest.sha256
+        )
+        engine.submit_packet(
+            packet, fec_mode="conv", symbol_rate=symbol_rate,
+            label="FILE TRANSFER COMPLETE · SHA-256 VERIFIED",
+            channel_access=True,
+        )
+
     def on_packet(packet):
         engine = engine_ref["engine"]
         reply_rate = engine.symbol_rates[0]
@@ -1433,6 +1444,11 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
                         entry["body"] = f"Attachment saved: {manifest.completed_path}"
                         entry["status"] = "complete · SHA-256 verified"
                     entry.pop("retry_request", None)
+                # This completion packet is emitted only when the receiver has
+                # already verified the final SHA-256 and atomically committed
+                # the destination. Duplicate completed manifests re-emit it,
+                # allowing the sender to recover a lost completion notice.
+                send_completion(manifest.manifest, engine, reply_rate)
             return
 
         try:
@@ -1477,6 +1493,10 @@ def _direct_packet_router(engine_ref, reliable_text, reliable_binary, messages, 
                         entry["status"] = "complete · SHA-256 verified · Play voice"
                     else:
                         entry["body"] = f"Attachment saved: {chunk.completed_path}"
+                completed_manifest = reliable_binary.manifest_for_transfer(
+                    chunk.transfer_id
+                )
+                send_completion(completed_manifest, engine, reply_rate)
             report("RX FILE", received, total, "chunks", not completed)
             return
 

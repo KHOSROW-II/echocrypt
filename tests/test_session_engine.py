@@ -219,6 +219,43 @@ class SessionEngineTests(unittest.TestCase):
             self.assertTrue(release.is_set())
 
 
+    def test_restart_after_interrupting_active_playback_keeps_tx_worker_alive(self):
+        listener = FakeListener()
+        entered = threading.Event()
+        release = threading.Event()
+        play_count = []
+        engine = AudioSessionEngine(
+            self.cfg, listener=listener, channel_access=False,
+            inter_frame_gap=0,
+        )
+
+        def fake_play(_wave, _rate, _device):
+            play_count.append(1)
+            if len(play_count) == 1:
+                entered.set()
+                release.wait(2.0)
+
+        def fake_stop_playback():
+            release.set()
+
+        with patch("core.session_engine.modulate", return_value=np.ones(100)), \
+             patch("core.session_engine.play", side_effect=fake_play), \
+             patch("core.session_engine.stop_playback", side_effect=fake_stop_playback):
+            try:
+                engine.start()
+                first = engine.submit_packet(b"first", fec_mode="conv")
+                self.assertTrue(entered.wait(1.0))
+                engine.stop()
+                with self.assertRaises(Exception):
+                    first.result(timeout=0.1)
+
+                engine.start()
+                second = engine.submit_packet(b"second", fec_mode="conv")
+                self.assertGreater(second.result(timeout=1.0), 0)
+                self.assertEqual(len(play_count), 2)
+            finally:
+                engine.stop()
+
     def test_user_cancel_interrupts_active_audio_and_resumes_listener(self):
         listener = FakeListener()
         entered = threading.Event()

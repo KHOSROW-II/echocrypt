@@ -327,16 +327,18 @@ def _establish(role, handshake, cfg):
 
     def local_rate():
         profile = getattr(handshake, "security_profile", None)
-        return int(getattr(profile, "symbol_rate", cfg.symbol_rate))
+        return int(getattr(profile, "symbol_rate", getattr(cfg, "symbol_rate", 200)))
 
     def negotiated_rate():
         profile = getattr(handshake, "negotiated_profile", None)
         if profile is None:
             profile = getattr(handshake, "security_profile", None)
-        return int(getattr(profile, "symbol_rate", cfg.symbol_rate))
+        return int(getattr(profile, "symbol_rate", getattr(cfg, "symbol_rate", 200)))
 
     def cooldown():
         profile = getattr(handshake, "security_profile", None)
+        if profile is None:
+            return HANDSHAKE_COOLDOWN_SECONDS
         name = getattr(profile, "name", "medium")
         return {"low": 2, "medium": 3, "secure": 5}.get(name, 3)
 
@@ -402,7 +404,7 @@ def _establish(role, handshake, cfg):
                    state=handshake.state.value,
                    negotiated_profile=getattr(getattr(handshake, "negotiated_profile", None), "name", "legacy"))
         _send_handshake_packet(hello_r, "HELLO-R", cfg,
-                               symbol_rate=negotiated_rate(),
+                               symbol_rate=getattr(cfg, "symbol_rate", 200),
                                cooldown_seconds=cooldown())
         while True:
             peer_finish = _record_packet(
@@ -410,7 +412,7 @@ def _establish(role, handshake, cfg):
                 symbol_rate=negotiated_rate(),
                 retry_callback=lambda: _send_handshake_packet(
                     hello_r, "HELLO-R RETRY", cfg,
-                    symbol_rate=negotiated_rate(),
+                    symbol_rate=getattr(cfg, "symbol_rate", 200),
                     cooldown_seconds=cooldown(),
                 ),
             )

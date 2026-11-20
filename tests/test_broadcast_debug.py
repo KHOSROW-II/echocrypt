@@ -66,13 +66,13 @@ class BroadcastDebugTests(unittest.TestCase):
         self.assertIn(private_text_marker, messages[0]["body"])
         self.assertNotIn(private_text_marker, repr(events))
 
-    def test_broadcast_send_uses_reliable_rate_and_keeps_fast_legacy_fallback(self):
+    def test_broadcast_send_uses_fast_fixed_frequency_profile(self):
         from types import SimpleNamespace
         from unittest.mock import patch
 
         config = SimpleNamespace(sample_rate=48000, symbol_rate=200,
                                  fast_symbol_rate=800)
-        self.assertEqual(_supported_symbol_rates(config), (400, 200, 100, 800))
+        self.assertEqual(_supported_symbol_rates(config), (200, 400, 100, 800))
 
         class RecordingEngine:
             def __init__(self):
@@ -86,7 +86,8 @@ class BroadcastDebugTests(unittest.TestCase):
         with patch("interface.communication.packet_duration", return_value=1.0):
             _broadcast_send_frames(engine, [b"broadcast-test"], "TEST", copies=1)
         self.assertEqual(len(engine.calls), 1)
-        self.assertEqual(engine.calls[0][1]["symbol_rate"], 400)
+        self.assertEqual(engine.calls[0][1]["symbol_rate"], 800)
+        self.assertTrue(engine.calls[0][1]["disable_hopping"])
 
     def test_broadcast_router_logs_codec_rejections(self):
         receiver = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256)

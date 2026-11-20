@@ -641,6 +641,16 @@ class ContinuousAudioListener:
     def start(self):
         if self._running.is_set():
             return self
+        # A previous stop initiated from the collector callback cannot join
+        # itself. Do not let a restart set the shared running flag until that
+        # previous collector has actually exited.
+        previous_thread = self._thread
+        if previous_thread is not None:
+            if previous_thread is threading.current_thread():
+                raise RuntimeError("Cannot restart the audio listener from its collector callback")
+            if previous_thread.is_alive():
+                previous_thread.join()
+            self._thread = None
         for pending_queue in (self._blocks, self._frames, self._errors):
             while True:
                 try:
@@ -873,9 +883,16 @@ class ContinuousAudioListener:
                     stream.stop()
                 finally:
                     stream.close()
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
-            self._thread = None
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # The collector may still be concatenating/queuing a large frame.
+            # Returning after a timeout permits start() to create a second
+            # collector while the first one still owns the shared queues.
+            thread.join()
+            if self._thread is thread:
+                self._thread = None
+        # When stop() is called from the collector callback, retain the thread
+        # reference. A later start() will join it before creating a new worker.
         # Wake a consumer blocked on the frame queue where possible.
         try:
             self._frames.put_nowait(None)

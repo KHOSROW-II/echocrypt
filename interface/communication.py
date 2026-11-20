@@ -2439,7 +2439,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
             launch_worker("direct-file", entry, operation,
-                          "delivered · all chunks ACKed · SHA-256 verified",
+                          "delivered · receiver SHA-256 confirmed",
                           cancel_event=cancel_event, cancelable=cancelable,
                           cleanup_path=path if cleanup_on_cancel else None)
         return entry

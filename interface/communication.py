@@ -1265,7 +1265,8 @@ def _engine_send_file(channel, engine, source, cfg, *,
     return manifest
 
 
-def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_callback=None):
+def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_callback=None,
+                          cancel_event=None):
     """Respond to a peer's explicit resend request without a new manifest."""
     manifest = outgoing.manifest
     indexes = tuple(sorted(set(int(i) for i in indexes)))
@@ -1274,6 +1275,7 @@ def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_call
     if any(index < 0 or index >= manifest.total_chunks for index in indexes):
         raise BinaryTransferError("Peer requested a chunk outside the original file")
     for position, index in enumerate(indexes, 1):
+        _check_cancelled(cancel_event)
         packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
         def verify_ack(response, expected=index):
             try:
@@ -1284,7 +1286,7 @@ def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_call
         _engine_wait_for_response(engine, packet, verify_ack, cfg,
                                   f"RESEND CHUNK {index + 1}/{manifest.total_chunks}",
                                   first_fec_mode="conv", symbol_rate=rates[0],
-                                  fallback_rates=rates)
+                                  fallback_rates=rates, cancel_event=cancel_event)
         if progress_callback:
             progress_callback(f"RESEND {manifest.filename}", position, len(indexes), "requested chunks")
     return len(indexes)
@@ -1754,6 +1756,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     partial_broadcast_messages = {}
     incoming_transfers = {}
     direct_outgoing = {}
+    direct_cancel_events = {}
+    broadcast_cancel_events = {}
     retry_stop = threading.Event()
     retry_thread = None
     disconnect_requested = False
@@ -1784,6 +1788,12 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     def append_message(speaker, body, status=""):
         with messages_lock:
             return add_chat_message(messages, speaker, body, status)
+
+    def remember_broadcast_event(message_id, cancel_event):
+        mid = bytes(message_id)
+        broadcast_cancel_events[mid] = cancel_event
+        while len(broadcast_cancel_events) > 256:
+            broadcast_cancel_events.pop(next(iter(broadcast_cancel_events)), None)
 
     def report_tx(label, current, total, unit="chunks"):
         with tx_state_lock:
@@ -1835,8 +1845,14 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         return control
 
     def on_direct_resend_request(transfer_id, indexes):
+        tid = bytes(transfer_id)
         with messages_lock:
-            outgoing = direct_outgoing.get(bytes(transfer_id))
+            outgoing = direct_outgoing.get(tid)
+            transfer_cancel_event = direct_cancel_events.get(tid)
+        if transfer_cancel_event is not None and transfer_cancel_event.is_set():
+            append_message("system", f"Ignored resend request for cancelled transfer {tid.hex()[:12]}",
+                           "original sender cancelled this transfer")
+            return
         if trace.enabled:
             trace.emit("DIRECT_RETRY", "Authenticated resend request received",
                        transfer_id=bytes(transfer_id).hex(),
@@ -1856,14 +1872,23 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 with messages_lock:
                     entry["status"] = f"resending {current}/{total} requested chunks"
             sent = _engine_resend_chunks(reliable_binary_channel, engine_ref["engine"],
-                                         outgoing, indexes, cfg, progress_callback=progress)
+                                         outgoing, indexes, cfg, progress_callback=progress,
+                                         cancel_event=transfer_cancel_event)
             if trace.enabled:
                 trace.emit("DIRECT_RETRY", "Requested Direct chunks resent and authenticated ACKs received",
                            transfer_id=bytes(transfer_id).hex(), chunks_sent=sent)
         launch_worker("direct-resend", entry, operation,
-                      "requested chunks resent · authenticated ACKs received")
+                      "requested chunks resent · authenticated ACKs received",
+                      cancel_event=transfer_cancel_event,
+                      cancelable=transfer_cancel_event is not None)
 
     def queue_broadcast_resend(target_sender, target_mid, target_kind, indexes, resend_jobs):
+        mid = bytes(target_mid)
+        transfer_cancel_event = broadcast_cancel_events.get(mid)
+        if transfer_cancel_event is not None and transfer_cancel_event.is_set():
+            append_message("system", f"Ignored Broadcast resend request for cancelled transfer {mid.hex()[:12]}",
+                           "original sender cancelled this transfer")
+            return
         if not resend_jobs:
             append_message("system", "Broadcast resend request received, but requested frames are not cached.",
                            "source cache miss or expired transfer")
@@ -1877,6 +1902,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
             current = engine_ref["engine"]
             total = len(resend_jobs)
             for index, (frame, rate, fec_mode) in enumerate(resend_jobs, 1):
+                if transfer_cancel_event is not None and transfer_cancel_event.is_set():
+                    raise TransferCancelled("Original Broadcast transfer was cancelled")
                 duration = packet_duration(
                     len(frame), current.config, fec_mode=fec_mode, symbol_rate=rate
                 )
@@ -1885,6 +1912,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     label=f"BROADCAST RETRY {index}/{total} @ {rate}",
                     timeout=duration + 30.0,
                     channel_access=True,
+                    cancel_event=transfer_cancel_event,
                 )
                 report_tx("BROADCAST RESEND", index, total, "frames")
                 with messages_lock:
@@ -1892,6 +1920,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         launch_worker(
             "broadcast-resend", entry, operation,
             "requested Broadcast frames retransmitted · delivery remains unconfirmed",
+            cancel_event=transfer_cancel_event,
+            cancelable=transfer_cancel_event is not None,
         )
 
     def on_direct_integrity_failure(transfer_id, indexes):
@@ -2145,6 +2175,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 _check_cancelled(cancel_event)
                 frames = codec.encode_text(message)
                 mid = codec.decode(frames[0]).message_id
+                remember_broadcast_event(mid, cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.TEXT, frames)
                 broadcast_rate = _reliable_chat_symbol_rate_plan(cfg)[0]
                 if trace.enabled:
@@ -2153,10 +2184,14 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                fragments=len(frames), copies=3, symbol_rate=broadcast_rate,
                                fragment_payload_limit=codec.max_fragment_payload)
                 report_tx("BROADCAST TEXT", 0, len(frames) * 3, "frames")
-                _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=3,
-                    symbol_rate=broadcast_rate,
-                    progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit),
-                    cancel_event=cancel_event)
+                try:
+                    _broadcast_send_frames(engine_ref["engine"], frames, "BROADCAST TEXT", copies=3,
+                        symbol_rate=broadcast_rate,
+                        progress_callback=lambda current, total, unit: report_tx("BROADCAST TEXT", current, total, unit),
+                        cancel_event=cancel_event)
+                finally:
+                    if cancel_event.is_set():
+                        retransmit_cache.forget(mid, BroadcastType.TEXT)
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast text transmission sequence completed",
                                message_id=mid.hex(), fragments=len(frames), copies=3)
@@ -2211,6 +2246,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     cancel_event=cancel_event,
                 )
                 _check_cancelled(cancel_event)
+                remember_broadcast_event(mid, cancel_event)
                 retransmit_cache.remember(mid, BroadcastType.FILE_META, frames[:1])
                 chunk_frames = frames[1:]
                 if chunk_frames:
@@ -2223,18 +2259,23 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                symbol_rate=broadcast_rate)
                 manifest_label = "BROADCAST VOICE NOTE MANIFEST" if voice_transfer else "BROADCAST FILE MANIFEST"
                 chunks_label = "BROADCAST VOICE NOTE" if voice_transfer else f"BROADCAST FILE {path.name}"
-                report_tx(manifest_label, 0, 1, "frames")
-                _broadcast_send_frames(engine_ref["engine"], frames[:1],
-                    manifest_label, copies=1, symbol_rate=broadcast_rate,
-                    progress_callback=lambda current, total, unit: report_tx(manifest_label, current, total, unit),
-                    cancel_event=cancel_event)
-                if frames[1:]:
-                    _check_cancelled(cancel_event)
-                    report_tx(chunks_label, 0, len(chunk_frames), "chunks")
-                    _broadcast_send_frames(engine_ref["engine"], chunk_frames,
-                        chunks_label, copies=1,
-                        progress_callback=lambda current, total, unit: report_tx(chunks_label, current, total, "chunks"),
-                        cancel_event=cancel_event, symbol_rate=broadcast_rate)
+                try:
+                    report_tx(manifest_label, 0, 1, "frames")
+                    _broadcast_send_frames(engine_ref["engine"], frames[:1],
+                        manifest_label, copies=1, symbol_rate=broadcast_rate,
+                        progress_callback=lambda current, total, unit: report_tx(manifest_label, current, total, unit),
+                        cancel_event=cancel_event)
+                    if frames[1:]:
+                        _check_cancelled(cancel_event)
+                        report_tx(chunks_label, 0, len(chunk_frames), "chunks")
+                        _broadcast_send_frames(engine_ref["engine"], chunk_frames,
+                            chunks_label, copies=1,
+                            progress_callback=lambda current, total, unit: report_tx(chunks_label, current, total, "chunks"),
+                            cancel_event=cancel_event, symbol_rate=broadcast_rate)
+
+                finally:
+                    if cancel_event.is_set():
+                        retransmit_cache.forget(mid)
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast file transmission sequence completed",
                                message_id=mid.hex(), filename=path.name,
@@ -2259,10 +2300,13 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 entry = append_message("me", f"{description}: {path.name}", "sending · chunked transfer")
             def remember_outgoing(outgoing):
                 with messages_lock:
-                    direct_outgoing[outgoing.manifest.transfer_id] = outgoing
+                    tid = outgoing.manifest.transfer_id
+                    direct_outgoing[tid] = outgoing
+                    direct_cancel_events[tid] = cancel_event
                     while len(direct_outgoing) > 64:
                         oldest = next(iter(direct_outgoing))
                         direct_outgoing.pop(oldest, None)
+                        direct_cancel_events.pop(oldest, None)
             def operation():
                 manifest = _engine_send_file(reliable_binary_channel,
                     engine_ref["engine"], path, cfg,

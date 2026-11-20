@@ -155,6 +155,23 @@ class BroadcastCodecTests(unittest.TestCase):
         self.assertEqual(selected, (frames[1],))
 
 
+    def test_retransmit_cache_forget_removes_only_requested_kind_or_entire_message(self):
+        sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=256)
+        mid = b"FORGET01"
+        text_frames = sender.encode_text("cache text", message_id=mid)
+        cache = BroadcastRetransmitCache(sender)
+        cache.remember(mid, BroadcastType.TEXT, text_frames)
+        cache.remember(mid, BroadcastType.FILE_META, (sender.encode(BroadcastType.FILE_META, b"meta", message_id=mid),))
+
+        self.assertEqual(cache.forget(mid, BroadcastType.TEXT), 1)
+        request = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256).encode_retry_request(
+            sender.sender_id, mid, BroadcastType.TEXT, (0,)
+        )
+        parsed = BroadcastCodec(sender_id=b"BOB00001", max_packet_size=256).decode(request)
+        self.assertEqual(cache.handle_request(parsed.payload), ())
+        self.assertEqual(cache.forget(mid), 1)
+        self.assertEqual(cache.forget(mid), 0)
+
     def test_v2_fragment_header_survives_one_corrupted_copy(self):
         with tempfile.TemporaryDirectory() as td:
             sender = BroadcastCodec(sender_id=b"ALICE001", max_packet_size=1024)

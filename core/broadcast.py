@@ -938,6 +938,20 @@ class BroadcastRetransmitCache:
         ) > self.max_cached_bytes:
             self._messages.popitem(last=False)
 
+    def forget(self, message_id, kind=None):
+        """Remove cached frames for a completed/cancelled message."""
+        mid = bytes(message_id)
+        if len(mid) != 8:
+            raise BroadcastError("Invalid message ID for retransmit-cache removal")
+        if kind is not None:
+            return int(self._messages.pop((mid, BroadcastType(kind)), None) is not None)
+        removed = 0
+        for key in tuple(self._messages):
+            if key[0] == mid:
+                self._messages.pop(key, None)
+                removed += 1
+        return removed
+
     def handle_request(self, payload):
         # The live packet router already parses authenticated retry packets.
         # Accept that structured tuple directly as well as raw bytes. The old

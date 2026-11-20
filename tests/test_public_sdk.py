@@ -52,6 +52,17 @@ class FakeEngine:
         self.cancel_event = None
         self.waiter = None
         self.sent = []
+        self.hop_key = None
+        self.receive_hop_keys = set()
+
+    def set_hop_key(self, key):
+        self.hop_key = None if key is None else bytes(key)
+
+    def add_receive_hop_key(self, key):
+        self.receive_hop_keys.add(bytes(key))
+
+    def remove_receive_hop_key(self, key):
+        self.receive_hop_keys.discard(bytes(key))
 
     def start(self):
         self.running = True
@@ -148,6 +159,18 @@ class PublicSDKTests(unittest.TestCase):
         self.assertEqual(result.duration_seconds, 0.375)
         self.assertEqual(result.label, "telemetry")
         self.assertTrue(transmission.done)
+
+    def test_hop_key_controls_and_disable_hopping_are_exposed(self):
+        client = self.make_client()
+        client.start()
+        key = b"K" * 32
+        client.set_hop_key(key)
+        self.assertEqual(client._engine.hop_key, key)
+        client.add_receive_hop_key(b"B" * 32)
+        self.assertIn(b"B" * 32, client._engine.receive_hop_keys)
+        client.send_async(b"fixed-control", disable_hopping=True)
+        _packet, options = client._engine.sent[-1]
+        self.assertTrue(options["disable_hopping"])
 
     def test_queued_transmission_can_be_cancelled(self):
         client = self.make_client()

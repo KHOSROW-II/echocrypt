@@ -1,0 +1,531 @@
+"""Authenticated, resumable file-transfer API for Direct peers."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import math
+import queue
+import threading
+import time
+
+from cryptography.exceptions import InvalidTag
+
+from core.binary_transfer import (
+    BinaryTransferError,
+    ChunkIntegrityError,
+    ReliableBinaryChannel,
+)
+from core.crypto import ReplayError
+
+
+@dataclass(frozen=True)
+class SecureFileSendResult:
+    transfer_id: str
+    filename: str
+    bytes_sent: int
+    acknowledged_chunks: int
+    total_chunks: int
+    sha256: str
+    completed: bool
+
+
+class SecureFileTransfer:
+    """Authenticated Direct file transfer with resume, ACKs and SHA-256 completion.
+
+    The receiver writes accepted chunks to a restricted temporary file before
+    acknowledging them. A final authenticated completion packet is sent only
+    after the receiver has verified the complete SHA-256 digest and committed
+    the destination file.
+    """
+
+    def __init__(
+        self,
+        peer,
+        *,
+        receive_root="downloads",
+        state_root=".echocrypt-state",
+        max_file_size=256 * 1024 * 1024,
+    ):
+        if not getattr(peer, "connected", False):
+            raise RuntimeError("SecureFileTransfer requires an established DirectPeer")
+        self.peer = peer
+        self._channel = ReliableBinaryChannel(
+            peer.handshake,
+            receive_root=receive_root,
+            state_root=state_root,
+            max_file_size=max_file_size,
+        )
+        self._events = queue.Queue(maxsize=256)
+        self._subscription = peer.add_raw_packet_handler(self._handle_raw_packet)
+        self._pending_lock = threading.RLock()
+        self._send_lock = threading.Lock()
+        self._pending_ack = None
+        self._pending_resume = None
+        self._pending_completion = {}
+        self._outgoing = {}
+        self._closed = False
+
+    def _publish(self, kind, transfer_id=None, result=None, error=None):
+        event = {
+            "kind": str(kind),
+            "transfer_id": bytes(transfer_id).hex() if transfer_id is not None else None,
+            "result": result,
+            "error": error,
+        }
+        try:
+            self._events.put_nowait(event)
+        except queue.Full:
+            try:
+                self._events.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._events.put_nowait(event)
+            except queue.Full:
+                pass
+
+    def _send_control(self, packet, label):
+        return self.peer.send_secure_frame(bytes(packet), label=label)
+
+    def _handle_raw_packet(self, packet):
+        if self._closed:
+            return False
+
+        # Each protocol packet has a distinct AEAD AAD. InvalidTag means this
+        # is not that packet type and does not consume the replay counter.
+        try:
+            transfer_id, kind, index = self._channel.receive_ack(packet)
+        except (InvalidTag, ReplayError):
+            pass
+        except BinaryTransferError as exc:
+            self._publish("ack_error", error=exc)
+            return True
+        else:
+            with self._pending_lock:
+                pending = self._pending_ack
+            if pending is not None:
+                expected_id, expected_kind, expected_index, event = pending
+                if (transfer_id, kind, index) == (
+                    expected_id, expected_kind, expected_index
+                ):
+                    event.set()
+                else:
+                    self._publish("unexpected_ack", transfer_id, {
+                        "kind": kind, "index": index,
+                    })
+            return True
+
+        try:
+            transfer_id, next_missing = self._channel.receive_resume(packet)
+        except (InvalidTag, ReplayError):
+            pass
+        except BinaryTransferError as exc:
+            self._publish("resume_error", error=exc)
+            return True
+        else:
+            with self._pending_lock:
+                pending = self._pending_resume
+            if pending is not None:
+                expected_id, total, event, value = pending
+                if transfer_id == expected_id and next_missing <= total:
+                    value["next_missing"] = next_missing
+                    event.set()
+                else:
+                    self._publish("unexpected_resume", transfer_id, {
+                        "next_missing": next_missing,
+                    })
+            return True
+
+        try:
+            transfer_id, digest = self._channel.receive_completion_packet(packet)
+        except (InvalidTag, ReplayError):
+            pass
+        except BinaryTransferError as exc:
+            self._publish("completion_error", error=exc)
+            return True
+        else:
+            with self._pending_lock:
+                outgoing = self._outgoing.get(transfer_id)
+            if outgoing is None or digest != outgoing.manifest.sha256:
+                self._publish("invalid_completion", transfer_id, {"sha256": digest})
+                return True
+            with self._pending_lock:
+                event = self._pending_completion.get(transfer_id)
+            if event is not None:
+                event.set()
+            self._publish("remote_file_completed", transfer_id, {
+                "sha256": digest,
+                "filename": outgoing.manifest.filename,
+            })
+            return True
+
+        try:
+            transfer_id, indexes = self._channel.receive_resend_request(packet)
+        except (InvalidTag, ReplayError):
+            pass
+        except BinaryTransferError as exc:
+            self._publish("repair_request_error", error=exc)
+            return True
+        else:
+            with self._pending_lock:
+                outgoing = self._outgoing.get(transfer_id)
+            self._publish("repair_request_received", transfer_id, {"indexes": indexes})
+            if outgoing is not None:
+                threading.Thread(
+                    target=self._resend_requested_chunks,
+                    args=(outgoing, indexes),
+                    name="echocrypt-sdk-file-repair",
+                    daemon=True,
+                ).start()
+            return True
+
+        try:
+            manifest = self._channel.receive_manifest(packet)
+        except (InvalidTag, ReplayError):
+            pass
+        except BinaryTransferError as exc:
+            self._publish("manifest_error", error=exc)
+            return True
+        else:
+            self._send_control(
+                manifest.ack_packet, "DIRECT FILE MANIFEST ACK"
+            ).wait()
+            self._send_control(
+                manifest.resume_packet, "DIRECT FILE RESUME"
+            ).wait()
+            self._publish(
+                "manifest_received",
+                manifest.manifest.transfer_id,
+                manifest,
+            )
+            if manifest.completed_path is not None:
+                self._send_completion(manifest.manifest)
+                self._publish(
+                    "file_completed",
+                    manifest.manifest.transfer_id,
+                    {"path": manifest.completed_path, "sha256": manifest.manifest.sha256},
+                )
+            return True
+
+        try:
+            chunk = self._channel.receive_chunk(packet)
+        except ChunkIntegrityError as exc:
+            self._send_control(
+                exc.ack_packet, "DIRECT FILE CHUNK ACK"
+            ).wait()
+            request = self._channel.make_resend_request_packet(
+                exc.transfer_id, exc.indexes,
+                max_packet_size=self.peer.client.config.max_packet_bytes,
+            )
+            self._send_control(request, "DIRECT FILE REPAIR REQUEST").wait()
+            self._publish(
+                "integrity_repair_required",
+                exc.transfer_id,
+                {"missing_indexes": exc.indexes},
+                exc,
+            )
+            return True
+        except (InvalidTag, ReplayError):
+            return False
+        except BinaryTransferError as exc:
+            self._publish("chunk_error", error=exc)
+            return True
+        else:
+            self._send_control(
+                chunk.ack_packet, f"DIRECT FILE CHUNK ACK {chunk.index}"
+            ).wait()
+            self._publish("chunk_received", chunk.transfer_id, chunk)
+            if chunk.completed_path is not None:
+                manifest = self._channel.manifest_for_transfer(chunk.transfer_id)
+                self._send_completion(manifest)
+                self._publish(
+                    "file_completed",
+                    chunk.transfer_id,
+                    {"path": chunk.completed_path, "sha256": manifest.sha256},
+                )
+            return True
+
+    def _send_completion(self, manifest):
+        packet = self._channel.make_completion_packet(
+            manifest.transfer_id, manifest.sha256
+        )
+        self._send_control(packet, "DIRECT FILE COMPLETE").wait()
+
+    def _send_and_wait(
+        self,
+        packet,
+        transfer_id,
+        kind,
+        index,
+        *,
+        ack_timeout=15.0,
+        retries=3,
+        expect_resume=False,
+        total_chunks=0,
+        cancel_event=None,
+    ):
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 10:
+            raise ValueError("retries must be between 0 and 10")
+        if isinstance(ack_timeout, bool) or not isinstance(ack_timeout, (int, float)) \
+                or not math.isfinite(float(ack_timeout)) or ack_timeout <= 0:
+            raise ValueError("ack_timeout must be finite and positive")
+
+        self._send_lock.acquire()
+        ack_event = threading.Event()
+        resume_event = threading.Event() if expect_resume else None
+        resume_value = {}
+        tid = bytes(transfer_id)
+        with self._pending_lock:
+            self._pending_ack = (tid, int(kind), int(index), ack_event)
+            self._pending_resume = (
+                (tid, int(total_chunks), resume_event, resume_value)
+                if expect_resume else None
+            )
+        try:
+            for attempt in range(retries + 1):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("Secure file transfer cancelled")
+                tx = self._send_control(
+                    packet, f"DIRECT FILE {kind}:{index} attempt {attempt + 1}"
+                )
+                while not tx.done:
+                    if cancel_event is not None and cancel_event.is_set():
+                        tx.cancel()
+                        raise InterruptedError("Secure file transfer cancelled")
+                    time.sleep(0.02)
+                tx.wait()
+                deadline = time.monotonic() + float(ack_timeout)
+                while time.monotonic() < deadline:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("Secure file transfer cancelled")
+                    if ack_event.is_set() and (
+                        resume_event is None or resume_event.is_set()
+                    ):
+                        return resume_value.get("next_missing")
+                    ack_event.wait(min(0.05, max(0.0, deadline - time.monotonic())))
+                    if resume_event is not None and not resume_event.is_set():
+                        resume_event.wait(0.001)
+            raise TimeoutError(
+                f"No authenticated ACK after {retries + 1} attempts"
+            )
+        finally:
+            with self._pending_lock:
+                if self._pending_ack is not None and self._pending_ack[3] is ack_event:
+                    self._pending_ack = None
+                if self._pending_resume is not None and self._pending_resume[2] is resume_event:
+                    self._pending_resume = None
+            self._send_lock.release()
+
+    def prepare(self, source, *, chunk_size=None, transfer_id=None, cancel_event=None):
+        if self._closed:
+            raise RuntimeError("SecureFileTransfer is closed")
+        with self._pending_lock:
+            if len(self._outgoing) >= 128:
+                raise BinaryTransferError("Too many active outgoing file transfers")
+        outgoing = self._channel.create_outgoing(
+            source,
+            chunk_size=chunk_size,
+            transfer_id=transfer_id,
+            cancel_event=cancel_event,
+        )
+        with self._pending_lock:
+            self._outgoing[outgoing.manifest.transfer_id] = outgoing
+        return outgoing
+
+    def send_manifest(
+        self, outgoing, *, ack_timeout=15.0, retries=3, cancel_event=None
+    ):
+        packet = self._channel.manifest_packet(
+            outgoing, max_packet_size=self.peer.client.config.max_packet_bytes
+        )
+        next_missing = self._send_and_wait(
+            packet,
+            outgoing.manifest.transfer_id,
+            0,
+            0xFFFFFFFF,
+            ack_timeout=ack_timeout,
+            retries=retries,
+            expect_resume=True,
+            total_chunks=outgoing.manifest.total_chunks,
+            cancel_event=cancel_event,
+        )
+        return int(next_missing)
+
+    def send_chunk(
+        self, outgoing, index, *, ack_timeout=15.0, retries=3, cancel_event=None
+    ):
+        packet = self._channel.chunk_packet(
+            outgoing, index,
+            max_packet_size=self.peer.client.config.max_packet_bytes,
+        )
+        self._send_and_wait(
+            packet,
+            outgoing.manifest.transfer_id,
+            1,
+            index,
+            ack_timeout=ack_timeout,
+            retries=retries,
+            cancel_event=cancel_event,
+        )
+        return packet
+
+    def send_file(
+        self,
+        source,
+        *,
+        chunk_size=None,
+        transfer_id=None,
+        ack_timeout=15.0,
+        retries=3,
+        cancel_event=None,
+        on_progress=None,
+    ):
+        """Send a file and wait for authenticated remote SHA-256 completion."""
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 10:
+            raise ValueError("retries must be between 0 and 10")
+        if isinstance(ack_timeout, bool) or not isinstance(ack_timeout, (int, float)) \
+                or not math.isfinite(float(ack_timeout)) or ack_timeout <= 0:
+            raise ValueError("ack_timeout must be finite and positive")
+        outgoing = self.prepare(
+            source,
+            chunk_size=chunk_size,
+            transfer_id=transfer_id,
+            cancel_event=cancel_event,
+        )
+        manifest = outgoing.manifest
+        completion_event = threading.Event()
+        with self._pending_lock:
+            self._pending_completion[manifest.transfer_id] = completion_event
+        try:
+            next_missing = self.send_manifest(
+                outgoing,
+                ack_timeout=ack_timeout,
+                retries=retries,
+                cancel_event=cancel_event,
+            )
+            acknowledged = next_missing
+            for index in range(next_missing, manifest.total_chunks):
+                self.send_chunk(
+                    outgoing,
+                    index,
+                    ack_timeout=ack_timeout,
+                    retries=retries,
+                    cancel_event=cancel_event,
+                )
+                acknowledged = index + 1
+                if on_progress is not None:
+                    on_progress(acknowledged, manifest.total_chunks)
+
+            # The receiver emits this authenticated notice only after SHA-256
+            # verification and commit. If the notice is lost, send a fresh
+            # manifest: the receiver responds with its persisted resume offset
+            # and re-emits completion if the file was already committed.
+            for attempt in range(retries + 1):
+                deadline = time.monotonic() + float(ack_timeout)
+                while time.monotonic() < deadline:
+                    if self._closed:
+                        raise RuntimeError("SecureFileTransfer was closed during transfer")
+                    if completion_event.is_set():
+                        return SecureFileSendResult(
+                            manifest.transfer_id_hex,
+                            manifest.filename,
+                            manifest.file_size,
+                            acknowledged,
+                            manifest.total_chunks,
+                            manifest.sha256,
+                            True,
+                        )
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError("Secure file transfer cancelled")
+                    completion_event.wait(min(0.1, max(0.0, deadline - time.monotonic())))
+                if attempt < retries:
+                    retry_manifest = self._channel.manifest_packet(
+                        outgoing,
+                        max_packet_size=self.peer.client.config.max_packet_bytes,
+                    )
+                    resume_offset = self._send_and_wait(
+                        retry_manifest,
+                        manifest.transfer_id,
+                        0,
+                        0xFFFFFFFF,
+                        ack_timeout=ack_timeout,
+                        retries=retries,
+                        expect_resume=True,
+                        total_chunks=manifest.total_chunks,
+                        cancel_event=cancel_event,
+                    )
+                    for index in range(int(resume_offset), manifest.total_chunks):
+                        self.send_chunk(
+                            outgoing,
+                            index,
+                            ack_timeout=ack_timeout,
+                            retries=retries,
+                            cancel_event=cancel_event,
+                        )
+                        acknowledged = index + 1
+                        if on_progress is not None:
+                            on_progress(acknowledged, manifest.total_chunks)
+            raise TimeoutError(
+                "All chunks were acknowledged, but authenticated remote "
+                "SHA-256 completion was not received"
+            )
+        finally:
+            with self._pending_lock:
+                self._pending_completion.pop(manifest.transfer_id, None)
+
+    def _resend_requested_chunks(self, outgoing, indexes):
+        try:
+            for index in indexes:
+                self.send_chunk(outgoing, index)
+                self._publish(
+                    "repair_chunk_sent",
+                    outgoing.manifest.transfer_id,
+                    {"index": index},
+                )
+        except Exception as exc:
+            self._publish(
+                "repair_send_error",
+                outgoing.manifest.transfer_id,
+                {"indexes": tuple(indexes)},
+                exc,
+            )
+
+    def receive_event(self, timeout=None):
+        try:
+            return self._events.get(timeout=timeout)
+        except queue.Empty as exc:
+            from .exceptions import ReceiveTimeout
+            raise ReceiveTimeout("No secure file-transfer event arrived") from exc
+
+    def progress(self, transfer_id):
+        return self._channel.transfer_progress(bytes(transfer_id))
+
+    def finish_transfer(self, transfer_id):
+        """Remove sender resume state after confirmed remote completion."""
+        tid = bytes.fromhex(transfer_id.replace("-", "")) if isinstance(
+            transfer_id, str
+        ) else bytes(transfer_id)
+        with self._pending_lock:
+            outgoing = self._outgoing.pop(tid, None)
+        if outgoing is None:
+            raise BinaryTransferError("No active outgoing transfer matches this ID")
+        self._channel.complete_outgoing(outgoing)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._subscription.close()
+        with self._pending_lock:
+            self._pending_ack = None
+            self._pending_resume = None
+            for event in self._pending_completion.values():
+                event.set()
+            self._pending_completion.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False

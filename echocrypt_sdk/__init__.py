@@ -10,13 +10,19 @@ from .exceptions import (
     ReceiveTimeout,
 )
 from .transmission import Transmission, TransmissionResult
+from .direct import DirectMessage, DirectPeer, DirectPeerError, DirectSendResult
+from .broadcast import BroadcastAPI, BroadcastFrames, BroadcastResult
+from .file_transfer import SecureFileSendResult, SecureFileTransfer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 API_VERSION = "1"
 
 __all__ = [
     "API_VERSION", "AcousticClient", "AcousticConfig", "AcousticEvent",
-    "ClientClosedError", "ClientNotRunningError", "EchoCryptSDKError",
-    "PacketTooLargeError", "PacketWaiter", "ReceiveTimeout", "Subscription",
+    "BroadcastAPI", "BroadcastFrames", "BroadcastResult",
+    "ClientClosedError", "ClientNotRunningError", "DirectMessage",
+    "DirectPeer", "DirectPeerError", "DirectSendResult", "EchoCryptSDKError",
+    "PacketTooLargeError", "PacketWaiter", "ReceiveTimeout",
+    "SecureFileSendResult", "SecureFileTransfer", "Subscription",
     "Transmission", "TransmissionResult", "__version__",
 ]

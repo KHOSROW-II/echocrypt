@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echocrypt-sdk"
+version = "0.2.0"
+description = "Application-independent acoustic messaging and data transport SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "KHOSROW-II" }]
+dependencies = [
+    "numpy>=1.26",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.4.6"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/KHOSROW-II/echocrypt"
+Repository = "https://github.com/KHOSROW-II/echocrypt"
+Issues = "https://github.com/KHOSROW-II/echocrypt/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "security*", "echocrypt_sdk*"]
+exclude = ["tests*", "interface*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -27,6 +27,9 @@ DATA_AAD = b"ECHOCRYPT/FILE-DATA/v1"
 ACK_AAD = b"ECHOCRYPT/FILE-ACK/v1"
 RESUME_AAD = b"ECHOCRYPT/FILE-RESUME/v1"
 REQUEST_AAD = b"ECHOCRYPT/FILE-RESEND-REQUEST/v1"
+DONE_MAGIC = b"ECFDONE"
+DONE_AAD = b"ECHOCRYPT/FILE-COMPLETE/v1"
+DONE_BODY = struct.Struct("!7s16s32s")
 
 TRANSFER_ID_SIZE = 16
 META_HEAD = struct.Struct("!4s16sH")
@@ -266,23 +269,54 @@ class ReliableBinaryChannel:
         plain = RESUME_BODY.pack(RESUME_MAGIC, transfer_id, next_missing)
         return self._session().tx.encrypt(plain, RESUME_AAD)
 
-    def verify_ack(self, packet: bytes, transfer_id: bytes, kind: int, index: int) -> bool:
+    def receive_ack(self, packet: bytes):
+        """Authenticate an ACK and return (transfer_id, kind, index)."""
         plain = self._session().rx.decrypt(bytes(packet), ACK_AAD)
         if len(plain) != ACK_BODY.size:
             raise BinaryTransferError("Malformed file ACK")
-        magic, got_id, got_kind, got_index = ACK_BODY.unpack(plain)
-        if (magic, got_id, got_kind, got_index) != (ACK_MAGIC, transfer_id, kind, index):
+        magic, transfer_id, kind, index = ACK_BODY.unpack(plain)
+        if magic != ACK_MAGIC or kind not in (0, 1):
+            raise BinaryTransferError("Invalid file ACK fields")
+        return transfer_id, kind, index
+
+    def verify_ack(self, packet: bytes, transfer_id: bytes, kind: int, index: int) -> bool:
+        got_id, got_kind, got_index = self.receive_ack(packet)
+        if (got_id, got_kind, got_index) != (bytes(transfer_id), int(kind), int(index)):
             raise BinaryTransferError("File ACK does not match outstanding frame")
         return True
 
-    def verify_resume(self, packet: bytes, transfer_id: bytes, total_chunks: int) -> int:
+    def receive_resume(self, packet: bytes):
+        """Authenticate a resume status and return (transfer_id, next_missing)."""
         plain = self._session().rx.decrypt(bytes(packet), RESUME_AAD)
         if len(plain) != RESUME_BODY.size:
             raise BinaryTransferError("Malformed resume status")
-        magic, got_id, next_missing = RESUME_BODY.unpack(plain)
-        if magic != RESUME_MAGIC or got_id != transfer_id or next_missing > total_chunks:
+        magic, transfer_id, next_missing = RESUME_BODY.unpack(plain)
+        if magic != RESUME_MAGIC:
+            raise BinaryTransferError("Invalid resume status magic")
+        return transfer_id, next_missing
+
+    def verify_resume(self, packet: bytes, transfer_id: bytes, total_chunks: int) -> int:
+        got_id, next_missing = self.receive_resume(packet)
+        if got_id != bytes(transfer_id) or got_id is None or next_missing > total_chunks:
             raise BinaryTransferError("Resume status is invalid for this transfer")
         return next_missing
+
+    def make_completion_packet(self, transfer_id: bytes, sha256_hex: str) -> bytes:
+        tid = bytes(transfer_id)
+        if len(tid) != TRANSFER_ID_SIZE or not re.fullmatch(r"[0-9a-f]{64}", str(sha256_hex)):
+            raise BinaryTransferError("Invalid file completion fields")
+        plain = DONE_BODY.pack(DONE_MAGIC, tid, bytes.fromhex(sha256_hex))
+        return self._session().tx.encrypt(plain, DONE_AAD)
+
+    def receive_completion_packet(self, packet: bytes):
+        """Authenticate final receiver completion and return (transfer_id, digest)."""
+        plain = self._session().rx.decrypt(bytes(packet), DONE_AAD)
+        if len(plain) != DONE_BODY.size:
+            raise BinaryTransferError("Malformed file completion packet")
+        magic, transfer_id, digest = DONE_BODY.unpack(plain)
+        if magic != DONE_MAGIC:
+            raise BinaryTransferError("Invalid file completion magic")
+        return transfer_id, digest.hex()
 
     def _state_paths(self, tid: bytes) -> tuple[Path, Path]:
         stem = tid.hex()
@@ -482,6 +516,14 @@ class ReliableBinaryChannel:
         )
         return ChunkResult(tid, index, duplicate,
                            self._ack_packet(tid, 1, index), completed_path, bytes_received)
+
+    def manifest_for_transfer(self, transfer_id: bytes) -> TransferManifest:
+        """Return the persisted manifest for a known incoming transfer."""
+        tid = bytes(transfer_id)
+        if len(tid) != TRANSFER_ID_SIZE:
+            raise BinaryTransferError("Transfer ID must contain exactly 16 bytes")
+        state, _state_path, _part_path = self._load_state(tid)
+        return self._manifest_from_state(state)
 
     def transfer_progress(self, transfer_id: bytes):
         """Return (received_count, total_count, missing_indexes, completed)."""

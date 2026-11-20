@@ -145,6 +145,23 @@ class AcousticClient:
     def running(self) -> bool:
         return bool(self._engine.running)
 
+    def set_hop_key(self, hop_key) -> None:
+        """Set the default authenticated hopping key for RX and TX."""
+        if self._closed:
+            raise ClientClosedError("This AcousticClient has been closed")
+        self._engine.set_hop_key(hop_key)
+
+    def add_receive_hop_key(self, hop_key) -> None:
+        """Add an additional receive-only hopping profile (e.g. public Broadcast)."""
+        if self._closed:
+            raise ClientClosedError("This AcousticClient has been closed")
+        self._engine.add_receive_hop_key(hop_key)
+
+    def remove_receive_hop_key(self, hop_key) -> None:
+        if self._closed:
+            raise ClientClosedError("This AcousticClient has been closed")
+        self._engine.remove_receive_hop_key(hop_key)
+
     @property
     def closed(self) -> bool:
         return self._closed
@@ -366,6 +383,7 @@ class AcousticClient:
         hop_key: Optional[bytes] = None,
         label: str = "DATA",
         channel_access: Optional[bool] = None,
+        disable_hopping: bool = False,
     ) -> Transmission:
         """Queue one opaque packet and return a handle that can cancel it."""
         if self._closed:
@@ -397,6 +415,8 @@ class AcousticClient:
             hop_key = bytes(hop_key)
         if channel_access is not None and not isinstance(channel_access, bool):
             raise TypeError("channel_access must be bool or None")
+        if not isinstance(disable_hopping, bool):
+            raise TypeError("disable_hopping must be bool")
         if channel_access is True and self.config.channel_access is False:
             raise ValueError(
                 "channel_access is disabled for this client; enable it in AcousticConfig first"
@@ -409,6 +429,7 @@ class AcousticClient:
             fec_mode=selected_fec,
             symbol_rate=symbol_rate,
             hop_key=hop_key,
+            disable_hopping=disable_hopping,
             label=clean_label,
             channel_access=channel_access,
             cancel_event=cancel_event,
@@ -431,6 +452,7 @@ class AcousticClient:
         hop_key: Optional[bytes] = None,
         label: str = "DATA",
         channel_access: Optional[bool] = None,
+        disable_hopping: bool = False,
     ):
         """Queue a packet and block until its local playback completes.
 
@@ -444,6 +466,7 @@ class AcousticClient:
             hop_key=hop_key,
             label=label,
             channel_access=channel_access,
+            disable_hopping=disable_hopping,
         )
         return transmission.wait(timeout=timeout)
 

@@ -165,6 +165,9 @@ class AudioSessionEngine:
         self.config = config
         self.on_debug = on_debug
         self.hop_key = bytes(hop_key) if hop_key is not None else None
+        self._hop_key_lock = threading.RLock()
+        self._additional_receive_hop_keys = []
+        self._receive_hop_keys = (self.hop_key,) if self.hop_key is not None else (None,)
         self.symbol_rates = tuple(dict.fromkeys(
             int(rate) for rate in (symbol_rates or (config.symbol_rate,))
         ))
@@ -229,6 +232,53 @@ class AudioSessionEngine:
     @property
     def running(self):
         return self._running.is_set()
+
+    @property
+    def receive_hop_keys(self):
+        with self._hop_key_lock:
+            return tuple(self._receive_hop_keys)
+
+    def _refresh_receive_hop_keys(self):
+        # Always retain the fixed-frequency profile alongside protocol-specific
+        # hopping keys so Direct and Broadcast can coexist on one listener.
+        keys = [None]
+        if self.hop_key is not None:
+            keys.append(self.hop_key)
+        keys.extend(self._additional_receive_hop_keys)
+        self._receive_hop_keys = tuple(dict.fromkeys(keys))
+
+    def set_hop_key(self, hop_key):
+        """Atomically change the default TX and RX hopping key for this session."""
+        if hop_key is not None:
+            if not isinstance(hop_key, (bytes, bytearray, memoryview)):
+                raise TypeError("hop_key must be bytes-like or None")
+            hop_key = bytes(hop_key)
+            if len(hop_key) != 32:
+                raise ValueError("hop_key must contain exactly 32 bytes")
+        with self._hop_key_lock:
+            self.hop_key = hop_key
+            self._refresh_receive_hop_keys()
+
+    def add_receive_hop_key(self, hop_key):
+        """Listen for an additional protocol hopping profile without changing TX."""
+        if not isinstance(hop_key, (bytes, bytearray, memoryview)):
+            raise TypeError("hop_key must be bytes-like")
+        key = bytes(hop_key)
+        if len(key) != 32:
+            raise ValueError("hop_key must contain exactly 32 bytes")
+        with self._hop_key_lock:
+            if key not in self._additional_receive_hop_keys:
+                self._additional_receive_hop_keys.append(key)
+            self._refresh_receive_hop_keys()
+
+    def remove_receive_hop_key(self, hop_key):
+        key = bytes(hop_key)
+        with self._hop_key_lock:
+            self._additional_receive_hop_keys = [
+                existing for existing in self._additional_receive_hop_keys
+                if existing != key
+            ]
+            self._refresh_receive_hop_keys()
 
     def _emit(self, kind, message="", payload=None, **metadata):
         event = SessionEvent(kind, str(message), payload, metadata=metadata)
@@ -410,7 +460,7 @@ class AudioSessionEngine:
         return False
 
     def submit_packet(self, packet, *, fec_mode="conv", symbol_rate=None,
-                      hop_key=None, label="DATA", channel_access=None,
+                      hop_key=None, disable_hopping=False, label="DATA", channel_access=None,
                       cancel_event=None):
         if not self.running:
             raise SessionEngineError("Audio session engine is not running")
@@ -419,9 +469,16 @@ class AudioSessionEngine:
             raise ValueError("Cannot transmit an empty packet")
         rate = self.config.symbol_rate if symbol_rate is None else int(symbol_rate)
         future = Future()
+        if not isinstance(disable_hopping, bool):
+            raise TypeError("disable_hopping must be bool")
+        with self._hop_key_lock:
+            selected_hop_key = (
+                None if disable_hopping
+                else (self.hop_key if hop_key is None else bytes(hop_key))
+            )
         job = _TransmitJob(
             raw, str(fec_mode), rate,
-            self.hop_key if hop_key is None else bytes(hop_key),
+            selected_hop_key,
             str(label), future,
             self.channel_access is not None if channel_access is None else bool(channel_access),
             cancel_event,
@@ -459,12 +516,12 @@ class AudioSessionEngine:
         return bool(should_stop_audio or active_matches)
 
     def send_packet(self, packet, *, fec_mode="conv", symbol_rate=None,
-                    hop_key=None, label="DATA", timeout=None, channel_access=None,
-                    cancel_event=None):
+                    hop_key=None, disable_hopping=False, label="DATA", timeout=None,
+                    channel_access=None, cancel_event=None):
         future = self.submit_packet(
             packet, fec_mode=fec_mode, symbol_rate=symbol_rate,
-            hop_key=hop_key, label=label, channel_access=channel_access,
-            cancel_event=cancel_event,
+            hop_key=hop_key, disable_hopping=disable_hopping, label=label,
+            channel_access=channel_access, cancel_event=cancel_event,
         )
         return future.result(timeout=timeout)
 
@@ -575,29 +632,41 @@ class AudioSessionEngine:
                         samples=len(samples), duration=f"{len(samples) / self.config.sample_rate:.3f}s",
                         frame_index=frame_index,
                         peak=f"{float(np.max(np.abs(samples))):.6f}" if len(samples) else "0")
+            with self._hop_key_lock:
+                receive_hop_keys = tuple(self._receive_hop_keys)
             for rate in self.symbol_rates:
-                try:
-                    packet = demodulate(
-                        samples, self.config.sample_rate, rate,
-                        self.config.mark_hz, self.config.space_hz,
-                        self.max_packet_bytes, hop_key=self.hop_key,
-                        on_debug=self._debug if self.on_debug is not None else None,
-                    )
-                    used_rate = rate
-                    break
-                except Exception as exc:
-                    errors.append(f"{rate} baud: {type(exc).__name__}: {exc}")
-                    self._debug("RECOVERY", "Acoustic frame decode attempt failed",
-                                symbol_rate=rate, error=type(exc).__name__, detail=str(exc),
-                                samples=len(samples))
-                    if isinstance(exc, HeaderCRCError) and exc.sync_score >= 0.50:
-                        self._debug(
-                            "RECOVERY",
-                            "Strong preamble found but protected header CRC failed; "
-                            "skipping unrelated baud-rate guesses",
-                            symbol_rate=rate, preamble_score=f"{exc.sync_score:.4f}",
+                strong_header_failure = False
+                for hop_key in receive_hop_keys:
+                    try:
+                        packet = demodulate(
+                            samples, self.config.sample_rate, rate,
+                            self.config.mark_hz, self.config.space_hz,
+                            self.max_packet_bytes, hop_key=hop_key,
+                            on_debug=self._debug if self.on_debug is not None else None,
                         )
+                        used_rate = rate
                         break
+                    except Exception as exc:
+                        errors.append(
+                            f"{rate} baud/{'fixed' if hop_key is None else 'hopping'}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        self._debug("RECOVERY", "Acoustic frame decode attempt failed",
+                                    symbol_rate=rate, hopping=hop_key is not None,
+                                    error=type(exc).__name__, detail=str(exc),
+                                    samples=len(samples))
+                        if isinstance(exc, HeaderCRCError) and exc.sync_score >= 0.50:
+                            strong_header_failure = True
+                if packet is not None:
+                    break
+                if strong_header_failure:
+                    self._debug(
+                        "RECOVERY",
+                        "Strong preamble found but protected header CRC failed for "
+                        "all registered hopping profiles; skipping unrelated baud rates",
+                        symbol_rate=rate,
+                    )
+                    break
             if packet is None:
                 self._debug("FRAME_REJECTED", "Acoustic burst rejected at all configured symbol rates",
                             attempts=len(errors), errors=" ; ".join(errors),

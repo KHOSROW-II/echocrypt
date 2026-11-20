@@ -162,6 +162,19 @@ This mode is half-duplex and does not provide real-time conversation.
 
 ---
 
+## Developer API
+
+ECHO-CRYPT includes a public Python SDK for application developers:
+
+- Low-level acoustic packet transport and event subscriptions.
+- Authenticated Direct messaging, custom encrypted payloads, and JSON topics.
+- Resumable Direct file transfer with authenticated completion.
+- Open Broadcast messaging, file distribution, and selective retransmission.
+
+Install from the repository with `python -m pip install ".[audio]"`.
+
+**API reference and examples:** [Developer API Guide](docs/DEVELOPER_API.md)
+
 ## Installation
 
 ### Requirements

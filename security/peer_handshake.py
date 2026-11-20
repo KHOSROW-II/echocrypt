@@ -123,6 +123,18 @@ class PeerHandshake:
     def established(self) -> bool:
         return self.state == HandshakeState.ESTABLISHED
 
+    @property
+    def retry_packet(self):
+        """Return the exact handshake flight that should be retransmitted."""
+        if self.role == "initiator":
+            if self.state == HandshakeState.WAIT_REPLY:
+                return self._hello_i
+            if self.state == HandshakeState.WAIT_RESP_FINISH:
+                return self._finish_i
+        elif self.role == "responder" and self.state == HandshakeState.WAIT_INIT_FINISH:
+            return self._hello_r
+        return None
+
     def start(self) -> bytes:
         if self.role != "initiator" or self.state != HandshakeState.READY or self._hello_i is not None:
             raise HandshakeError("Only a new initiator can start the handshake")

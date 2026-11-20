@@ -57,6 +57,50 @@ class SessionEngineTests(unittest.TestCase):
                     for offset in HOP_OFFSETS}
         self.assertEqual(set(engine.listener.activity_frequencies), expected)
 
+    def test_decoder_tries_registered_hopping_profiles_until_one_matches(self):
+        listener = FakeListener()
+        received = []
+        engine = AudioSessionEngine(
+            self.cfg, listener=listener, channel_access=False,
+            on_packet=received.append,
+        )
+        engine.set_hop_key(b"D" * 32)
+        engine.add_receive_hop_key(b"B" * 32)
+        attempted = []
+
+        def fake_demodulate(*_args, hop_key=None, **_kwargs):
+            attempted.append(hop_key)
+            if hop_key == b"B" * 32:
+                return b"ECBR-multi-profile"
+            raise ValueError("wrong hopping profile")
+
+        try:
+            with patch("core.session_engine.demodulate", side_effect=fake_demodulate):
+                engine.start()
+                listener.frames.put(np.zeros(4096, dtype=np.float32))
+                deadline = time.monotonic() + 1.0
+                while not received and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(received, [b"ECBR-multi-profile"])
+            self.assertEqual(attempted, [None, b"D" * 32, b"B" * 32])
+        finally:
+            engine.stop()
+
+    def test_hopping_profiles_can_be_registered_and_removed_without_losing_tx_default(self):
+        engine = AudioSessionEngine(self.cfg, listener=FakeListener(), channel_access=False)
+        direct_key = b"D" * 32
+        broadcast_key = b"B" * 32
+        engine.set_hop_key(direct_key)
+        engine.add_receive_hop_key(broadcast_key)
+        self.assertEqual(engine.hop_key, direct_key)
+        self.assertIn(direct_key, engine.receive_hop_keys)
+        self.assertIn(broadcast_key, engine.receive_hop_keys)
+        engine.set_hop_key(None)
+        self.assertIsNone(engine.hop_key)
+        self.assertIn(broadcast_key, engine.receive_hop_keys)
+        engine.remove_receive_hop_key(broadcast_key)
+        self.assertEqual(engine.receive_hop_keys, (None,))
+
     def test_broadcast_uses_short_randomized_channel_access_profile(self):
         listener = FakeListener()
         engine = AudioSessionEngine(

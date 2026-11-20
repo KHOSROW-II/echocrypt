@@ -1808,8 +1808,8 @@ def _broadcast_retry_worker(engine_ref, codec, reassembler, stop_event, on_debug
 
 
 def _broadcast_send_frames(engine, frames, label, *, copies=1, progress_callback=None,
-                           cancel_event=None, symbol_rate=None):
-    """Send public frames, reporting progress and honoring user cancellation."""
+                           cancel_event=None, symbol_rate=None, on_frame_start=None):
+    """Send public frames and report the exact frame currently on air."""
     # Public Broadcast has no confidentiality or private hopping key. Keep it
     # fast: use the configured fast modem rate unless the caller explicitly
     # selects a rate. Reliability comes from selective fragment retries.
@@ -1822,6 +1822,11 @@ def _broadcast_send_frames(engine, frames, label, *, copies=1, progress_callback
         duration = packet_duration(len(frame), engine.config, fec_mode="conv", symbol_rate=rate)
         for copy_index in range(copies):
             _check_cancelled(cancel_event)
+            if on_frame_start is not None:
+                on_frame_start(
+                    index + 1, total, copy_index + 1, copies,
+                    len(frame), rate, duration,
+                )
             engine.send_packet(
                 frame, fec_mode="conv", symbol_rate=rate, hop_key=None,
                 label=f"{label} {index + 1}/{total} copy {copy_index + 1}/{copies}",
@@ -1890,6 +1895,12 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         with messages_lock:
             return add_chat_message(messages, speaker, body, status)
 
+    def set_entry_status(entry, status):
+        if entry is None:
+            return
+        with messages_lock:
+            entry["status"] = str(status)
+
     def remember_broadcast_event(message_id, cancel_event):
         mid = bytes(message_id)
         with messages_lock:
@@ -1898,10 +1909,18 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 broadcast_cancel_events.pop(next(iter(broadcast_cancel_events)), None)
 
     def report_tx(label, current, total, unit="chunks"):
+        entry = None
+        progress = f"{int(current)}/{int(total)} {unit}"
         with tx_state_lock:
             tx_state["active"] = True
             tx_state["label"] = str(label).upper()
-            tx_state["progress"] = f"{int(current)}/{int(total)} {unit}"
+            tx_state["progress"] = progress
+            entry = tx_state.get("entry")
+        # Keep the per-message status in sync with the global activity row.
+        # Release tx_state_lock before taking messages_lock to avoid lock-order
+        # inversions with message cancellation and the chat renderer.
+        if entry is not None:
+            set_entry_status(entry, f"{str(label)} · {progress}")
 
     def report_rx(label, current, total, unit="chunks", active=True):
         with rx_state_lock:
@@ -2347,6 +2366,11 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                 _check_cancelled(cancel_event)
                 engine = engine_ref["engine"]
                 voice_transfer = description == "voice note"
+                item_kind = "VOICE NOTE" if voice_transfer else "FILE"
+                set_entry_status(
+                    entry,
+                    f"ENCODING · preparing {size_bytes:,} bytes · building manifest and splitting data",
+                )
                 broadcast_rate = _broadcast_symbol_rates(engine.config)[0]
                 # Public Broadcast uses a fast fixed-frequency profile. Chunk
                 # CRC, file SHA-256 validation and selective retries provide
@@ -2371,23 +2395,67 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                symbol_rate=broadcast_rate)
                 manifest_label = "BROADCAST VOICE NOTE MANIFEST" if voice_transfer else "BROADCAST FILE MANIFEST"
                 chunks_label = "BROADCAST VOICE NOTE" if voice_transfer else f"BROADCAST FILE {path.name}"
+
+                def manifest_frame_started(index, total, copy_index, copies,
+                                            frame_bytes, rate, duration):
+                    set_entry_status(
+                        entry,
+                        f"{item_kind} · MANIFEST copy {copy_index}/{copies} transmitting "
+                        f"· {frame_bytes} bytes · {duration:.1f}s",
+                    )
+
+                def chunk_frame_started(index, total, copy_index, copies,
+                                        frame_bytes, rate, duration):
+                    set_entry_status(
+                        entry,
+                        f"{item_kind} · CHUNK {index}/{total} transmitting "
+                        f"· {frame_bytes} bytes · {duration:.1f}s",
+                    )
+
+                def manifest_progress(current, total, _unit):
+                    report_tx(manifest_label, current, total, "copies")
+                    set_entry_status(entry, f"{item_kind} · MANIFEST copies completed {current}/{total}")
+
+                def chunk_progress(current, total, _unit):
+                    report_tx(chunks_label, current, total, "chunks")
+                    set_entry_status(entry, f"{item_kind} · CHUNKS transmitted {current}/{total}")
+
+                set_entry_status(
+                    entry,
+                    f"ENCODED · manifest + {len(chunk_frames)} data chunks · resend cache populated",
+                )
                 try:
-                    report_tx(manifest_label, 0, BROADCAST_FILE_MANIFEST_COPIES, "frames")
-                    _broadcast_send_frames(engine_ref["engine"], frames[:1],
-                        manifest_label, copies=BROADCAST_FILE_MANIFEST_COPIES, symbol_rate=broadcast_rate,
-                        progress_callback=lambda current, total, unit: report_tx(manifest_label, current, total, unit),
-                        cancel_event=cancel_event)
+                    set_entry_status(entry, f"{item_kind} · transmitting manifest ({BROADCAST_FILE_MANIFEST_COPIES} copies)")
+                    report_tx(manifest_label, 0, BROADCAST_FILE_MANIFEST_COPIES, "copies")
+                    _broadcast_send_frames(
+                        engine_ref["engine"], frames[:1], manifest_label,
+                        copies=BROADCAST_FILE_MANIFEST_COPIES, symbol_rate=broadcast_rate,
+                        progress_callback=manifest_progress,
+                        cancel_event=cancel_event,
+                        on_frame_start=manifest_frame_started,
+                    )
                     if frames[1:]:
                         _check_cancelled(cancel_event)
+                        set_entry_status(entry, f"{item_kind} · manifest sent · transmitting {len(chunk_frames)} data chunks")
                         report_tx(chunks_label, 0, len(chunk_frames), "chunks")
-                        _broadcast_send_frames(engine_ref["engine"], chunk_frames,
-                            chunks_label, copies=1,
-                            progress_callback=lambda current, total, unit: report_tx(chunks_label, current, total, "chunks"),
-                            cancel_event=cancel_event, symbol_rate=broadcast_rate)
+                        _broadcast_send_frames(
+                            engine_ref["engine"], chunk_frames, chunks_label,
+                            copies=1, progress_callback=chunk_progress,
+                            cancel_event=cancel_event, symbol_rate=broadcast_rate,
+                            on_frame_start=chunk_frame_started,
+                        )
+                    set_entry_status(
+                        entry,
+                        f"PLAYBACK COMPLETE · {len(chunk_frames)}/{len(chunk_frames)} chunks played locally · receiver delivery unconfirmed",
+                    )
 
                 finally:
                     if cancel_event.is_set():
                         retransmit_cache.forget(mid)
+                set_entry_status(
+                    entry,
+                    f"PLAYBACK COMPLETE · {len(chunk_frames)}/{len(chunk_frames)} chunks played locally · receiver delivery unconfirmed",
+                )
                 if trace.enabled:
                     trace.emit("BROADCAST_TX", "Broadcast file transmission sequence completed",
                                message_id=mid.hex(), filename=path.name,
@@ -2401,7 +2469,7 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     if ptt_state.get("cancel_event") is cancel_event:
                         ptt_state.update(phase="queued", entry=entry, path=path)
             launch_worker("broadcast-file", entry, operation,
-                          "broadcast on air · no delivery receipt",
+                          "all frames played locally · remote delivery unconfirmed",
                           cancel_event=cancel_event, cancelable=cancelable,
                           cleanup_path=path if cleanup_on_cancel else None)
         else:

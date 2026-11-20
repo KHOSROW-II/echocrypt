@@ -6,11 +6,17 @@ from prompt_toolkit import Application
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from interface.chat import ChatScreen
+from interface.chat import ChatScreen, SPINNER_FRAMES
 from interface.terminal import MENU_STYLE, Menu, build_menu_fragments
 
 
 class TerminalMenuTests(unittest.TestCase):
+    def test_chat_spinner_has_many_states_without_arrow_decoration(self):
+        self.assertEqual(len(SPINNER_FRAMES), 10)
+        self.assertGreaterEqual(len(set(SPINNER_FRAMES)), 8)
+        self.assertTrue(all("▷" not in frame for frame in SPINNER_FRAMES))
+        self.assertTrue(all("⟦" not in frame and "⟧" not in frame for frame in SPINNER_FRAMES))
+
     def test_fragments_put_style_before_visible_text(self):
         items = [("start", "Start Communication"), ("exit", "Exit")]
         fragments = build_menu_fragments("MAIN MENU", items, 0)

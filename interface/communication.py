@@ -2393,7 +2393,10 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                                file_bytes=size_bytes, total_frames=len(frames),
                                chunk_frames=len(chunk_frames), manifest_frames=1, manifest_copies=BROADCAST_FILE_MANIFEST_COPIES,
                                symbol_rate=broadcast_rate)
-                manifest_label = "BROADCAST VOICE NOTE MANIFEST" if voice_transfer else "BROADCAST FILE MANIFEST"
+                manifest_label = (
+                    "BROADCAST VOICE NOTE MANIFEST" if voice_transfer
+                    else f"BROADCAST FILE {path.name} MANIFEST"
+                )
                 chunks_label = "BROADCAST VOICE NOTE" if voice_transfer else f"BROADCAST FILE {path.name}"
 
                 def manifest_frame_started(index, total, copy_index, copies,

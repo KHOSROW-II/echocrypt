@@ -71,12 +71,13 @@ def header_fragments(session_status="NOT CONNECTED", compact=None):
     if compact is None:
         compact = rows < 31
     if compact:
-        # Menus and chat run in a full-screen terminal. On a common 24-row
-        # terminal, a separate tagline would push the banner above the viewport.
-        # Keep the session state inside the compact dashboard instead.
+        # A multi-line ASCII banner is wider than many phone/Termux screens.
+        # Use a compact wordmark on narrow terminals to avoid horizontal
+        # overflow; the dashboard below adapts to the actual terminal width.
+        brand = "  ECHO-CRYPT  ·  ACOUSTIC MESSAGING\\n" if columns < 68 else BANNER
         board = _compact_dashboard(identity, username, inp, out, cfg, columns, session_status)
         return [
-            ("class:brand", BANNER),
+            ("class:brand", brand),
             ("class:dashboard", board),
         ]
     board = render_dashboard(identity, inp, out, cfg, session_status, username=username)

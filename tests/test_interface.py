@@ -88,6 +88,11 @@ class TerminalMenuTests(unittest.TestCase):
             self.assertLessEqual(len(messages), 80)
             self.assertEqual(messages[-1]["body"], "message 299")
 
+    def test_menu_escape_timeouts_are_short(self):
+        menu = Menu("MAIN MENU", [("back", "Back")])
+        self.assertLessEqual(menu.app.ttimeoutlen, 0.08)
+        self.assertLessEqual(menu.app.timeoutlen, 0.15)
+
     def test_invalid_empty_menu_is_rejected(self):
         with self.assertRaises(ValueError):
             Menu("EMPTY", [])

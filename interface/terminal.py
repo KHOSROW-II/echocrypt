@@ -75,6 +75,11 @@ class Menu:
             erase_when_done=True,
             style=MENU_STYLE,
         )
+        # prompt_toolkit buffers a lone ESC while waiting to see whether it is
+        # the prefix of an ANSI escape sequence. Its separate key-chord timeout
+        # can add another delay. Keep both short for immediate Back/Exit.
+        self.app.ttimeoutlen = 0.06
+        self.app.timeoutlen = 0.12
 
     def run(self):
         return self.app.run()

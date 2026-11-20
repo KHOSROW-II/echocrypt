@@ -175,6 +175,9 @@ Install from the repository with `python -m pip install ".[audio]"`.
 
 **API reference and examples:** [Developer API Guide](docs/DEVELOPER_API.md)
 
+**System architecture:** [Architecture and specialized subsystems](docs/ARCHITECTURE.md)  
+**Development plan:** [Roadmap](docs/ROADMAP.md)
+
 ## Installation
 
 ### Requirements
@@ -252,6 +255,8 @@ For Broadcast, select **Join open Broadcast room**. No identity setup or handsha
 ---
 
 ## Interface and Controls
+
+The terminal interface adapts to narrow terminal widths, including mobile Termux layouts. On compact screens it replaces the wide ASCII banner with a single-line wordmark and wraps chat content within the available columns.
 
 The chat interface supports:
 

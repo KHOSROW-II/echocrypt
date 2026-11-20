@@ -276,8 +276,11 @@ class ChatScreen:
             return handler
 
         def history_fragments():
-            width = max(48, shutil.get_terminal_size((100, 24)).columns)
-            inner = max(18, min(68, int((width - 8) * 0.68)))
+            # Termux and narrow mobile terminals can be as small as 30–40
+            # columns. Never impose a 48-column minimum that forces wrapping
+            # outside the viewport.
+            width = max(24, shutil.get_terminal_size((100, 24)).columns)
+            inner = max(10, min(68, int((width - 8) * 0.68)))
             snapshot = self._message_snapshot(copy_entries=True)
             if not snapshot:
                 return [
@@ -311,7 +314,7 @@ class ChatScreen:
                         replace_whitespace=False, drop_whitespace=True,
                         break_long_words=True, break_on_hyphens=False) or [""])
                 lines = lines[:30]
-                pad = max(2, width - min(width - 2, inner + 6)) if speaker == "me" else 2
+                pad = max(1, width - min(width - 2, inner + 6)) if speaker == "me" else 1
                 output.append((style, f"{' ' * pad}╭─ {owner}  {stamp}\n"))
                 for line in lines:
                     output.append((style, f"{' ' * pad}│ {line}\n"))

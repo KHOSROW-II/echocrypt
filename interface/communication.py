@@ -1196,6 +1196,13 @@ def _file_symbol_rate_plan(cfg):
 def _engine_send_file(channel, engine, source, cfg, *,
                       progress_callback=None, on_outgoing_created=None,
                       cancel_event=None, transfer_id=None, preferred_symbol_rate=None):
+    """Send a file and wait for authenticated confirmation of the remote SHA-256.
+
+    Chunk ACKs prove that each piece was durably received, not that the complete
+    file passed its final digest check. The receiver's authenticated completion
+    packet is the commit signal; until it arrives, the sender keeps its resume
+    state and can replay the manifest to recover a lost completion notice.
+    """
     _check_cancelled(cancel_event)
     outgoing = channel.create_outgoing(
         source, transfer_id=transfer_id, cancel_event=cancel_event
@@ -1206,63 +1213,129 @@ def _engine_send_file(channel, engine, source, cfg, *,
     if progress_callback:
         progress_callback(f"{manifest.filename} · manifest", 0, 1, "frames")
     manifest_packet = channel.manifest_packet(outgoing, cfg.max_payload)
-    resume_result = {"index": None}
+    rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
 
-    def verify_manifest_ack(packet):
+    completion_result = {}
+    completion_event = threading.Event()
+
+    def verify_completion(packet):
         try:
-            return channel.verify_ack(packet, manifest.transfer_id, 0, 0xFFFFFFFF)
+            received_id, digest = channel.receive_completion_packet(packet)
         except Exception:
             return False
-
-    def verify_resume(packet):
-        try:
-            resume_result["index"] = channel.verify_resume(
-                packet, manifest.transfer_id, manifest.total_chunks
-            )
-            return True
-        except Exception:
+        if received_id != manifest.transfer_id:
             return False
+        completion_result["sha256"] = digest
+        completion_event.set()
+        return True
 
-    # Register both response types before the manifest is played. The receiver
-    # sends ACK then RESUME back-to-back; registering both avoids losing RESUME
-    # in the gap between two sequential receive calls.
-    ack_waiter = engine.expect_packet(verify_manifest_ack)
-    resume_waiter = engine.expect_packet(verify_resume)
-    try:
-        rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
-        _engine_wait_for_response(engine, manifest_packet, verify_manifest_ack,
-                                  cfg, "FILE MANIFEST", first_fec_mode="conv",
-                                  waiter=ack_waiter, symbol_rate=rates[0],
-                                  fallback_rates=rates, cancel_event=cancel_event)
-        resume_waiter.wait(timeout=cfg.ack_timeout_seconds, cancel_event=cancel_event)
-    finally:
-        engine.cancel_waiter(ack_waiter)
-        engine.cancel_waiter(resume_waiter)
+    # Register before the first manifest. Empty files and already-completed
+    # resume IDs can receive their completion notice immediately after META.
+    completion_waiter = engine.expect_packet(verify_completion)
 
-    next_missing = resume_result["index"]
-    if next_missing is None:
-        raise BinaryTransferError("Receiver did not provide a valid file resume map")
-    if progress_callback:
-        progress_callback(manifest.filename, next_missing, manifest.total_chunks, "chunks")
-    for index in range(next_missing, manifest.total_chunks):
-        _check_cancelled(cancel_event)
-        packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
+    def exchange_manifest():
+        resume_result = {"index": None}
 
-        def verify_chunk_ack(response, expected=index):
+        def verify_manifest_ack(packet):
             try:
-                return channel.verify_ack(response, manifest.transfer_id, 1, expected)
+                return channel.verify_ack(packet, manifest.transfer_id, 0, 0xFFFFFFFF)
             except Exception:
                 return False
 
-        rates = _reliable_chat_symbol_rate_plan(cfg, preferred=preferred_symbol_rate)
-        _engine_wait_for_response(engine, packet, verify_chunk_ack, cfg,
-                                  f"FILE CHUNK {index + 1}/{manifest.total_chunks}",
-                                  first_fec_mode="conv", symbol_rate=rates[0],
-                                  fallback_rates=rates, cancel_event=cancel_event)
+        def verify_resume(packet):
+            try:
+                resume_result["index"] = channel.verify_resume(
+                    packet, manifest.transfer_id, manifest.total_chunks
+                )
+                return True
+            except Exception:
+                return False
+
+        # Both control waiters must exist before META is transmitted because
+        # the receiver sends ACK and RESUME back-to-back.
+        ack_waiter = engine.expect_packet(verify_manifest_ack)
+        resume_waiter = engine.expect_packet(verify_resume)
+        try:
+            _engine_wait_for_response(
+                engine, manifest_packet, verify_manifest_ack, cfg,
+                "FILE MANIFEST", first_fec_mode="conv",
+                waiter=ack_waiter, symbol_rate=rates[0],
+                fallback_rates=rates, cancel_event=cancel_event,
+            )
+            resume_waiter.wait(
+                timeout=cfg.ack_timeout_seconds, cancel_event=cancel_event
+            )
+        finally:
+            engine.cancel_waiter(ack_waiter)
+            engine.cancel_waiter(resume_waiter)
+
+        next_missing = resume_result["index"]
+        if next_missing is None:
+            raise BinaryTransferError("Receiver did not provide a valid file resume map")
+        return next_missing
+
+    def send_chunks(start_index):
         if progress_callback:
-            progress_callback(manifest.filename, index + 1, manifest.total_chunks, "chunks")
-    channel.complete_outgoing(outgoing)
-    return manifest
+            progress_callback(
+                manifest.filename, start_index, manifest.total_chunks, "chunks"
+            )
+        for index in range(start_index, manifest.total_chunks):
+            _check_cancelled(cancel_event)
+            packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
+
+            def verify_chunk_ack(response, expected=index):
+                try:
+                    return channel.verify_ack(
+                        response, manifest.transfer_id, 1, expected
+                    )
+                except Exception:
+                    return False
+
+            _engine_wait_for_response(
+                engine, packet, verify_chunk_ack, cfg,
+                f"FILE CHUNK {index + 1}/{manifest.total_chunks}",
+                first_fec_mode="conv", symbol_rate=rates[0],
+                fallback_rates=rates, cancel_event=cancel_event,
+            )
+            if progress_callback:
+                progress_callback(
+                    manifest.filename, index + 1, manifest.total_chunks, "chunks"
+                )
+
+    try:
+        next_missing = exchange_manifest()
+        repair_attempts = 0
+        while True:
+            if next_missing < manifest.total_chunks:
+                send_chunks(next_missing)
+
+            try:
+                completion_waiter.wait(
+                    timeout=cfg.ack_timeout_seconds, cancel_event=cancel_event
+                )
+                break
+            except TimeoutError:
+                if completion_event.is_set():
+                    break
+                if repair_attempts >= cfg.max_retries:
+                    raise TimeoutError(
+                        "All file chunks were acknowledged, but the receiver's "
+                        "authenticated SHA-256 completion notice was not received"
+                    )
+                repair_attempts += 1
+                # A repeated manifest is safe: the receiver returns its current
+                # resume point and re-emits completion if the file was committed.
+                next_missing = exchange_manifest()
+
+        received_digest = completion_result.get("sha256")
+        if received_digest != manifest.sha256:
+            raise BinaryTransferError(
+                "Receiver completion digest does not match the outgoing file"
+            )
+        channel.complete_outgoing(outgoing)
+        return manifest
+    finally:
+        engine.cancel_waiter(completion_waiter)
 
 
 def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_callback=None,

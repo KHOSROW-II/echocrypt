@@ -833,8 +833,12 @@ def _receive_file(channel, cfg, hop_key, symbol_rate, title="Receive file", cont
                     exc.ack_packet, "FILE CHUNK ACK · INTEGRITY REPAIR",
                     cfg, hop_key, symbol_rate,
                 )
+                max_request_indexes = max(
+                    1, (cfg.max_payload - AEAD_OVERHEAD - 22) // 4
+                )
+                requested_indexes = exc.indexes[:max_request_indexes]
                 request_packet = channel.make_resend_request_packet(
-                    exc.transfer_id, exc.indexes,
+                    exc.transfer_id, requested_indexes,
                     max_packet_size=cfg.max_payload,
                 )
                 _send_packet(
@@ -842,7 +846,7 @@ def _receive_file(channel, cfg, hop_key, symbol_rate, title="Receive file", cont
                     cfg, hop_key, symbol_rate, "conv",
                 )
                 print("Final SHA-256 mismatch; requesting retransmission of damaged chunks:",
-                      ", ".join(str(index) for index in exc.indexes))
+                      ", ".join(str(index) for index in requested_indexes))
             except TimeoutError:
                 print("No next file frame detected. Partial data is retained for resume.")
                 print("Transfer ID:", m.transfer_id_hex)

@@ -84,6 +84,31 @@ class BroadcastError(ValueError):
     pass
 
 
+MAX_BROADCAST_MANIFEST_BYTES = 4096
+
+
+def _decompress_manifest(data: bytes) -> bytes:
+    """Decompress a public manifest with a strict output bound.
+
+    Broadcast frames are unauthenticated and attacker-controlled. Calling
+    zlib.decompress() without a limit lets a tiny compressed packet allocate
+    an arbitrarily large buffer before the manifest's file-size checks run.
+    """
+    decoder = zlib.decompressobj()
+    try:
+        output = decoder.decompress(bytes(data), MAX_BROADCAST_MANIFEST_BYTES + 1)
+        if len(output) > MAX_BROADCAST_MANIFEST_BYTES or decoder.unconsumed_tail:
+            raise BroadcastError("Compressed broadcast manifest exceeds the size limit")
+        tail = decoder.flush()
+    except zlib.error as exc:
+        raise BroadcastError("Invalid compressed broadcast manifest") from exc
+    if len(output) + len(tail) > MAX_BROADCAST_MANIFEST_BYTES:
+        raise BroadcastError("Compressed broadcast manifest exceeds the size limit")
+    if not decoder.eof or decoder.unused_data:
+        raise BroadcastError("Compressed broadcast manifest is truncated or has trailing data")
+    return output + tail
+
+
 @dataclass(frozen=True)
 class BroadcastFrame:
     kind: BroadcastType
@@ -744,7 +769,7 @@ class BroadcastReassembler:
             try:
                 manifest_bytes = frame.payload
                 if manifest_bytes.startswith(b"Z"):
-                    manifest_bytes = zlib.decompress(manifest_bytes[1:])
+                    manifest_bytes = _decompress_manifest(manifest_bytes[1:])
                     compact = json.loads(manifest_bytes.decode("utf-8"))
                     meta = {"filename": compact["n"], "size": compact["s"],
                             "sha256": compact["h"], "chunk_size": compact["c"],

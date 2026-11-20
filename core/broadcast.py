@@ -570,7 +570,7 @@ class BroadcastReassembler:
     """Duplicate-safe message/file reassembly with selective retry support."""
 
     def __init__(self, codec: BroadcastCodec, *, download_dir="downloads/broadcast",
-                 max_file_size=64 * 1024 * 1024, max_partial_bytes=16 * 1024 * 1024,
+                 max_file_size=16 * 1024 * 1024, max_partial_bytes=16 * 1024 * 1024,
                  max_partials=64, max_file_metadata=256, expiry_seconds=90.0):
         self.codec = codec
         self._lock = threading.RLock()

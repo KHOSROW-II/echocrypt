@@ -26,11 +26,11 @@ class MobileBootstrapTests(unittest.TestCase):
             self.assertTrue(echocrypt._is_android_runtime())
 
     def test_missing_import_probe_parses_only_explicit_missing_markers(self):
-        fake = completed(["python"], stdout="diagnostic text\nECHOCRYPT_MISSING=numpy\n")
+        fake = completed(["python"], stdout='ECHOCRYPT_IMPORT_FAILURES={"numpy": "ImportError: broken ABI"}\n')
         with patch.object(echocrypt.subprocess, "run", return_value=fake) as run:
             missing = echocrypt._missing_imports(Path("/fake/python"), ("numpy", "cryptography"))
         self.assertEqual(missing, ["numpy"])
-        self.assertIn("ECHOCRYPT_MISSING=", run.call_args.args[0][2])
+        self.assertIn("ECHOCRYPT_IMPORT_FAILURES=", run.call_args.args[0][2])
 
     def test_missing_import_probe_runs_in_target_python_and_detects_missing_module(self):
         import sys
@@ -80,6 +80,7 @@ class MobileBootstrapTests(unittest.TestCase):
         calls = []
         with patch.object(echocrypt.shutil, "which", side_effect=lambda name: "/termux/bin/" + name), \
              patch.object(echocrypt, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)), \
+             patch.object(echocrypt, "_repair_termux_numpy_runtime"), \
              patch.object(echocrypt, "_verify_termux_audio_runtime", return_value=(1, 1)), \
              patch("builtins.print"):
             echocrypt._bootstrap_termux_rootless()
@@ -101,6 +102,40 @@ class MobileBootstrapTests(unittest.TestCase):
         self.assertNotIn("sudo", flattened)
         self.assertNotIn("apt-get", flattened)
         self.assertNotIn("-m venv", flattened)
+
+    def test_termux_numpy_repair_refreshes_upgrade_and_reinstalls_native_abi_packages(self):
+        calls = []
+        with patch.object(echocrypt, "_probe_import_failures",
+                          side_effect=[({"numpy": "ImportError: undefined C++ symbol"}, ""),
+                                       ({}, "")]), \
+             patch.object(echocrypt.shutil, "which",
+                          side_effect=lambda name: {"pkg": "/termux/bin/pkg", "apt-get": "/termux/bin/apt-get"}.get(name)), \
+             patch.object(echocrypt, "_run", side_effect=lambda cmd, **kw: calls.append((cmd, kw))), \
+             patch("builtins.print"):
+            echocrypt._repair_termux_numpy_runtime()
+
+        commands = [call[0] for call in calls]
+        self.assertEqual(commands[0], ["/termux/bin/pkg", "update"])
+        self.assertEqual(commands[1], ["/termux/bin/pkg", "upgrade", "-y"])
+        self.assertEqual(
+            commands[2],
+            ["/termux/bin/apt-get", "install", "--reinstall", "-y",
+             "libc++", "python", "python-numpy"],
+        )
+        self.assertTrue(all(call[1].get("check") is False for call in calls))
+
+    def test_termux_numpy_repair_reports_original_and_final_import_failure(self):
+        failure = "ImportError: dlopen failed: cannot locate symbol hash_memory"
+        with patch.object(echocrypt, "_probe_import_failures",
+                          side_effect=[({"numpy": failure}, ""),
+                                       ({"numpy": failure}, ""),
+                                       ({"numpy": failure}, "")]), \
+             patch.object(echocrypt.shutil, "which",
+                          side_effect=lambda name: {"pkg": "/termux/bin/pkg", "apt-get": "/termux/bin/apt-get"}.get(name)), \
+             patch.object(echocrypt, "_run"), \
+             patch("builtins.print"):
+            with self.assertRaisesRegex(RuntimeError, "cannot locate symbol hash_memory"):
+                echocrypt._repair_termux_numpy_runtime()
 
     def test_termux_launch_checks_audio_without_reinstall_when_api_cli_exists(self):
         with patch.object(echocrypt.sys, "argv", ["echocrypt.py"]), \

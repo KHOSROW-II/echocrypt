@@ -205,6 +205,101 @@ def _verify_termux_audio_runtime() -> tuple[int, int]:
     return input_devices, output_devices
 
 
+def _probe_import_failures(python_executable: Path, names=CORE_IMPORTS) -> tuple[dict[str, str], str]:
+    """Return import exceptions, not just package names, from the target interpreter."""
+    script = (
+        "import importlib, json; names=" + repr(list(names)) + "; failures={}\\n"
+        "for name in names:\\n"
+        " try: importlib.import_module(name)\\n"
+        " except BaseException as exc: failures[name] = type(exc).__name__ + ': ' + str(exc)\\n"
+        "print('ECHOCRYPT_IMPORT_FAILURES=' + json.dumps(failures))"
+    )
+    try:
+        probe = subprocess.run(
+            [str(python_executable), "-c", script],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {name: f"Could not execute import probe: {exc}" for name in names}, str(exc)
+
+    failures: dict[str, str] = {}
+    for line in probe.stdout.splitlines():
+        if line.startswith("ECHOCRYPT_IMPORT_FAILURES="):
+            try:
+                import json
+                value = json.loads(line.split("=", 1)[1])
+                if isinstance(value, dict):
+                    failures = {str(k): str(v) for k, v in value.items()}
+            except (ValueError, TypeError):
+                pass
+    diagnostics = (probe.stderr or "").strip()
+    if probe.returncode != 0 and not failures:
+        diagnostics = (probe.stderr or probe.stdout).strip()[-3000:]
+        failures = {name: diagnostics or f"Import probe exited with status {probe.returncode}" for name in names}
+    return failures, diagnostics
+
+
+def _repair_termux_numpy_runtime() -> None:
+    """Repair a broken Termux NumPy native extension through Termux packages only.
+
+    Never use pip to replace Termux's python-numpy: mixing PyPI wheels with
+    Termux's Android-linked runtime can create another ABI mismatch.
+    """
+    failures, _diagnostics = _probe_import_failures(Path(sys.executable), ("numpy",))
+    if "numpy" not in failures:
+        return
+
+    print("\\nNumPy is installed but cannot be loaded. Starting automatic Termux ABI repair...")
+    print("Detected NumPy import failure:")
+    print(failures["numpy"][:1800])
+    pkg = shutil.which("pkg")
+    apt_get = shutil.which("apt-get")
+    if not pkg:
+        raise RuntimeError("NumPy is broken, but Termux 'pkg' was not found; cannot repair native packages.")
+
+    repair_commands: list[list[str]] = [
+        [pkg, "update"],
+        [pkg, "upgrade", "-y"],
+    ]
+    if apt_get:
+        repair_commands.append([
+            apt_get, "install", "--reinstall", "-y",
+            "libc++", "python", "python-numpy",
+        ])
+    else:
+        repair_commands.append([
+            pkg, "install", "-y", "--reinstall",
+            "libc++", "python", "python-numpy",
+        ])
+
+    for index, command in enumerate(repair_commands, start=1):
+        print(f"\\n[Termux repair {index}/{len(repair_commands)}] Running: {' '.join(command)}")
+        try:
+            _run(command, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"Repair command could not run: {exc}")
+
+    failures, _diagnostics = _probe_import_failures(Path(sys.executable), ("numpy",))
+    if "numpy" not in failures:
+        print("NumPy native extension now imports successfully.")
+        return
+
+    print("\\nNumPy is still failing; performing one targeted native reinstall...")
+    if apt_get:
+        _run([apt_get, "install", "--reinstall", "-y", "libc++", "python-numpy"], check=False)
+    else:
+        _run([pkg, "install", "-y", "--reinstall", "libc++", "python-numpy"], check=False)
+
+    failures, _diagnostics = _probe_import_failures(Path(sys.executable), ("numpy",))
+    if "numpy" in failures:
+        raise RuntimeError(
+            "Automatic Termux NumPy repair did not resolve the native ABI error. "
+            "No project files were changed and no PyPI NumPy wheel was forced. "
+            f"Final import error: {failures['numpy'][:2200]}"
+        )
+    print("NumPy native extension repaired successfully.")
+
+
 def _bootstrap_termux_rootless() -> None:
     """Install Termux-native wheels and Python tooling without venv or root."""
     pkg = shutil.which("pkg")
@@ -216,6 +311,9 @@ def _bootstrap_termux_rootless() -> None:
         "portaudio", "termux-api", "libffi", "clang", "make", "pkg-config",
     ]
     _run([pkg, "install", "-y", *native_packages])
+    # Termux's NumPy package includes Android-linked native extensions. Repair
+    # a stale C++ runtime/package ABI before installing Python-level packages.
+    _repair_termux_numpy_runtime()
     # Install the Termux-side Termux:API CLI. Its Android companion app is
     # installed separately and requests RECORD_AUDIO. Termux PortAudio uses
     # its native Android host API; a PulseAudio daemon is not required here.
@@ -231,20 +329,8 @@ TERMUX_IMPORTS = (*CORE_IMPORTS, "sounddevice")
 
 def _missing_imports(python_executable: Path, names=CORE_IMPORTS) -> list[str]:
     """Import-probe dependencies in the target interpreter, not just metadata."""
-    script = (
-        "import importlib; names=" + repr(list(names)) + "; missing=[]; "
-        "\nfor n in names:\n try: importlib.import_module(n)\n except Exception: missing.append(n)"
-        "; [print('ECHOCRYPT_MISSING=' + name) for name in missing]"
-    )
-    try:
-        probe = subprocess.run([str(python_executable), "-c", script],
-                               cwd=ROOT, capture_output=True, text=True, check=False)
-    except OSError:
-        return list(names)
-    if probe.returncode != 0:
-        return list(names)
-    return [line.split("=", 1)[1].strip() for line in probe.stdout.splitlines()
-            if line.startswith("ECHOCRYPT_MISSING=")]
+    failures, _diagnostics = _probe_import_failures(python_executable, names)
+    return [name for name in names if name in failures]
 
 
 def _probe_sounddevice(python_executable: Path) -> tuple[bool, int, int, str]:

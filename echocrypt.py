@@ -205,13 +205,14 @@ def _verify_termux_audio_runtime() -> tuple[int, int]:
     return input_devices, output_devices
 
 
-def _probe_import_failures(python_executable: Path, names=CORE_IMPORTS) -> tuple[dict[str, str], str]:
+def _probe_import_failures(python_executable: Path, names=None) -> tuple[dict[str, str], str]:
     """Return import exceptions, not just package names, from the target interpreter."""
+    names = tuple(names or CORE_IMPORTS)
     script = (
-        "import importlib, json; names=" + repr(list(names)) + "; failures={}\\n"
-        "for name in names:\\n"
-        " try: importlib.import_module(name)\\n"
-        " except BaseException as exc: failures[name] = type(exc).__name__ + ': ' + str(exc)\\n"
+        "import importlib, json; names=" + repr(list(names)) + "; failures={}\n"
+        "for name in names:\n"
+        " try: importlib.import_module(name)\n"
+        " except BaseException as exc: failures[name] = type(exc).__name__ + ': ' + str(exc)\n"
         "print('ECHOCRYPT_IMPORT_FAILURES=' + json.dumps(failures))"
     )
     try:
@@ -237,7 +238,6 @@ def _probe_import_failures(python_executable: Path, names=CORE_IMPORTS) -> tuple
         diagnostics = (probe.stderr or probe.stdout).strip()[-3000:]
         failures = {name: diagnostics or f"Import probe exited with status {probe.returncode}" for name in names}
     return failures, diagnostics
-
 
 def _repair_termux_numpy_runtime() -> None:
     """Repair a broken Termux NumPy native extension through Termux packages only.

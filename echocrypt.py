@@ -249,7 +249,7 @@ def _repair_termux_numpy_runtime() -> None:
     if "numpy" not in failures:
         return
 
-    print("\\nNumPy is installed but cannot be loaded. Starting automatic Termux ABI repair...")
+    print("\nNumPy is installed but cannot be loaded. Starting automatic Termux ABI repair...")
     print("Detected NumPy import failure:")
     print(failures["numpy"][:1800])
     pkg = shutil.which("pkg")
@@ -273,7 +273,7 @@ def _repair_termux_numpy_runtime() -> None:
         ])
 
     for index, command in enumerate(repair_commands, start=1):
-        print(f"\\n[Termux repair {index}/{len(repair_commands)}] Running: {' '.join(command)}")
+        print(f"\n[Termux repair {index}/{len(repair_commands)}] Running: {' '.join(command)}")
         try:
             _run(command, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -284,7 +284,7 @@ def _repair_termux_numpy_runtime() -> None:
         print("NumPy native extension now imports successfully.")
         return
 
-    print("\\nNumPy is still failing; performing one targeted native reinstall...")
+    print("\nNumPy is still failing; performing one targeted native reinstall...")
     if apt_get:
         _run([apt_get, "install", "--reinstall", "-y", "libc++", "python-numpy"], check=False)
     else:

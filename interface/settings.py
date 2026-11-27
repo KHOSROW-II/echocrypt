@@ -6,7 +6,9 @@ from core.config import load, save_setting
 from core.profile import get_username, set_username
 from interface.dashboard import render as render_app_header
 from interface.terminal import Menu
-from interface.audio_tests import run_microphone_level_test, run_speaker_test
+from interface.audio_tests import (
+    run_microphone_level_test, run_speaker_test, run_ultrasonic_hardware_test,
+)
 
 
 def _pause():
@@ -94,6 +96,7 @@ def _audio_settings():
             ("output", f"Output device          : {'SYSTEM DEFAULT' if cfg.output_device is None else cfg.output_device}"),
             ("speaker-test", "Test speakers (LEFT then RIGHT, 2 seconds each)"),
             ("mic-test", "Test microphone (live level meter)"),
+            ("ultrasonic-test", "Test ultrasonic speaker → microphone path"),
             ("android-mic", "Request Android microphone permission (Termux:API)"),
             ("sample", f"Sample rate            : {cfg.sample_rate} Hz"),
             ("record", f"Maximum record window  : {cfg.record_seconds:g} sec"),
@@ -111,6 +114,9 @@ def _audio_settings():
             _pause()
         elif c == "mic-test":
             run_microphone_level_test()
+        elif c == "ultrasonic-test":
+            run_ultrasonic_hardware_test()
+            _pause()
         elif c == "android-mic":
             _request_termux_android_microphone()
         elif c == "sample":

@@ -12,6 +12,9 @@ voice_symbol_rate = 1200
 emergency_symbol_rate = 1500
 mark_hz = 1800
 space_hz = 2400
+ultrasonic_enabled = false
+ultrasonic_mark_hz = 20700
+ultrasonic_space_hz = 22200
 
 [protocol]
 max_payload = 1024
@@ -19,6 +22,10 @@ ack_timeout_seconds = 15
 max_retries = 3
 listen_timeout_seconds = 120
 retry_listen_seconds = 18
+
+[transfer]
+multi_worker_enabled = false
+multi_worker_count = 4
 
 [debug]
 enabled = false

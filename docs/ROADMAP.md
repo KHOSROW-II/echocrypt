@@ -124,7 +124,8 @@ These require separate designs and evidence; they must not be implied by the cur
 - [x] Route only explicitly selected application audio into the ECHOCRYPT RX monitor.
 - [x] Optional per-endpoint loopback so the selected application remains audible on physical speakers.
 - [x] Keep ECHOCRYPT TX/RX isolated and allow full-duplex modem I/O only on the virtual route.
-- [x] Dedicated machine-local worker hardware approval, invalidated by device/rate/tone changes.
+- [x] Dedicated machine-local audio-path approval, invalidated by device/rate/gain/tone changes.
+- [x] Separate CPU/RAM worker-cap calculation with Linux cgroup CPU/memory limits and a conservative memory reserve.
 - [x] Implement Chromium extension + Native Messaging host for one user-selected tab, with a dedicated PCM sink and normal-speaker pass-through.
 - [ ] Physically validate tab capture through real meeting providers and add Firefox support.
 - [ ] Add Windows virtual audio backend and installer.

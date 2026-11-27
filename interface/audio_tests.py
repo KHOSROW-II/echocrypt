@@ -10,7 +10,7 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
-from core.audio import MicrophoneLevelMonitor, test_speaker_channels
+from core.audio import MicrophoneLevelMonitor, test_speaker_channels, test_ultrasonic_path
 from core.config import load
 from interface.dashboard import render as render_app_header
 
@@ -39,6 +39,40 @@ def run_speaker_test():
         return True
     except Exception as exc:
         print(f"\n  ✗ Speaker test failed: {exc}")
+        return False
+
+
+def run_ultrasonic_hardware_test():
+    cfg = load()
+    render_app_header(session_status="ULTRASONIC LOOPBACK TEST")
+    print("\\n  This plays two low-level near-ultrasonic tones and measures them through")
+    print("  the selected microphone. You normally should not hear these tones.")
+    print("  Keep the speaker and microphone in the same room and avoid changing volume.")
+    print("  The result checks only this local speaker-to-microphone path.\\n")
+    try:
+        result = test_ultrasonic_path(
+            cfg.sample_rate,
+            input_device=cfg.input_device,
+            output_device=cfg.output_device,
+            frequencies=(cfg.ultrasonic_mark_hz, cfg.ultrasonic_space_hz),
+            duration=0.45,
+            amplitude=0.16,
+        )
+        for tone in result["tones"]:
+            status = "DETECTED" if tone["detected"] else "NOT DETECTED"
+            print(
+                f"  {tone['frequency']:.0f} Hz: {status} · "
+                f"RMS {tone['rms']:.5f} · band ratio {tone['band_ratio']:.3f}"
+            )
+        if result["passed"]:
+            print("\\n  ✓ Both ultrasonic tones were detected on the local audio path.")
+            print("  This does not guarantee that the remote peer supports them.")
+            return True
+        print("\\n  ✗ The local speaker/microphone path did not reliably carry both tones.")
+        print("  Keep ultrasonic mode disabled or use dedicated ultrasonic-capable audio hardware.")
+        return False
+    except Exception as exc:
+        print(f"\\n  ✗ Ultrasonic hardware test failed: {exc}")
         return False
 
 

@@ -1,7 +1,9 @@
 import secrets
 import unittest
+from dataclasses import replace
 
 from core.modem import fec_encode, fec_decode, modulate, demodulate
+from core.config import Config, _validate
 from core.crypto import SecureChannel, ReplayError
 from core.session import Session
 from security.handshake import create_hello, verify_hello, derive_keys
@@ -11,6 +13,28 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 class Tests(unittest.TestCase):
+    def test_ultrasonic_configuration_requires_safe_frequencies_and_nyquist_headroom(self):
+        valid = replace(Config(), ultrasonic_enabled=True)
+        self.assertIsNone(_validate(valid))
+
+        with self.assertRaisesRegex(ValueError, "above 20000"):
+            _validate(replace(
+                valid, ultrasonic_mark_hz=19900, ultrasonic_space_hz=22200,
+            ))
+        with self.assertRaisesRegex(ValueError, "Nyquist"):
+            _validate(replace(
+                valid, sample_rate=44100,
+                fast_symbol_rate=700, voice_symbol_rate=700,
+                emergency_symbol_rate=700,
+            ))
+
+    def test_transfer_worker_configuration_is_bounded(self):
+        self.assertIsNone(_validate(replace(Config(), multi_worker_count=8)))
+        with self.assertRaisesRegex(ValueError, "between 2 and 8"):
+            _validate(replace(Config(), multi_worker_count=9))
+        with self.assertRaisesRegex(ValueError, "must be true or false"):
+            _validate(replace(Config(), multi_worker_enabled=1))
+
     def test_fec_roundtrip(self):
         data = bytes(range(256))
         self.assertEqual(fec_decode(fec_encode(data)), data)

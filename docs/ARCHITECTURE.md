@@ -106,7 +106,7 @@ On Linux systems exposing the PulseAudio protocol (PulseAudio or PipeWire-Pulse)
 
 The TX sink is the same in both modes. The generic route requires the selected call application to use ECHOCRYPT Virtual Microphone and ECHOCRYPT Virtual Speaker. The selected-tab route instead uses the Chromium extension to capture one tab's rendered audio and pass it to `echocrypt_tab_rx`; the tab's audio is also connected to the browser's normal output so the user can still hear it. Its website microphone is set to ECHOCRYPT Virtual Microphone, while the website speaker stays on the normal system output. Do not select both RX routes at once.
 
-No global default device is changed, and no provider API is used. The selected-tab adapter uses Chromium `tabCapture` plus a restricted Native Messaging host over local stdio. It opens no TCP/UDP listener or localhost WebSocket. Its native host checks the registered extension origin before accepting PCM messages.
+No global default device is changed, and no provider API is used. The selected-tab adapter uses Chromium `tabCapture` plus a restricted Native Messaging host over local stdio. It opens no TCP/UDP listener or localhost WebSocket. Its native host checks the registered extension origin before accepting PCM messages. When this mode uses an Internet call as the audio carrier, the call application supplies the network transport; ECHOCRYPT itself remains independent of the provider's API or SDK.
 
 These virtual endpoints and the browser adapter are Linux-only in the current implementation. Windows requires a separate virtual audio backend, and Android/Termux does not expose this PulseAudio device model. The initial browser extension targets Chromium 116+; Firefox support is not implemented.
 

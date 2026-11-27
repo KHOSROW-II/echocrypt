@@ -121,19 +121,27 @@ class SpeakerTestTests(unittest.TestCase):
 
 
 class UltrasonicPathTests(unittest.TestCase):
-    def test_ultrasonic_full_duplex_test_detects_both_loopback_tones(self):
+    def test_ultrasonic_full_duplex_test_detects_entire_hopping_range(self):
         backend = FakeDuplexBackend()
+        offsets = (-600, -300, 0, 300, 600)
+        frequencies = tuple(sorted(
+            base + offset
+            for base in (20700, 22200)
+            for offset in offsets
+        ))
         with patch("core.audio._sounddevice", return_value=backend):
             result = audio.test_ultrasonic_path(
-                48000, frequencies=(20700, 22200), duration=0.25,
+                48000, frequencies=frequencies, duration=0.20,
             )
         self.assertTrue(result["passed"])
         self.assertEqual(
             [tone["frequency"] for tone in result["tones"]],
-            [20700.0, 22200.0],
+            [float(frequency) for frequency in frequencies],
         )
+        self.assertEqual(len(result["tones"]), 10)
         self.assertTrue(all(tone["detected"] for tone in result["tones"]))
         self.assertTrue(backend.stream.closed)
+
 
     def test_ultrasonic_test_rejects_frequencies_outside_safe_band(self):
         backend = FakeDuplexBackend()

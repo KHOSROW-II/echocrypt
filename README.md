@@ -500,35 +500,34 @@ ECHOCRYPT RX
 
 Only the application explicitly routed to **ECHOCRYPT Virtual Speaker** is mirrored into ECHOCRYPT RX. Other desktop audio streams and system defaults are not changed. The optional monitor loopback mirrors that one sink to the current physical output.
 
-### Dedicated worker hardware approval
+### Separate worker hardware gates
 
 ```text
-Selected microphone + speaker + active modem frequencies
-                         |
-                         v
-            Full-duplex local loopback test
-                         |
-                         v
-      Every mark/space + hopping offset detected?
-                 /                 \\
-               NO                  YES
-               |                    |
-               v                    v
-         Keep workers OFF    Save local device approval
-                                    |
-                                    v
-                     Bind to device identity, sample rate,
-                     active modem tone set and test version
-                                    |
-                                    v
-                   Signed Direct Handshake advertises
-                   approved worker limit (2..8)
-                                    |
-                                    v
-                    Effective count = min(local, peer)
+     AUDIO-PATH APPROVAL                 CPU / RAM CAPACITY
+Selected mic + speaker + tones       Effective CPU quota + RAM limit
+              |                                  |
+              v                                  v
+     Full-duplex modem-band test         Compute local worker cap (1..8)
+              |                                  |
+              v                                  |
+Every hopping tone detected?                     |
+        /             \\                         |
+       NO              YES                       |
+       |                |                        |
+       v                v                        |
+ Workers forced to 1   Save local audio approval |
+       |                |                        |
+       +----------------+------------------------+
+                        |
+                        v
+         Signed Direct Handshake advertises
+          min(configured count, local cap)
+                        |
+                        v
+          Effective count = min(local, peer)
 ```
 
-Changing the selected input/output device, sample rate, or active modem frequencies invalidates the approval. A device without a current passing test advertises one worker.
+The audio approval is bound to the PortAudio-reported input/output devices, sample rate, playback gain, and active modem tone set. Changing those settings invalidates it. Separately, the resource cap uses logical CPU availability, Linux cgroup CPU quotas where present, and the tighter visible RAM limit (cgroup or physical RAM). It reserves 512 MiB for the system and budgets 64 MiB per preparation worker. Unknown RAM falls back to the CPU cap. Either gate can reduce the local count to one; neither gate ever enables more than eight workers.
 
 ### Receive and recovery
 
@@ -638,7 +637,7 @@ Do not select **ECHOCRYPT Virtual Speaker** as the website's speaker at the same
 
 ## Optional parallel Direct file and voice-note preparation
 
-Parallel preparation is disabled by default. First run **Configuration → Direct transfer and worker settings → Run dedicated microphone/speaker modem-path test**. Only a passing test enables the worker toggle. Approval is stored outside the repository and bound to the selected input/output endpoints, sample rate, and active modem frequencies. Changing any of them invalidates approval. During an authenticated Direct handshake, the peers negotiate the lower of their locally approved worker limits. A device without current approval advertises one worker.
+Parallel preparation is disabled by default. First run **Configuration → Direct transfer and worker settings → Run dedicated microphone/speaker modem-path test**. Only a passing audio-path test can approve the device pair. A separate CPU/RAM gate caps the requested count using logical CPU/cgroup capacity and available memory. During an authenticated Direct handshake, each peer advertises its locally approved and resource-capped worker limit; the session uses the lower count. A device without audio-path approval, or with hardware capacity for only one worker, advertises one.
 
 Workers read file chunks and prepare their authenticated encrypted packets concurrently ahead of transmission. Packets are still emitted in order through the single acoustic transmit queue, and each chunk still requires its authenticated ACK before the next chunk is sent. This avoids unsafe simultaneous playback on one speaker and preserves resumability, replay protection, integrity checks, and the existing stop-and-wait reliability model. The setting applies to Direct file attachments and file-backed voice notes; open Broadcast and live push-to-talk audio do not use this worker pool.
 

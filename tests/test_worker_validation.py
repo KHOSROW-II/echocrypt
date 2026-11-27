@@ -47,7 +47,7 @@ def passing_result(cfg):
 class WorkerHardwareApprovalTests(unittest.TestCase):
     def test_cpu_limit_respects_process_affinity(self):
         with patch.object(worker_validation.os, "cpu_count", return_value=16):
-            with patch.object(worker_validation.os, "sched_getaffinity", return_value={0, 1}):
+            with patch.object(worker_validation.os, "sched_getaffinity", return_value={0, 1}, create=True):
                 with patch.object(Path, "read_text", side_effect=FileNotFoundError):
                     self.assertEqual(worker_validation._logical_cpu_limit(), 2)
 
@@ -86,7 +86,9 @@ class WorkerHardwareApprovalTests(unittest.TestCase):
         cfg = make_config()
         with tempfile.TemporaryDirectory() as temp, \
              patch.object(worker_validation, "_approval_path", return_value=Path(temp) / "approval.json"), \
-             patch("core.audio._sounddevice", return_value=FakeAudioBackend()):
+             patch("core.audio._sounddevice", return_value=FakeAudioBackend()), \
+             patch.object(worker_validation, "worker_hardware_profile",
+                          return_value={"max_workers": 8}):
             worker_validation.approve_worker_hardware(
                 cfg, passing_result(cfg)
             )

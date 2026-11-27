@@ -27,7 +27,8 @@ def build_menu_fragments(title, items, index):
 
 
 class Menu:
-    def __init__(self, title, items, *, header=True, header_status="NOT CONNECTED"):
+    def __init__(self, title, items, *, header=True, header_status="NOT CONNECTED",
+                 input=None, output=None):
         self.title, self.items = title, list(items)
         self.header = bool(header)
         self.header_status = str(header_status)
@@ -74,6 +75,8 @@ class Menu:
             full_screen=True,
             erase_when_done=True,
             style=MENU_STYLE,
+            input=input,
+            output=output,
         )
         # prompt_toolkit buffers a lone ESC while waiting to see whether it is
         # the prefix of an ANSI escape sequence. Its separate key-chord timeout

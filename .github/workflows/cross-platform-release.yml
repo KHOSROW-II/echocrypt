@@ -27,20 +27,20 @@ jobs:
           - { os: macos-15, python: "3.11" }
           - { os: macos-15-intel, python: "3.11" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements.txt
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pyinstaller
-          python -m pip install -e .
+          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -e ".[dev]"
       - name: Compile all Python sources
         run: python -m compileall -q core interface security browser_extension scripts tests
       - name: Validate manifests and build all browser packages
@@ -62,12 +62,12 @@ jobs:
           bash -n scripts/install_browser_tab_host.sh
           bash -n scripts/uninstall_browser_tab_host.sh
           sh -n scripts/echocrypt_tab_host
-      - name: Run full test suite
-        run: python -m unittest discover -s tests -v
+      - name: Run pytest suite with coverage
+        run: python -m pytest -q --cov=core --cov=security --cov=echocrypt_sdk --cov-report=term-missing --cov-report=xml:coverage.xml
 
   build:
     needs: test
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: ${{ needs.test.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -78,8 +78,8 @@ jobs:
           - { os: macos-15, target: macos-arm64 }
           - { os: macos-15-intel, target: macos-x64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install packaging dependencies
@@ -107,7 +107,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then cp dist/ECHOCRYPT-NativeHost.exe dist/package/; else cp dist/ECHOCRYPT-NativeHost dist/package/; fi
           cp README.md CHANGELOG.md LICENSE dist/package/
           echo "${{ matrix.target }}" > dist/package/PLATFORM.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: echocrypt-${{ matrix.target }}
           path: dist/package/
@@ -115,15 +115,15 @@ jobs:
 
   draft-release:
     needs: [test, build]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: ${{ needs.test.result == 'success' && needs.build.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
       - name: Choose draft tag
@@ -141,6 +141,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1 || gh release create "${{ steps.tag.outputs.tag }}" --draft --title "ECHOCRYPT ${{ steps.tag.outputs.tag }}" --notes-file release-assets/RELEASE_NOTES.md
-          gh release upload "${{ steps.tag.outputs.tag }}" release-assets/RELEASE_NOTES.md release-assets/*/* --clobber
-          gh release edit "${{ steps.tag.outputs.tag }}" --draft --notes-file release-assets/RELEASE_NOTES.md
+          TAG="${{ steps.tag.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "Refusing to modify published release $TAG; this workflow only manages Draft releases."
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --title "ECHOCRYPT $TAG" --notes-file release-assets/RELEASE_NOTES.md
+          fi
+          gh release upload "$TAG" release-assets/RELEASE_NOTES.md release-assets/*/* --clobber
+          gh release edit "$TAG" --draft --notes-file release-assets/RELEASE_NOTES.md

@@ -25,13 +25,28 @@ def _venv_python() -> Path:
 
 
 def _is_termux() -> bool:
-    """Identify the native Termux Python, not a PRoot child inheriting env vars."""
+    """Identify native Termux Python, not a PRoot child inheriting environment hints."""
     termux_root = "/data/data/com.termux/"
-    runtime_paths = (str(Path(sys.executable).resolve()), str(Path(sys.prefix).resolve()))
+
+    def path_candidates(value):
+        # Check the raw runtime path first. Resolving POSIX paths with pathlib
+        # on Windows rewrites them into the host drive namespace.
+        candidates = [str(value).replace("\\", "/")]
+        try:
+            candidates.append(str(Path(value).resolve()).replace("\\", "/"))
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return candidates
+
+    runtime_paths = (
+        path
+        for value in (sys.executable, sys.prefix)
+        for path in path_candidates(value)
+    )
     python_is_termux = any(path.startswith(termux_root) for path in runtime_paths)
     environment_hints_termux = bool(
         os.environ.get("TERMUX_VERSION")
-        or os.environ.get("PREFIX", "").startswith(termux_root)
+        or os.environ.get("PREFIX", "").replace("\\", "/").startswith(termux_root)
     )
     return python_is_termux and environment_hints_termux
 

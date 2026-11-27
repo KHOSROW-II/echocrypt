@@ -44,12 +44,15 @@ class MobileBootstrapTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as temp:
             venv_dir = Path(temp) / ".venv"
-            broken = venv_dir / "bin" / "python"
-            broken.parent.mkdir(parents=True)
-            broken.write_text("not an executable", encoding="utf-8")
+            expected_python = (
+                venv_dir / "Scripts" / "python.exe"
+                if os.name == "nt" else venv_dir / "bin" / "python"
+            )
+            expected_python.parent.mkdir(parents=True)
+            expected_python.write_text("not an executable", encoding="utf-8")
             with patch.object(echocrypt, "VENV_DIR", venv_dir), patch("builtins.print"):
                 python_path = echocrypt._ensure_project_venv()
-                self.assertEqual(python_path, venv_dir / "bin" / "python")
+                self.assertEqual(python_path, expected_python)
                 self.assertTrue(python_path.is_file())
                 probe = subprocess.run([str(python_path), "-c", "import pip"], capture_output=True)
                 self.assertEqual(probe.returncode, 0, probe.stderr.decode(errors="replace"))

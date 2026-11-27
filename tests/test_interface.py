@@ -2,7 +2,6 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
-from prompt_toolkit import Application
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
@@ -37,17 +36,14 @@ class TerminalMenuTests(unittest.TestCase):
 
     def test_menu_renders_and_enter_selects_item(self):
         with create_pipe_input() as pipe:
-            menu = Menu("MAIN MENU", [("start", "Start Communication"), ("exit", "Exit")])
-            app = Application(
-                layout=menu.app.layout,
-                key_bindings=menu.app.key_bindings,
-                full_screen=True,
-                style=MENU_STYLE,
+            menu = Menu(
+                "MAIN MENU",
+                [("start", "Start Communication"), ("exit", "Exit")],
                 input=pipe,
                 output=DummyOutput(),
             )
             pipe.send_text("\r")
-            self.assertEqual(app.run(), "start")
+            self.assertEqual(menu.run(), "start")
 
     def test_chat_history_snapshot_and_append_share_the_rx_lock(self):
         class TrackingLock:
@@ -95,9 +91,13 @@ class TerminalMenuTests(unittest.TestCase):
             self.assertEqual(messages[-1]["body"], "message 299")
 
     def test_menu_escape_timeouts_are_short(self):
-        menu = Menu("MAIN MENU", [("back", "Back")])
-        self.assertLessEqual(menu.app.ttimeoutlen, 0.08)
-        self.assertLessEqual(menu.app.timeoutlen, 0.15)
+        with create_pipe_input() as pipe:
+            menu = Menu(
+                "MAIN MENU", [("back", "Back")],
+                input=pipe, output=DummyOutput(),
+            )
+            self.assertLessEqual(menu.app.ttimeoutlen, 0.08)
+            self.assertLessEqual(menu.app.timeoutlen, 0.15)
 
     def test_invalid_empty_menu_is_rejected(self):
         with self.assertRaises(ValueError):

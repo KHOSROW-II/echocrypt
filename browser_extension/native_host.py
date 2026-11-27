@@ -74,10 +74,22 @@ def write_message(stream, message):
 def origin_is_allowed(origin: str) -> bool:
     try:
         stored = json.loads(_config_path().read_text(encoding="utf-8"))
-        extension_id = str(stored.get("extension_id", "")).strip()
     except (OSError, ValueError, TypeError):
         return False
-    return bool(extension_id) and origin == f"chrome-extension://{extension_id}/"
+
+    extension_ids = set()
+    legacy_id = str(stored.get("extension_id", "")).strip()
+    if legacy_id:
+        extension_ids.add(legacy_id)
+    listed = stored.get("extension_ids", [])
+    if isinstance(listed, list):
+        extension_ids.update(str(item).strip() for item in listed if str(item).strip())
+    per_browser = stored.get("extensions", {})
+    if isinstance(per_browser, dict):
+        extension_ids.update(
+            str(item).strip() for item in per_browser.values() if str(item).strip()
+        )
+    return origin in {f"chrome-extension://{extension_id}/" for extension_id in extension_ids}
 
 
 def _sink_exists() -> bool:

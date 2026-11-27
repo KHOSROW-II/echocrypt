@@ -60,8 +60,8 @@ def _select_device(direction: str):
     render_app_header(session_status="SAVE AUDIO DEVICE")
     value = "default" if selected == "default" else int(selected)
     try:
-        save_setting("audio", section_key, value)
         save_setting("audio", "full_duplex", False)
+        save_setting("audio", section_key, value)
         print(f"Saved {direction} device: {'System default' if value == 'default' else value}")
     except Exception as exc:
         print(f"Could not save audio device: {exc}")
@@ -128,9 +128,9 @@ def _remove_virtual_audio():
             or is_virtual_tx_device(cfg.output_device)
         )
         if using_virtual:
+            save_setting("audio", "full_duplex", False)
             save_setting("audio", "input_device", "default")
             save_setting("audio", "output_device", "default")
-            save_setting("audio", "full_duplex", False)
         print("Unloaded ECHOCRYPT-owned virtual audio modules:", result["removed_module_ids"])
         for error in result["errors"]:
             print("Cleanup warning:", error)

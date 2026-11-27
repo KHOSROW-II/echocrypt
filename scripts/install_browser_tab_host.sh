@@ -52,7 +52,7 @@ manifest = {
     "type": "stdio",
     "allowed_origins": [f"chrome-extension://{extension_id}/"],
 }
-Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 config_file = Path(config_path)
 try:
     stored = json.loads(config_file.read_text(encoding="utf-8"))
@@ -63,7 +63,7 @@ if not isinstance(extensions, dict):
     extensions = {}
 extensions[browser] = extension_id
 config_file.write_text(
-    json.dumps({"extensions": extensions}, indent=2) + "\\n",
+    json.dumps({"extensions": extensions}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY

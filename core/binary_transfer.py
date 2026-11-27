@@ -11,6 +11,8 @@ import os
 import re
 import struct
 import uuid
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -58,6 +60,76 @@ class ChunkIntegrityError(BinaryTransferError):
             "Completed file SHA-256 mismatch; requesting fresh ciphertext for "
             + ", ".join(str(index) for index in self.indexes)
         )
+
+
+def iter_chunk_packets_parallel(channel, outgoing, indexes, max_packet_size=1024,
+                                worker_count=1, cancel_event=None):
+    """Yield encrypted chunks in index order while prefetching with bounded workers.
+
+    Workers perform file reads and AEAD packet preparation concurrently. The
+    caller must still put yielded packets onto the single acoustic TX queue in
+    order and wait for each authenticated ACK; simultaneous playback on one
+    speaker is not safe and is intentionally not attempted.
+    """
+    if isinstance(worker_count, bool) or not isinstance(worker_count, int) or not 1 <= worker_count <= 8:
+        raise ValueError("worker_count must be between 1 and 8")
+    if isinstance(max_packet_size, bool) or not isinstance(max_packet_size, int) or max_packet_size < 1:
+        raise ValueError("max_packet_size must be a positive integer")
+
+    manifest = outgoing.manifest
+    index_iter = iter(indexes)
+
+    def next_index():
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("File chunk preparation cancelled")
+        try:
+            index = next(index_iter)
+        except StopIteration:
+            return None
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < manifest.total_chunks:
+            raise IndexError("Chunk index out of range")
+        return index
+
+    if worker_count == 1:
+        while True:
+            index = next_index()
+            if index is None:
+                break
+            packet = channel.chunk_packet(outgoing, index, max_packet_size)
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("File chunk preparation cancelled")
+            yield index, packet
+        return
+
+    pending = deque()
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="echocrypt-chunk-prep",
+    )
+
+    def fill_window():
+        while len(pending) < worker_count:
+            index = next_index()
+            if index is None:
+                break
+            future = executor.submit(
+                channel.chunk_packet, outgoing, index, max_packet_size
+            )
+            pending.append((index, future))
+
+    try:
+        fill_window()
+        while pending:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("File chunk preparation cancelled")
+            index, future = pending.popleft()
+            packet = future.result()
+            fill_window()
+            yield index, packet
+    finally:
+        for _index, future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,25 @@ class SessionEngineTests(unittest.TestCase):
             gain=0.55, max_payload=1024, input_device=None, output_device=None,
         )
 
+    def test_full_duplex_rejects_physical_audio_even_when_config_is_constructed_directly(self):
+        config = SimpleNamespace(
+            **{**vars(self.cfg), "full_duplex_audio": True}
+        )
+        with self.assertRaisesRegex(ValueError, "requires the isolated ECHOCRYPT virtual"):
+            AudioSessionEngine(config, listener=FakeListener(), channel_access=False)
+
+    def test_full_duplex_accepts_both_isolated_virtual_endpoints(self):
+        config = SimpleNamespace(
+            **{
+                **vars(self.cfg),
+                "input_device": "Monitor of ECHOCRYPT Browser Tab Monitor",
+                "output_device": "ECHOCRYPT Virtual Microphone TX",
+                "full_duplex_audio": True,
+            }
+        )
+        engine = AudioSessionEngine(config, listener=FakeListener(), channel_access=False)
+        self.assertTrue(engine.config.full_duplex_audio)
+
     def test_debug_rx_capture_writes_bounded_pcm16_wav(self):
         samples = np.asarray([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float32)
         with tempfile.TemporaryDirectory() as directory:

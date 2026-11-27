@@ -32,6 +32,8 @@ class VirtualAudioParsingTests(unittest.TestCase):
         self.assertEqual(selectors["output_device"], "ECHOCRYPT Virtual Microphone TX")
         self.assertEqual(selectors["application_microphone"], "ECHOCRYPT Virtual Microphone")
         self.assertEqual(selectors["application_speaker"], "ECHOCRYPT Virtual Speaker")
+        self.assertEqual(selectors["browser_tab_input_device"], "ECHOCRYPT Browser Tab Monitor")
+        self.assertTrue(virtual_audio.is_browser_tab_rx_device("Monitor of ECHOCRYPT Browser Tab Capture"))
 
     def test_status_does_not_claim_active_when_a_monitor_is_missing(self):
         sinks = [["1", "echocrypt_tx"], ["2", "echocrypt_rx"]]

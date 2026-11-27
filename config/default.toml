@@ -2,6 +2,7 @@
 sample_rate = 48000
 input_device = "default"
 output_device = "default"
+full_duplex = false
 record_seconds = 30
 gain = 0.35
 

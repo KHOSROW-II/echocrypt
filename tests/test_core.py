@@ -28,6 +28,23 @@ class Tests(unittest.TestCase):
                 emergency_symbol_rate=700,
             ))
 
+    def test_full_duplex_requires_isolated_echocrypt_virtual_endpoints(self):
+        valid = replace(
+            Config(),
+            input_device="Monitor of ECHOCRYPT Virtual Speaker",
+            output_device="ECHOCRYPT Virtual Microphone TX",
+            full_duplex_audio=True,
+        )
+        self.assertIsNone(_validate(valid))
+
+        with self.assertRaisesRegex(ValueError, "requires the isolated ECHOCRYPT"):
+            _validate(replace(Config(), full_duplex_audio=True))
+
+        with self.assertRaisesRegex(ValueError, "requires the isolated ECHOCRYPT"):
+            _validate(replace(
+                valid, input_device="Built-in Microphone",
+            ))
+
     def test_transfer_worker_configuration_is_bounded(self):
         self.assertIsNone(_validate(replace(Config(), multi_worker_count=8)))
         with self.assertRaisesRegex(ValueError, "between 2 and 8"):

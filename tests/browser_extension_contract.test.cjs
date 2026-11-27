@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, '..');
 const readJson = (relative) => JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'));
 const readText = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const exists = (relative) => fs.statSync(path.join(root, relative)).isFile();
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function makeEvent() {
   const listeners = [];
@@ -76,8 +77,8 @@ test('Firefox background rejects other tabs and forwards accepted PCM to native 
   });
 
   await Promise.all(click.fire({ id: 7 }));
-  assert.deepEqual(nativeMessages[0], { type: 'start', sample_rate: 48000 });
-  assert.deepEqual(tabMessages[0], { tabId: 7, message: { type: 'START' } });
+  assert.deepEqual(plain(nativeMessages[0]), { type: 'start', sample_rate: 48000 });
+  assert.deepEqual(plain(tabMessages[0]), { tabId: 7, message: { type: 'START' } });
   assert.equal(badges.at(-1), 'RX');
 
   const makePort = (tabId) => ({
@@ -96,7 +97,7 @@ test('Firefox background rejects other tabs and forwards accepted PCM to native 
   runtimeConnect.fire(accepted);
   accepted.onMessage.fire({ type: 'pcm', pcm: 'AQIDBA==' });
   accepted.onMessage.fire({ type: 'pcm', pcm: 'x'.repeat(12001) });
-  assert.deepEqual(nativeMessages[1], {
+  assert.deepEqual(plain(nativeMessages[1]), {
     type: 'pcm', sample_rate: 48000, pcm_s16le: 'AQIDBA=='
   });
   assert.equal(nativeMessages.filter((message) => message.type === 'pcm').length, 1);
@@ -132,7 +133,7 @@ test('Chromium service worker starts capture, sends stream ID, and stops cleanly
     tabCapture: {
       getCapturedTabs: async () => captures,
       getMediaStreamId: async (options) => {
-        assert.deepEqual(options, { targetTabId: 42 });
+        assert.deepEqual(plain(options), { targetTabId: 42 });
         return 'stream-id-42';
       }
     },
@@ -143,7 +144,7 @@ test('Chromium service worker starts capture, sends stream ID, and stops cleanly
   });
 
   await Promise.all(click.fire({ id: 42 }));
-  assert.deepEqual(sent[0], {
+  assert.deepEqual(plain(sent[0]), {
     target: 'echocrypt-offscreen',
     type: 'START_CAPTURE',
     streamId: 'stream-id-42',
@@ -153,7 +154,7 @@ test('Chromium service worker starts capture, sends stream ID, and stops cleanly
 
   captures = [{ tabId: 42, status: 'active' }];
   await Promise.all(click.fire({ id: 42 }));
-  assert.deepEqual(sent[1], { target: 'echocrypt-offscreen', type: 'STOP_CAPTURE' });
+  assert.deepEqual(plain(sent[1]), { target: 'echocrypt-offscreen', type: 'STOP_CAPTURE' });
   assert.equal(contexts.length, 0);
   assert.equal(badges.at(-1), '');
 });

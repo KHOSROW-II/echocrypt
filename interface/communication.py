@@ -43,6 +43,7 @@ from core.profile import get_username
 from interface.dashboard import render as render_app_header
 from interface.chat import ChatScreen, add_chat_message
 from security.peer_handshake import PeerHandshake
+from core.worker_validation import effective_worker_count
 from security.profiles import SecurityProfile, SecurityProfileError
 from interface.terminal import Menu
 
@@ -1853,15 +1854,15 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     # Workers prepare file/voice chunks concurrently; AudioSessionEngine keeps
     # playback serialized because a single acoustic speaker is one shared lane.
     workers_requested = bool(getattr(cfg, "multi_worker_enabled", False))
+    local_worker_limit = effective_worker_count(cfg)
     direct_worker_count = (
-        min(
-            int(getattr(cfg, "multi_worker_count", 1)),
-            int(getattr(handshake, "negotiated_worker_count", 1)),
-        )
+        min(local_worker_limit, int(getattr(handshake, "negotiated_worker_count", 1)))
         if not broadcast_mode and workers_requested and handshake is not None
         else 1
     )
-    if not broadcast_mode and workers_requested and direct_worker_count == 1:
+    if not broadcast_mode and workers_requested and local_worker_limit == 1:
+        print("Parallel preparation is disabled locally: the current microphone/speaker pair has no valid hardware approval.")
+    elif not broadcast_mode and workers_requested and direct_worker_count == 1:
         print("Parallel chunk preparation was requested, but peer negotiation selected one worker.")
 
     trace = for_config(cfg)
@@ -3009,7 +3010,7 @@ def _connect_to_contact(contact: Contact):
             order, load_private(PRIVATE), peer_public_raw, peer_fingerprint,
             security_profile=security_profile,
             ultrasonic_enabled=cfg.ultrasonic_enabled,
-            max_workers=cfg.multi_worker_count if cfg.multi_worker_enabled else 1,
+            max_workers=effective_worker_count(cfg),
         )
         render_app_header(session_status=f"HANDSHAKE: {contact.name}")
         print(f"\nConnecting acoustically to {contact.name} ({contact.short_fingerprint})")

@@ -15,7 +15,10 @@ from core.audio import (
     test_acoustic_path,
 )
 from core.config import load
-from core.virtual_audio import temporary_worker_test_route, is_virtual_rx_device, is_virtual_tx_device
+from core.virtual_audio import (
+    temporary_worker_test_route, is_virtual_rx_device, is_virtual_tx_device,
+    is_browser_tab_rx_device, TAB_RX_SINK,
+)
 from core.worker_validation import approve_worker_hardware
 from core.modem import HOP_OFFSETS
 from interface.dashboard import render as render_app_header
@@ -107,7 +110,9 @@ def run_worker_hardware_test():
             and is_virtual_tx_device(cfg.output_device)
         )
         if virtual_pair:
-            with temporary_worker_test_route():
+            route_target = TAB_RX_SINK if is_browser_tab_rx_device(cfg.input_device) else None
+            route = temporary_worker_test_route(route_target) if route_target else temporary_worker_test_route()
+            with route:
                 result = test_acoustic_path(
                     cfg.sample_rate, cfg.input_device, cfg.output_device,
                     frequencies=frequencies, duration=0.22, amplitude=test_amplitude,

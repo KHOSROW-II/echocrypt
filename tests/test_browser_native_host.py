@@ -26,7 +26,7 @@ class NativeHostProtocolTests(unittest.TestCase):
             native_host.read_message(io.BytesIO(raw))
 
     def test_pcm_decoder_accepts_bounded_48khz_s16le(self):
-        payload = b"\\x01\\x00" * 960
+        payload = bytes([1, 0]) * 960
         message = {
             "type": "pcm",
             "sample_rate": 48000,
@@ -35,7 +35,7 @@ class NativeHostProtocolTests(unittest.TestCase):
         self.assertEqual(native_host._decode_pcm(message), payload)
 
     def test_pcm_decoder_rejects_invalid_rate_and_unbounded_payload(self):
-        payload = b"\\x00\\x00" * 960
+        payload = bytes([0, 0]) * 960
         message = {
             "type": "pcm",
             "sample_rate": 44100,

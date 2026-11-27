@@ -1851,12 +1851,16 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
         raise RuntimeError("Direct chat requires an established authenticated session")
     # Workers prepare file/voice chunks concurrently; AudioSessionEngine keeps
     # playback serialized because a single acoustic speaker is one shared lane.
+    workers_requested = bool(getattr(cfg, "multi_worker_enabled", False))
     direct_worker_count = (
-        min(cfg.multi_worker_count, handshake.negotiated_worker_count)
-        if not broadcast_mode and cfg.multi_worker_enabled and handshake is not None
+        min(
+            int(getattr(cfg, "multi_worker_count", 1)),
+            int(getattr(handshake, "negotiated_worker_count", 1)),
+        )
+        if not broadcast_mode and workers_requested and handshake is not None
         else 1
     )
-    if not broadcast_mode and cfg.multi_worker_enabled and direct_worker_count == 1:
+    if not broadcast_mode and workers_requested and direct_worker_count == 1:
         print("Parallel chunk preparation was requested, but peer negotiation selected one worker.")
 
     trace = for_config(cfg)

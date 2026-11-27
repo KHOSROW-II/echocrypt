@@ -10,8 +10,13 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
-from core.audio import MicrophoneLevelMonitor, test_speaker_channels, test_ultrasonic_path
+from core.audio import (
+    MicrophoneLevelMonitor, test_speaker_channels, test_ultrasonic_path,
+    test_acoustic_path,
+)
 from core.config import load
+from core.virtual_audio import temporary_worker_test_route
+from core.worker_validation import approve_worker_hardware
 from core.modem import HOP_OFFSETS
 from interface.dashboard import render as render_app_header
 
@@ -78,6 +83,60 @@ def run_ultrasonic_hardware_test():
         return False
     except Exception as exc:
         print(f"\n  ✗ Ultrasonic hardware test failed: {exc}")
+        return False
+
+
+def run_worker_hardware_test():
+    """Run an independent modem-band loopback check before enabling workers."""
+    cfg = load()
+    render_app_header(session_status="WORKER HARDWARE VALIDATION")
+    bases = (
+        (cfg.ultrasonic_mark_hz, cfg.ultrasonic_space_hz)
+        if cfg.ultrasonic_enabled else (cfg.mark_hz, cfg.space_hz)
+    )
+    frequencies = tuple(sorted({
+        float(base + offset) for base in bases for offset in HOP_OFFSETS
+    }))
+    print("\\nDedicated test for the currently selected microphone and speaker.")
+    print("Tests every active modem tone, including the configured frequency-hopping offsets.")
+    print("Do not run during a live call. Keep a physical speaker audible to its microphone.")
+    try:
+        virtual_pair = (
+            isinstance(cfg.input_device, str)
+            and "ECHOCRYPT Virtual Speaker Monitor" in cfg.input_device
+            and isinstance(cfg.output_device, str)
+            and "ECHOCRYPT Virtual Microphone TX" in cfg.output_device
+        )
+        if virtual_pair:
+            with temporary_worker_test_route():
+                result = test_acoustic_path(
+                    cfg.sample_rate, cfg.input_device, cfg.output_device,
+                    frequencies=frequencies, duration=0.22, amplitude=0.08,
+                )
+        else:
+            result = test_acoustic_path(
+                cfg.sample_rate, cfg.input_device, cfg.output_device,
+                frequencies=frequencies, duration=0.22, amplitude=0.10,
+            )
+        for tone in result["tones"]:
+            state = "DETECTED" if tone["detected"] else "NOT DETECTED"
+            print(f"  {tone['frequency']:.0f} Hz: {state} · band ratio {tone['band_ratio']:.3f}")
+        if result["callback_status"]:
+            print("  Audio callback status:", "; ".join(result["callback_status"]))
+        if not result["passed"]:
+            print("\\n✗ Hardware validation failed. Parallel workers remain disabled.")
+            return False
+        approval = approve_worker_hardware(cfg, result)
+        print(
+            f"\\n✓ Hardware path approved for the current device pair at {cfg.sample_rate} Hz "
+            f"({approval['tone_count']} tones)."
+        )
+        print("Changing the microphone, speaker, sample rate or modem frequencies invalidates this approval.")
+        print("This is a local audio-path check, not a test of the remote conferencing codec.")
+        return True
+    except Exception as exc:
+        print("\\n✗ Worker hardware test failed:", exc)
+        print("Parallel workers remain disabled until this dedicated test passes.")
         return False
 
 

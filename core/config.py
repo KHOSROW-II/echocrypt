@@ -42,6 +42,16 @@ class Config:
     debug_enabled: bool = False
 
 
+def _is_virtual_rx_device(value):
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("speaker" in name or "echocrypt_rx" in name)
+
+
+def _is_virtual_tx_device(value):
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("microphone" in name or "echocrypt_tx" in name)
+
+
 def _device_value(value):
     """None means: let PortAudio use the operating system's default device."""
     if value is None:
@@ -93,6 +103,13 @@ def _validate(c: Config):
         raise ValueError("debug.enabled must be true or false")
     if not isinstance(c.full_duplex_audio, bool):
         raise ValueError("audio.full_duplex must be true or false")
+    if c.full_duplex_audio and not (
+        _is_virtual_rx_device(c.input_device) and _is_virtual_tx_device(c.output_device)
+    ):
+        raise ValueError(
+            "audio.full_duplex requires the isolated ECHOCRYPT Virtual Speaker input "
+            "and ECHOCRYPT Virtual Microphone output. Physical devices must remain half-duplex."
+        )
     if not isinstance(c.ultrasonic_enabled, bool):
         raise ValueError("modem.ultrasonic_enabled must be true or false")
     if not isinstance(c.multi_worker_enabled, bool):

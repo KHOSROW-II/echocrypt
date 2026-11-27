@@ -1,8 +1,8 @@
 name: Tests
 
 on:
-  push:
-    branches: [main]
+  # Cross-platform validation already runs the full test matrix on pushes to main.
+  # Keep this lightweight status check on PRs in case branch protection requires it.
   pull_request:
     branches: [main]
 

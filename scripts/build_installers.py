@@ -10,7 +10,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 support
+    import tomli as tomllib
 
 
 TARGETS = {

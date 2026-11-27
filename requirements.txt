@@ -3,3 +3,4 @@ numpy>=1.26
 cryptography>=42.0
 prompt_toolkit>=3.0.43
 tomli>=2.0; python_version < '3.11'
+tomli>=2.0; python_version < "3.11"

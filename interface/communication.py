@@ -14,7 +14,8 @@ from prompt_toolkit import prompt
 
 from core.audio import play, record, MicrophoneRecorder
 from core.binary_transfer import (ReliableBinaryChannel, BinaryTransferError,
-                                  ChunkIntegrityError, ACK_BODY, AEAD_OVERHEAD, DATA_HEAD)
+                                  ChunkIntegrityError, ACK_BODY, AEAD_OVERHEAD, DATA_HEAD,
+                                  iter_chunk_packets_parallel)
 from core.codec import (encode_voice_message, encode_emergency_voice_message,
                         encode_codec2_1300_message, decode_voice_message,
                         write_voice_wav, VOICE_MAGIC, VOICE2_MAGIC, VOICE3_MAGIC)
@@ -1264,7 +1265,8 @@ def _file_symbol_rate_plan(cfg):
 
 def _engine_send_file(channel, engine, source, cfg, *,
                       progress_callback=None, on_outgoing_created=None,
-                      cancel_event=None, transfer_id=None, preferred_symbol_rate=None):
+                      cancel_event=None, transfer_id=None, preferred_symbol_rate=None,
+                      worker_count=1):
     _check_cancelled(cancel_event)
     outgoing = channel.create_outgoing(
         source, transfer_id=transfer_id, cancel_event=cancel_event
@@ -1313,9 +1315,11 @@ def _engine_send_file(channel, engine, source, cfg, *,
         raise BinaryTransferError("Receiver did not provide a valid file resume map")
     if progress_callback:
         progress_callback(manifest.filename, next_missing, manifest.total_chunks, "chunks")
-    for index in range(next_missing, manifest.total_chunks):
+    for index, packet in iter_chunk_packets_parallel(
+            channel, outgoing, range(next_missing, manifest.total_chunks),
+            max_packet_size=cfg.max_payload, worker_count=worker_count,
+            cancel_event=cancel_event):
         _check_cancelled(cancel_event)
-        packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
 
         def verify_chunk_ack(response, expected=index):
             try:
@@ -1335,7 +1339,7 @@ def _engine_send_file(channel, engine, source, cfg, *,
 
 
 def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_callback=None,
-                          cancel_event=None):
+                          cancel_event=None, worker_count=1):
     """Respond to a peer's explicit resend request without a new manifest."""
     manifest = outgoing.manifest
     indexes = tuple(sorted(set(int(i) for i in indexes)))
@@ -1343,9 +1347,10 @@ def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_call
         return 0
     if any(index < 0 or index >= manifest.total_chunks for index in indexes):
         raise BinaryTransferError("Peer requested a chunk outside the original file")
-    for position, index in enumerate(indexes, 1):
+    for position, (index, packet) in enumerate(iter_chunk_packets_parallel(
+            channel, outgoing, indexes, max_packet_size=cfg.max_payload,
+            worker_count=worker_count, cancel_event=cancel_event), 1):
         _check_cancelled(cancel_event)
-        packet = channel.chunk_packet(outgoing, index, cfg.max_payload)
         def verify_ack(response, expected=index):
             try:
                 return channel.verify_ack(response, manifest.transfer_id, 1, expected)
@@ -1844,6 +1849,15 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
     broadcast_mode = mode == "broadcast"
     if not broadcast_mode and (handshake is None or not handshake.established):
         raise RuntimeError("Direct chat requires an established authenticated session")
+    # Workers prepare file/voice chunks concurrently; AudioSessionEngine keeps
+    # playback serialized because a single acoustic speaker is one shared lane.
+    direct_worker_count = (
+        min(cfg.multi_worker_count, handshake.negotiated_worker_count)
+        if not broadcast_mode and cfg.multi_worker_enabled and handshake is not None
+        else 1
+    )
+    if not broadcast_mode and cfg.multi_worker_enabled and direct_worker_count == 1:
+        print("Parallel chunk preparation was requested, but peer negotiation selected one worker.")
 
     trace = for_config(cfg)
     if trace.enabled:
@@ -1994,7 +2008,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     entry["status"] = f"resending {current}/{total} requested chunks"
             sent = _engine_resend_chunks(reliable_binary_channel, engine_ref["engine"],
                                          outgoing, indexes, cfg, progress_callback=progress,
-                                         cancel_event=transfer_cancel_event)
+                                         cancel_event=transfer_cancel_event,
+                                         worker_count=direct_worker_count)
             if trace.enabled:
                 trace.emit("DIRECT_RETRY", "Requested Direct chunks resent and authenticated ACKs received",
                            transfer_id=bytes(transfer_id).hex(), chunks_sent=sent)
@@ -2502,7 +2517,8 @@ def _chat_loop(handshake, cfg, peer_name="Peer", peer_username=None,
                     on_outgoing_created=remember_outgoing,
                     cancel_event=cancel_event,
                     transfer_id=resume_id_override,
-                    preferred_symbol_rate=preferred_symbol_rate)
+                    preferred_symbol_rate=preferred_symbol_rate,
+                    worker_count=direct_worker_count)
                 if description != "voice note":
                     with messages_lock:
                         entry["body"] = f"{description}: {manifest.filename} ({manifest.file_size:,} bytes)"
@@ -2987,6 +3003,8 @@ def _connect_to_contact(contact: Contact):
         handshake = PeerHandshake(
             order, load_private(PRIVATE), peer_public_raw, peer_fingerprint,
             security_profile=security_profile,
+            ultrasonic_enabled=cfg.ultrasonic_enabled,
+            max_workers=cfg.multi_worker_count if cfg.multi_worker_enabled else 1,
         )
         render_app_header(session_status=f"HANDSHAKE: {contact.name}")
         print(f"\nConnecting acoustically to {contact.name} ({contact.short_fingerprint})")
@@ -2998,6 +3016,22 @@ def _connect_to_contact(contact: Contact):
             cfg, symbol_rate=negotiated.symbol_rate,
             max_retries=negotiated.retries,
         )
+        if handshake.negotiated_ultrasonic_enabled:
+            cfg = replace(
+                cfg, mark_hz=cfg.ultrasonic_mark_hz,
+                space_hz=cfg.ultrasonic_space_hz,
+            )
+            print(
+                f"Ultrasonic mode negotiated: {cfg.mark_hz}/{cfg.space_hz} Hz. "
+                "Both audio endpoints must support this band."
+            )
+        elif cfg.ultrasonic_enabled:
+            print("Peer did not enable ultrasonic mode; continuing with audible frequencies.")
+        if handshake.negotiated_worker_count > 1:
+            print(
+                f"Parallel file/audio preparation negotiated: "
+                f"{handshake.negotiated_worker_count} workers."
+            )
         print("\nExchanging encrypted display names...")
         text_channel = ReliableTextChannel(handshake)
         peer_username = _exchange_session_usernames(order, handshake, cfg, text_channel)

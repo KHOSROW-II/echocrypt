@@ -31,6 +31,18 @@ def make_config():
         full_duplex_audio=False, multi_worker_enabled=True, multi_worker_count=4,
     )
 
+def passing_result(cfg):
+    from core.modem import HOP_OFFSETS
+    frequencies = sorted({
+        int(base + offset)
+        for base in (cfg.mark_hz, cfg.space_hz)
+        for offset in HOP_OFFSETS
+    })
+    return {
+        "passed": True,
+        "tones": [{"frequency": value, "detected": True} for value in frequencies],
+    }
+
 
 class WorkerHardwareApprovalTests(unittest.TestCase):
     def test_missing_approval_disables_parallel_workers(self):
@@ -49,7 +61,7 @@ class WorkerHardwareApprovalTests(unittest.TestCase):
              patch.object(worker_validation, "_approval_path", return_value=Path(temp) / "approval.json"), \
              patch("core.audio._sounddevice", return_value=FakeAudioBackend()):
             worker_validation.approve_worker_hardware(
-                cfg, {"passed": True, "tones": [{"frequency": 1800}, {"frequency": 2400}]}
+                cfg, passing_result(cfg)
             )
             approved, _ = worker_validation.worker_hardware_approval_status(cfg)
             self.assertTrue(approved)
@@ -61,6 +73,13 @@ class WorkerHardwareApprovalTests(unittest.TestCase):
             self.assertFalse(approved)
             self.assertIn("changed", reason)
             self.assertEqual(worker_validation.effective_worker_count(changed), 1)
+
+    def test_incomplete_tone_results_cannot_approve_workers(self):
+        cfg = make_config()
+        with self.assertRaisesRegex(ValueError, "every active MARK/SPACE"):
+            worker_validation.approve_worker_hardware(
+                cfg, {"passed": True, "tones": [{"frequency": 1800, "detected": True}]}
+            )
 
     def test_failed_test_cannot_be_saved_as_approval(self):
         with self.assertRaisesRegex(ValueError, "cannot approve"):

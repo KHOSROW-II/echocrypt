@@ -8,7 +8,7 @@ from core.virtual_audio import (
     setup_virtual_audio, remove_virtual_audio,
     is_virtual_rx_device, is_virtual_tx_device,
 )
-from core.worker_validation import worker_hardware_approval_status
+from core.worker_validation import worker_hardware_approval_status, worker_hardware_profile
 from interface.dashboard import render as render_app_header
 from interface.terminal import Menu
 from interface.audio_tests import (
@@ -272,9 +272,15 @@ def _transfer_settings():
         cfg = load()
         approved, approval_reason = worker_hardware_approval_status(cfg)
         approval_label = "APPROVED" if approved else "NOT APPROVED"
+        resources = worker_hardware_profile()
+        resource_label = (
+            f"{resources['max_workers']} workers max · {resources['logical_cpus']} CPU · "
+            f"{resources['memory_display']} RAM"
+        )
         choice = Menu("DIRECT TRANSFER SETTINGS", [
             ("worker-hardware-test", "Run dedicated microphone/speaker modem-path test"),
-            ("worker-hardware-status", f"Hardware gate: {approval_label} — {approval_reason}"),
+            ("worker-hardware-status", f"Audio path gate: {approval_label} — {approval_reason}"),
+            ("worker-resource-status", f"CPU/RAM worker capacity: {resource_label}"),
             ("multi_worker_enabled",
              f"Parallel file/audio preparation: {'ON' if cfg.multi_worker_enabled else 'OFF'} (toggle)"),
             ("multi_worker_count", f"Maximum preparation workers: {cfg.multi_worker_count} (2-8)"),
@@ -286,16 +292,30 @@ def _transfer_settings():
             run_worker_hardware_test()
             _pause()
         elif choice == "worker-hardware-status":
-            print("\nWorker hardware approval:", approval_label)
+            print("\nAudio-path hardware approval:", approval_label)
             print(approval_reason)
+            _pause()
+        elif choice == "worker-resource-status":
+            print("\nSeparate CPU/RAM resource gate:")
+            print(resource_label)
+            print("Configured worker count is capped by this resource profile at runtime.")
             _pause()
         elif choice == "multi_worker_enabled":
             enabled = not load().multi_worker_enabled
             if enabled:
+                resources = worker_hardware_profile()
+                if resources["max_workers"] < 2:
+                    print("\nParallel workers were NOT enabled.")
+                    print(
+                        "This machine currently supports only one preparation worker: "
+                        f"{resources['logical_cpus']} logical CPU, {resources['memory_display']} RAM."
+                    )
+                    _pause()
+                    continue
                 approved, reason = worker_hardware_approval_status(load())
                 if not approved:
                     print("\nParallel workers were NOT enabled.")
-                    print("Run the dedicated hardware test first:", reason)
+                    print("Run the dedicated audio-path hardware test first:", reason)
                     _pause()
                     continue
             try:

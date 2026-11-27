@@ -1341,6 +1341,7 @@ def _engine_send_file(channel, engine, source, cfg, *,
 def _engine_resend_chunks(channel, engine, outgoing, indexes, cfg, progress_callback=None,
                           cancel_event=None, worker_count=1):
     """Respond to a peer's explicit resend request without a new manifest."""
+    _check_cancelled(cancel_event)
     manifest = outgoing.manifest
     indexes = tuple(sorted(set(int(i) for i in indexes)))
     if not indexes:

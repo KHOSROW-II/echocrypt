@@ -193,11 +193,7 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
                 if message.get("sample_rate") != SAMPLE_RATE:
                     raise ValueError("The browser bridge currently requires 48000 Hz PCM.")
                 if player is not None:
-                    if mode == "pacat":
-                        _stop_player(player)
-                    else:
-                        player.stop()
-                        player.close()
+                    _stop_player(player)
                     player = None
                 if sys.platform.startswith("linux") and _sink_exists():
                     if shutil.which("pacat") is None:

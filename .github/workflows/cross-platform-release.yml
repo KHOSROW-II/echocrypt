@@ -24,8 +24,8 @@ jobs:
           - { os: ubuntu-latest, python: "3.12" }
           - { os: ubuntu-latest, python: "3.13" }
           - { os: windows-latest, python: "3.11" }
-          - { os: macos-14, python: "3.11" }
-          - { os: macos-13, python: "3.11" }
+          - { os: macos-15, python: "3.11" }
+          - { os: macos-15-intel, python: "3.11" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -75,8 +75,8 @@ jobs:
         include:
           - { os: ubuntu-latest, target: linux-x64 }
           - { os: windows-latest, target: windows-x64 }
-          - { os: macos-14, target: macos-arm64 }
-          - { os: macos-13, target: macos-x64 }
+          - { os: macos-15, target: macos-arm64 }
+          - { os: macos-15-intel, target: macos-x64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -91,7 +91,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml;config" echocrypt.py
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --hidden-import sounddevice browser_extension/native_host.py
+            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py
           else
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml:config" echocrypt.py
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py

@@ -164,7 +164,7 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
 
     previous = _read_state()
     previously_owned = {int(value) for value in previous.get("owned_module_ids", [])}
-    owned = set(previously_owned)
+    owned = set()
     created_now = []
     loopback_warning = None
     loopback_id = None

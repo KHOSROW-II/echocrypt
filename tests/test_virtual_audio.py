@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from core import virtual_audio
@@ -88,8 +90,9 @@ class VirtualAudioParsingTests(unittest.TestCase):
         self.assertEqual(result["removed_module_ids"], [11, 10])
         self.assertEqual(
             [call.args for call in pactl.call_args_list],
-            [("unload-module", "12"), ("unload-module", "11"), ("unload-module", "10")]
-        ) if False else None
+            [("unload-module", "11"), ("unload-module", "10")],
+        )
+        self.assertTrue(any("Skipped module 12" in error for error in result["errors"]))
 
     def test_status_does_not_claim_active_when_a_monitor_is_missing(self):
         sinks = [["1", "echocrypt_tx"], ["2", "echocrypt_rx"], ["3", "echocrypt_tab_rx"]]

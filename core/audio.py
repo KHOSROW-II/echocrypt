@@ -117,6 +117,8 @@ def configured_device_names(input_device=None, output_device=None, allow_install
                 defaults = sd.default.device
                 selected = defaults[index] if defaults is not None else None
                 info = sd.query_devices(int(selected)) if selected is not None and int(selected) >= 0 else sd.query_devices(kind=kind)
+            elif isinstance(device, str):
+                info = sd.query_devices(device, kind=kind)
             else:
                 info = sd.query_devices(int(device))
             if info:
@@ -283,6 +285,101 @@ def test_speaker_channels(rate, device=None, duration=2.0, frequency=880.0, ampl
         "channels": 2,
         "duration_per_channel": float(duration),
         "frequency": float(frequency),
+    }
+
+
+def test_acoustic_path(rate, input_device=None, output_device=None,
+                       frequencies=(1800.0, 2400.0), duration=0.22,
+                       amplitude=0.10, allow_install=True):
+    """Verify the selected output-to-input path across every supplied modem tone.
+
+    This is a local loopback test. It does not certify remote conferencing-codec
+    transparency or physical-device performance beyond the selected local path.
+    """
+    if isinstance(rate, bool) or not isinstance(rate, int) or rate < 8000:
+        raise ValueError("Acoustic path testing requires a sample rate of at least 8000 Hz")
+    tones = tuple(sorted({float(value) for value in frequencies}))
+    if len(tones) < 2 or any(
+        not math.isfinite(value) or value <= 100 or value >= rate / 2 - 500
+        for value in tones
+    ):
+        raise ValueError("Test tones must be distinct and safely inside the audio passband")
+    if not math.isfinite(float(duration)) or not 0.12 <= duration <= 1.0:
+        raise ValueError("Each test tone must last between 0.12 and 1 second")
+    if not math.isfinite(float(amplitude)) or not 0.02 <= amplitude <= 0.25:
+        raise ValueError("Test amplitude must be between 0.02 and 0.25")
+
+    sd = _sounddevice(allow_install=allow_install)
+    samples_per_tone = int(round(duration * rate))
+    t = np.arange(samples_per_tone, dtype=np.float64) / float(rate)
+    fade_count = min(max(1, int(rate * 0.012)), samples_per_tone // 4)
+    fade = np.ones(samples_per_tone, dtype=np.float64)
+    fade[:fade_count] = np.linspace(0.0, 1.0, fade_count)
+    fade[-fade_count:] = np.linspace(1.0, 0.0, fade_count)
+    waveform = np.concatenate([
+        (float(amplitude) * np.sin(2.0 * np.pi * frequency * t) * fade).astype(np.float32)
+        for frequency in tones
+    ])
+
+    captured = []
+    position = 0
+    finished = threading.Event()
+    callback_status = []
+
+    def callback(indata, outdata, frames, time_info, status):
+        nonlocal position
+        if status:
+            callback_status.append(str(status))
+        outdata.fill(0)
+        count = min(int(frames), max(0, len(waveform) - position))
+        if count:
+            outdata[:count, 0] = waveform[position:position + count]
+            captured.append(np.asarray(indata[:count, 0], dtype=np.float32).copy())
+            position += count
+        if position >= len(waveform):
+            finished.set()
+            raise sd.CallbackStop
+
+    stream = sd.Stream(
+        samplerate=rate, channels=(1, 1), dtype="float32",
+        device=(input_device, output_device), blocksize=1024, callback=callback,
+    )
+    try:
+        stream.start()
+        if not finished.wait(len(waveform) / float(rate) + 5.0):
+            raise TimeoutError("Acoustic input/output loopback test timed out")
+    finally:
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        finally:
+            stream.close()
+
+    if not captured:
+        raise RuntimeError("The selected microphone returned no samples during the path test")
+    recording = np.concatenate(captured)
+    rms = float(np.sqrt(np.mean(np.square(recording, dtype=np.float64))))
+    results = []
+    for frequency in tones:
+        ratio = _tone_band_ratio(recording, rate, (frequency,), bandwidth_hz=140.0)
+        results.append({
+            "frequency": frequency,
+            "band_ratio": ratio,
+            "detected": bool(rms >= 0.0002 and ratio >= 0.012),
+        })
+    severe_status = any(
+        "overflow" in message.lower() or "underflow" in message.lower()
+        for message in callback_status
+    )
+    return {
+        "sample_rate": rate,
+        "input_device": input_device,
+        "output_device": output_device,
+        "rms": rms,
+        "tones": tuple(results),
+        "callback_status": tuple(callback_status),
+        "passed": all(item["detected"] for item in results) and not severe_status,
     }
 
 

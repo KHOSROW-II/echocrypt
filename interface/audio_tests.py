@@ -70,10 +70,10 @@ def run_ultrasonic_hardware_test():
                 f"RMS {tone['rms']:.5f} · band ratio {tone['band_ratio']:.3f}"
             )
         if result["passed"]:
-            print("\n  ✓ Both ultrasonic tones were detected on the local audio path.")
+            print("\n  ✓ All test frequencies were detected on the local audio path.")
             print("  This does not guarantee that the remote peer supports them.")
             return True
-        print("\n  ✗ The local speaker/microphone path did not reliably carry both tones.")
+        print("\n  ✗ The local speaker/microphone path did not reliably carry the full hopping range.")
         print("  Keep ultrasonic mode disabled or use dedicated ultrasonic-capable audio hardware.")
         return False
     except Exception as exc:

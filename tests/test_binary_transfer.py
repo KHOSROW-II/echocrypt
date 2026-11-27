@@ -127,7 +127,7 @@ class ParallelChunkPreparationTests(unittest.TestCase):
         result = list(iter_chunk_packets_parallel(
             FakeChannel(), outgoing, range(1, 4), worker_count=1,
         ))
-        self.assertEqual(result, [(1, b"\\x01"), (2, b"\\x02"), (3, b"\\x03")])
+        self.assertEqual(result, [(1, bytes([1])), (2, bytes([2])), (3, bytes([3]))])
 
     def test_parallel_worker_count_is_bounded(self):
         outgoing = SimpleNamespace(manifest=SimpleNamespace(total_chunks=1))

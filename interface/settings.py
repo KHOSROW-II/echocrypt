@@ -4,7 +4,10 @@ from prompt_toolkit import prompt
 from core.audio import list_devices
 from core.config import load, save_setting
 from core.profile import get_username, set_username
-from core.virtual_audio import setup_virtual_audio, remove_virtual_audio
+from core.virtual_audio import (
+    setup_virtual_audio, remove_virtual_audio,
+    is_virtual_rx_device, is_virtual_tx_device,
+)
 from core.worker_validation import worker_hardware_approval_status
 from interface.dashboard import render as render_app_header
 from interface.terminal import Menu
@@ -121,11 +124,8 @@ def _remove_virtual_audio():
         cfg = load()
         result = remove_virtual_audio()
         using_virtual = (
-            isinstance(cfg.input_device, str)
-            and "ECHOCRYPT Virtual Speaker Monitor" in cfg.input_device
-        ) or (
-            isinstance(cfg.output_device, str)
-            and "ECHOCRYPT Virtual Microphone TX" in cfg.output_device
+            is_virtual_rx_device(cfg.input_device)
+            or is_virtual_tx_device(cfg.output_device)
         )
         if using_virtual:
             save_setting("audio", "input_device", "default")

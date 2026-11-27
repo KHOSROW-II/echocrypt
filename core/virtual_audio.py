@@ -194,6 +194,10 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
             created_now.append(rx_id)
 
         _pactl(
+            "update-sink-proplist", TX_SINK,
+            f"device.description={TX_OUTPUT_DESCRIPTION}",
+        )
+        _pactl(
             "update-source-proplist", f"{TX_SINK}.monitor",
             f"device.description={TX_MIC_DESCRIPTION}",
         )

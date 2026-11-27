@@ -110,6 +110,15 @@ def _decode_pcm(message) -> bytes:
     return pcm
 
 
+def _write_all(stream, payload: bytes):
+    view = memoryview(payload)
+    while view:
+        written = stream.write(view)
+        if written is None or written <= 0:
+            raise BrokenPipeError("The native PCM sink accepted no audio samples")
+        view = view[written:]
+
+
 def _stop_player(player):
     if player is None:
         return
@@ -181,7 +190,7 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
                     raise RuntimeError("The ECHOCRYPT PCM playback stream is not running.")
                 pcm = _decode_pcm(message)
                 try:
-                    player.stdin.write(pcm)
+                    _write_all(player.stdin, pcm)
                 except (BrokenPipeError, OSError) as exc:
                     raise RuntimeError("The ECHOCRYPT PCM playback stream closed unexpectedly.") from exc
 

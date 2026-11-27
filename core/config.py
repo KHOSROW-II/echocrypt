@@ -33,6 +33,11 @@ class Config:
     fast_symbol_rate: int = 800
     voice_symbol_rate: int = 1200
     emergency_symbol_rate: int = 1500
+    ultrasonic_enabled: bool = False
+    ultrasonic_mark_hz: int = 20700
+    ultrasonic_space_hz: int = 22200
+    multi_worker_enabled: bool = False
+    multi_worker_count: int = 4
     debug_enabled: bool = False
 
 
@@ -49,6 +54,7 @@ def _device_value(value):
 def load() -> Config:
     raw = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     a, m, pr = raw.get("audio", {}), raw.get("modem", {}), raw.get("protocol", {})
+    transfer = raw.get("transfer", {})
     c = Config(
         sample_rate=int(a.get("sample_rate", 48000)),
         symbol_rate=int(m.get("symbol_rate", 200)),
@@ -66,6 +72,11 @@ def load() -> Config:
         fast_symbol_rate=int(m.get("fast_symbol_rate", 800)),
         voice_symbol_rate=int(m.get("voice_symbol_rate", 1200)),
         emergency_symbol_rate=int(m.get("emergency_symbol_rate", 1500)),
+        ultrasonic_enabled=m.get("ultrasonic_enabled", False),
+        ultrasonic_mark_hz=int(m.get("ultrasonic_mark_hz", 20700)),
+        ultrasonic_space_hz=int(m.get("ultrasonic_space_hz", 22200)),
+        multi_worker_enabled=transfer.get("multi_worker_enabled", False),
+        multi_worker_count=int(transfer.get("multi_worker_count", 4)),
         debug_enabled=raw.get("debug", {}).get("enabled", False),
     )
     _validate(c)
@@ -75,6 +86,22 @@ def load() -> Config:
 def _validate(c: Config):
     if not isinstance(c.debug_enabled, bool):
         raise ValueError("debug.enabled must be true or false")
+    if not isinstance(c.ultrasonic_enabled, bool):
+        raise ValueError("modem.ultrasonic_enabled must be true or false")
+    if not isinstance(c.multi_worker_enabled, bool):
+        raise ValueError("transfer.multi_worker_enabled must be true or false")
+    if isinstance(c.multi_worker_count, bool) or not isinstance(c.multi_worker_count, int) or not 2 <= c.multi_worker_count <= 8:
+        raise ValueError("transfer.multi_worker_count must be between 2 and 8")
+    if (c.ultrasonic_mark_hz <= 20000 or c.ultrasonic_space_hz <= 20000
+            or c.ultrasonic_mark_hz == c.ultrasonic_space_hz):
+        raise ValueError("Ultrasonic modem tones must be distinct frequencies above 20000 Hz")
+    if c.ultrasonic_enabled:
+        # Keep the full ±600 Hz FHSS excursion above 20 kHz and leave a
+        # 1 kHz guard below Nyquist to avoid operating on the filter edge.
+        if min(c.ultrasonic_mark_hz, c.ultrasonic_space_hz) - 600 <= 20000:
+            raise ValueError("Ultrasonic tones must remain above 20000 Hz across frequency hopping")
+        if max(c.ultrasonic_mark_hz, c.ultrasonic_space_hz) + 600 >= c.sample_rate / 2 - 1000:
+            raise ValueError("Ultrasonic mode needs a sample rate with at least 1 kHz Nyquist headroom")
     if c.sample_rate <= 0 or c.symbol_rate <= 0 or c.sample_rate % c.symbol_rate:
         raise ValueError("sample_rate must be positive and divisible by symbol_rate")
     if c.sample_rate // c.symbol_rate < 32:
@@ -117,12 +144,12 @@ def _toml_value(value):
 
 def save_setting(section: str, key: str, value):
     """Atomically update one known setting and validate the resulting config."""
-    if section not in {"audio", "modem", "protocol", "debug"}:
+    if section not in {"audio", "modem", "protocol", "transfer", "debug"}:
         raise ValueError("Unknown configuration section")
     raw = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     raw.setdefault(section, {})[key] = value
     text_parts = []
-    for section_name in ("audio", "modem", "protocol", "debug"):
+    for section_name in ("audio", "modem", "protocol", "transfer", "debug"):
         values = raw.get(section_name, {})
         if not values:
             continue

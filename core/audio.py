@@ -297,12 +297,11 @@ def test_ultrasonic_path(rate, input_device=None, output_device=None,
     """
     if isinstance(rate, bool) or not isinstance(rate, int) or rate < 44100:
         raise ValueError("Ultrasonic testing requires an integer sample rate of at least 44100 Hz")
-    if len(frequencies) != 2:
-        raise ValueError("Exactly two distinct ultrasonic test frequencies are required")
     tones = tuple(float(value) for value in frequencies)
-    if (tones[0] == tones[1]
-            or any(not math.isfinite(value) or value <= 20000
-                   or value >= rate / 2 - 500 for value in tones)):
+    if len(tones) < 2 or len(set(tones)) != len(tones):
+        raise ValueError("At least two distinct ultrasonic test frequencies are required")
+    if any(not math.isfinite(value) or value <= 20000
+           or value >= rate / 2 - 500 for value in tones):
         raise ValueError("Ultrasonic tones must be distinct, above 20000 Hz and at least 500 Hz below Nyquist")
     if not math.isfinite(float(duration)) or not 0.20 <= duration <= 2.0:
         raise ValueError("Each ultrasonic test tone must last between 0.20 and 2 seconds")

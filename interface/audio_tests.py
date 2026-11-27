@@ -12,6 +12,7 @@ from prompt_toolkit.styles import Style
 
 from core.audio import MicrophoneLevelMonitor, test_speaker_channels, test_ultrasonic_path
 from core.config import load
+from core.modem import HOP_OFFSETS
 from interface.dashboard import render as render_app_header
 
 TEST_STYLE = Style.from_dict({
@@ -45,7 +46,7 @@ def run_speaker_test():
 def run_ultrasonic_hardware_test():
     cfg = load()
     render_app_header(session_status="ULTRASONIC LOOPBACK TEST")
-    print("\n  This plays two low-level near-ultrasonic tones and measures them through")
+    print("\n  This plays low-level near-ultrasonic tones across the full hopping range and measures them through")
     print("  the selected microphone. You normally should not hear these tones.")
     print("  Keep the speaker and microphone in the same room and avoid changing volume.")
     print("  The result checks only this local speaker-to-microphone path.\n")
@@ -54,8 +55,12 @@ def run_ultrasonic_hardware_test():
             cfg.sample_rate,
             input_device=cfg.input_device,
             output_device=cfg.output_device,
-            frequencies=(cfg.ultrasonic_mark_hz, cfg.ultrasonic_space_hz),
-            duration=0.45,
+            frequencies=tuple(sorted({
+                float(base + offset)
+                for base in (cfg.ultrasonic_mark_hz, cfg.ultrasonic_space_hz)
+                for offset in HOP_OFFSETS
+            })),
+            duration=0.30,
             amplitude=0.16,
         )
         for tone in result["tones"]:

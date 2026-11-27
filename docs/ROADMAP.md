@@ -125,7 +125,8 @@ These require separate designs and evidence; they must not be implied by the cur
 - [x] Optional per-endpoint loopback so the selected application remains audible on physical speakers.
 - [x] Keep ECHOCRYPT TX/RX isolated and allow full-duplex modem I/O only on the virtual route.
 - [x] Dedicated machine-local worker hardware approval, invalidated by device/rate/tone changes.
-- [ ] Implement and validate a Chromium/Firefox extension that captures one user-selected tab and streams PCM to a local ECHOCRYPT bridge.
+- [x] Implement Chromium extension + Native Messaging host for one user-selected tab, with a dedicated PCM sink and normal-speaker pass-through.
+- [ ] Physically validate tab capture through real meeting providers and add Firefox support.
 - [ ] Add Windows virtual audio backend and installer.
 - [ ] Design an Android-native audio backend; stock Termux PortAudio/OpenSL ES must be tested separately.
 

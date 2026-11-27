@@ -14,14 +14,17 @@ class VirtualAudioParsingTests(unittest.TestCase):
             )
 
     def test_existing_virtual_sink_with_wrong_rate_is_rejected(self):
-        with tempfile_patch_modules():
-            with self.assertRaisesRegex(RuntimeError, "different sample rate"):
-                virtual_audio._ensure_module(
-                    "module-null-sink",
-                    "sink_name=echocrypt_tx rate=96000 channels=2",
-                    "sink_name=echocrypt_tx",
-                    {42},
-                )
+        with patch.object(virtual_audio, "_find_module", return_value=42):
+            with patch.object(virtual_audio, "_module_rows", return_value=[
+                (42, "module-null-sink", "sink_name=echocrypt_tx rate=48000")
+            ]):
+                with self.assertRaisesRegex(RuntimeError, "different sample rate"):
+                    virtual_audio._ensure_module(
+                        "module-null-sink",
+                        "sink_name=echocrypt_tx rate=96000 channels=2",
+                        "sink_name=echocrypt_tx",
+                        {42},
+                    )
 
     def test_device_selectors_are_stable_names_not_ephemeral_indexes(self):
         selectors = virtual_audio.device_selectors()
@@ -30,20 +33,11 @@ class VirtualAudioParsingTests(unittest.TestCase):
         self.assertEqual(selectors["application_microphone"], "ECHOCRYPT Virtual Microphone")
         self.assertEqual(selectors["application_speaker"], "ECHOCRYPT Virtual Speaker")
         self.assertEqual(selectors["browser_tab_input_device"], "ECHOCRYPT Browser Tab Monitor")
-        self.assertTrue(
-            virtual_audio.is_browser_tab_rx_device("Monitor of ECHOCRYPT Browser Tab Capture")
-        )
+        self.assertTrue(virtual_audio.is_browser_tab_rx_device("Monitor of ECHOCRYPT Browser Tab Capture"))
 
     def test_status_does_not_claim_active_when_a_monitor_is_missing(self):
-        sinks = [
-            ["1", "echocrypt_tx"],
-            ["2", "echocrypt_rx"],
-            ["3", "echocrypt_tab_rx"],
-        ]
-        sources = [
-            ["4", "echocrypt_tx.monitor"],
-            ["5", "echocrypt_rx.monitor"],
-        ]
+        sinks = [["1", "echocrypt_tx"], ["2", "echocrypt_rx"], ["3", "echocrypt_tab_rx"]]
+        sources = [["4", "echocrypt_tx.monitor"], ["5", "echocrypt_rx.monitor"]]
         with patch.object(virtual_audio, "is_supported", return_value=True):
             with patch.object(
                 virtual_audio, "_rows",
@@ -52,26 +46,6 @@ class VirtualAudioParsingTests(unittest.TestCase):
                 with patch.object(virtual_audio, "_pactl", return_value="Server Name: PulseAudio"):
                     status = virtual_audio.virtual_audio_status()
         self.assertFalse(status["active"])
-
-
-class tempfile_patch_modules:
-    """Context manager keeping this test file free of long continuation lines."""
-
-    def __enter__(self):
-        self.first = patch.object(virtual_audio, "_find_module", return_value=42)
-        self.second = patch.object(
-            virtual_audio,
-            "_module_rows",
-            return_value=[(42, "module-null-sink", "sink_name=echocrypt_tx rate=48000")],
-        )
-        self.first.start()
-        self.second.start()
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        self.second.stop()
-        self.first.stop()
-        return False
 
 
 if __name__ == "__main__":

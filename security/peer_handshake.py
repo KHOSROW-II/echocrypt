@@ -50,10 +50,21 @@ def _raw_public(key) -> bytes:
     return key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-def _create_hello(identity_private, role_code: int, security_profile: SecurityProfile):
+def _create_hello(identity_private, role_code: int, security_profile: SecurityProfile,
+                  *, ultrasonic_enabled=False, max_workers=1):
+    if not isinstance(ultrasonic_enabled, bool):
+        raise ValueError("ultrasonic_enabled must be boolean")
+    if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 8:
+        raise ValueError("max_workers must be an integer between 1 and 8")
     ephemeral = X25519PrivateKey.generate()
     nonce = os.urandom(16)
-    profile_id, symbol_rate, padding_block, flags, retries = security_profile.wire_fields()
+    profile_id, symbol_rate, padding_block, profile_flags, profile_retries = security_profile.wire_fields()
+    # HELLO v2 keeps its wire size. Bit 1 advertises ultrasonic support;
+    # the high nibble of retries carries (worker_count - 1). The low bits
+    # retain the original SecurityProfile fields, so default clients still
+    # emit the exact legacy descriptor when both features are disabled.
+    flags = profile_flags | (0x02 if ultrasonic_enabled else 0)
+    retries = profile_retries | ((max_workers - 1) << 4)
     header = HELLO_HEADER.pack(
         HELLO_MAGIC,
         HELLO_VERSION,
@@ -86,22 +97,28 @@ def _verify_hello(packet: bytes, peer_public_raw: bytes, expected_fingerprint: s
         raise HandshakeError("Unsupported HELLO format; update both ECHO-CRYPT devices")
     if role_code != expected_role:
         raise HandshakeError("Unexpected peer role")
+    if flags & ~0x03:
+        raise HandshakeError("HELLO contains unsupported capability flags")
+    peer_workers = ((retries >> 4) & 0x0F) + 1
+    if peer_workers > 8:
+        raise HandshakeError("HELLO advertises an unsupported worker count")
     try:
         Ed25519PublicKey.from_public_bytes(peer_public_raw).verify(signature, HELLO_DOMAIN + header)
         ephemeral = X25519PublicKey.from_public_bytes(ephemeral_raw)
         peer_profile = SecurityProfile.from_wire(
-            profile_id, symbol_rate, padding_block, flags, retries
+            profile_id, symbol_rate, padding_block, flags & 0x01, retries & 0x0F
         )
     except (InvalidSignature, ValueError) as exc:
         raise HandshakeError("HELLO signature, key or security profile is invalid") from exc
-    return ephemeral, nonce, peer_profile
+    return ephemeral, nonce, peer_profile, bool(flags & 0x02), peer_workers
 
 
 class PeerHandshake:
     """Stateful, mutual-authentication handshake bound to a pinned peer key."""
 
     def __init__(self, role: str, identity_private, peer_public_raw: bytes,
-                 peer_fingerprint: str, security_profile=None):
+                 peer_fingerprint: str, security_profile=None, *,
+                 ultrasonic_enabled=False, max_workers=1):
         if role not in ("initiator", "responder"):
             raise ValueError("Role must be 'initiator' or 'responder'")
         if len(peer_public_raw) != 32:
@@ -115,6 +132,16 @@ class PeerHandshake:
         self.identity_private = identity_private
         self.security_profile = SecurityProfile.from_value(security_profile)
         self.negotiated_profile = self.security_profile
+        if not isinstance(ultrasonic_enabled, bool):
+            raise ValueError("ultrasonic_enabled must be boolean")
+        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 8:
+            raise ValueError("max_workers must be an integer between 1 and 8")
+        self.local_ultrasonic_enabled = ultrasonic_enabled
+        self.local_max_workers = max_workers
+        self.peer_ultrasonic_enabled = False
+        self.peer_max_workers = 1
+        self.negotiated_ultrasonic_enabled = False
+        self.negotiated_worker_count = 1
         self.peer_public_raw = bytes(peer_public_raw)
         self.peer_fingerprint = peer_fingerprint.lower()
         self.local_fingerprint = hashlib.sha256(_raw_public(identity_private.public_key())).hexdigest()
@@ -153,14 +180,18 @@ class PeerHandshake:
         if self.role != "initiator" or self.state != HandshakeState.READY or self._hello_i is not None:
             raise HandshakeError("Only a new initiator can start the handshake")
         self._hello_i, self._local_ephemeral, self._local_nonce = _create_hello(
-            self.identity_private, 0, self.security_profile
+            self.identity_private, 0, self.security_profile,
+            ultrasonic_enabled=self.local_ultrasonic_enabled,
+            max_workers=self.local_max_workers,
         )
         self.state = HandshakeState.WAIT_REPLY
         return self._hello_i
 
     def _make_responder_hello(self) -> bytes:
         self._hello_r, self._local_ephemeral, self._local_nonce = _create_hello(
-            self.identity_private, 1, self.negotiated_profile
+            self.identity_private, 1, self.negotiated_profile,
+            ultrasonic_enabled=self.local_ultrasonic_enabled,
+            max_workers=self.local_max_workers,
         )
         return self._hello_r
 
@@ -232,7 +263,8 @@ class PeerHandshake:
             return self._finish_i
 
         if self.role == "responder" and self.state == HandshakeState.WAIT_HELLO:
-            self._peer_ephemeral, self._peer_nonce, peer_profile = _verify_hello(
+            (self._peer_ephemeral, self._peer_nonce, peer_profile,
+             self.peer_ultrasonic_enabled, self.peer_max_workers) = _verify_hello(
                 packet, self.peer_public_raw, self.peer_fingerprint, expected_role=0
             )
             try:
@@ -241,6 +273,10 @@ class PeerHandshake:
                 )
             except SecurityProfileError as exc:
                 raise HandshakeError(str(exc)) from exc
+            self.negotiated_ultrasonic_enabled = (
+                self.local_ultrasonic_enabled and self.peer_ultrasonic_enabled
+            )
+            self.negotiated_worker_count = min(self.local_max_workers, self.peer_max_workers)
             self._hello_i = packet
             response = self._make_responder_hello()
             self._derive_session()
@@ -248,7 +284,8 @@ class PeerHandshake:
             return response
 
         if self.role == "initiator" and self.state == HandshakeState.WAIT_REPLY:
-            self._peer_ephemeral, self._peer_nonce, peer_profile = _verify_hello(
+            (self._peer_ephemeral, self._peer_nonce, peer_profile,
+             self.peer_ultrasonic_enabled, self.peer_max_workers) = _verify_hello(
                 packet, self.peer_public_raw, self.peer_fingerprint, expected_role=1
             )
             try:
@@ -257,6 +294,10 @@ class PeerHandshake:
                 )
             except SecurityProfileError as exc:
                 raise HandshakeError(str(exc)) from exc
+            self.negotiated_ultrasonic_enabled = (
+                self.local_ultrasonic_enabled and self.peer_ultrasonic_enabled
+            )
+            self.negotiated_worker_count = min(self.local_max_workers, self.peer_max_workers)
             self._hello_r = packet
             self._derive_session()
             self.state = HandshakeState.WAIT_RESP_FINISH

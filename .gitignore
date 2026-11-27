@@ -16,3 +16,5 @@ config/contacts.json
 keys/peers/*
 !keys/peers/.gitkeep
 .venv-rootless/
+
+config/worker-hardware-approval.json

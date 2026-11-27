@@ -19,7 +19,7 @@ from core.virtual_audio import (
     temporary_worker_test_route, is_virtual_rx_device, is_virtual_tx_device,
     is_browser_tab_rx_device, TAB_RX_SINK,
 )
-from core.worker_validation import approve_worker_hardware
+from core.worker_validation import approve_worker_hardware, worker_hardware_profile
 from core.modem import HOP_OFFSETS
 from interface.dashboard import render as render_app_header
 
@@ -103,6 +103,11 @@ def run_worker_hardware_test():
     print("\nDedicated test for the currently selected microphone and speaker.")
     print("Tests every active modem tone, including the configured frequency-hopping offsets.")
     print("Do not run during a live call. Keep a physical speaker audible to its microphone.")
+    resources = worker_hardware_profile()
+    print(
+        f"CPU/RAM capacity: {resources['logical_cpus']} logical CPU · "
+        f"{resources['memory_display']} RAM · maximum {resources['max_workers']} workers."
+    )
     test_amplitude = min(max(float(cfg.gain) * 0.35, 0.02), 0.25)
     try:
         virtual_pair = (

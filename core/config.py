@@ -21,8 +21,9 @@ class Config:
     symbol_rate: int = 200
     mark_hz: int = 1800
     space_hz: int = 2400
-    input_device: int | None = None
-    output_device: int | None = None
+    input_device: int | str | None = None
+    output_device: int | str | None = None
+    full_duplex_audio: bool = False
     record_seconds: float = 30.0
     gain: float = 0.35
     max_payload: int = 1024
@@ -47,6 +48,9 @@ def _device_value(value):
         return None
     if isinstance(value, str) and value.strip().lower() in {"default", "auto", "system"}:
         return None
+    if isinstance(value, str):
+        selector = value.strip()
+        return None if not selector or selector.lower() in {"default", "auto", "system"} else selector
     number = int(value)
     return None if number < 0 else number
 
@@ -62,6 +66,7 @@ def load() -> Config:
         space_hz=int(m.get("space_hz", 2400)),
         input_device=_device_value(a.get("input_device", "default")),
         output_device=_device_value(a.get("output_device", "default")),
+        full_duplex_audio=a.get("full_duplex", False),
         record_seconds=float(a.get("record_seconds", 30)),
         gain=float(a.get("gain", 0.35)),
         max_payload=int(pr.get("max_payload", 1024)),
@@ -86,6 +91,8 @@ def load() -> Config:
 def _validate(c: Config):
     if not isinstance(c.debug_enabled, bool):
         raise ValueError("debug.enabled must be true or false")
+    if not isinstance(c.full_duplex_audio, bool):
+        raise ValueError("audio.full_duplex must be true or false")
     if not isinstance(c.ultrasonic_enabled, bool):
         raise ValueError("modem.ultrasonic_enabled must be true or false")
     if not isinstance(c.multi_worker_enabled, bool):

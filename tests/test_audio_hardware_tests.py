@@ -44,6 +44,49 @@ class FakeInputBackend:
         return self.stream
 
 
+class FakeCallbackStop(Exception):
+    pass
+
+
+class FakeDuplexStream:
+    def __init__(self, backend, **kwargs):
+        self.backend = backend
+        self.kwargs = kwargs
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+        callback = self.kwargs["callback"]
+        blocksize = self.kwargs["blocksize"]
+        prior_output = np.zeros((blocksize, 1), dtype=np.float32)
+        try:
+            while True:
+                indata = prior_output.copy()
+                outdata = np.zeros((blocksize, 1), dtype=np.float32)
+                callback(indata, outdata, blocksize, None, None)
+                prior_output = outdata
+        except FakeCallbackStop:
+            pass
+
+    def stop(self):
+        self.started = False
+
+    def close(self):
+        self.closed = True
+
+
+class FakeDuplexBackend:
+    CallbackStop = FakeCallbackStop
+
+    def __init__(self):
+        self.stream = None
+
+    def Stream(self, **kwargs):
+        self.stream = FakeDuplexStream(self, **kwargs)
+        return self.stream
+
+
 class SpeakerTestTests(unittest.TestCase):
     def test_speaker_test_plays_left_then_right_for_two_seconds(self):
         backend = FakeOutputBackend()
@@ -75,6 +118,38 @@ class SpeakerTestTests(unittest.TestCase):
         with patch("core.audio._sounddevice", return_value=backend):
             with self.assertRaises(ValueError):
                 audio.test_speaker_channels(48000, duration=10)
+
+
+class UltrasonicPathTests(unittest.TestCase):
+    def test_ultrasonic_full_duplex_test_detects_both_loopback_tones(self):
+        backend = FakeDuplexBackend()
+        with patch("core.audio._sounddevice", return_value=backend):
+            result = audio.test_ultrasonic_path(
+                48000, frequencies=(20700, 22200), duration=0.25,
+            )
+        self.assertTrue(result["passed"])
+        self.assertEqual(
+            [tone["frequency"] for tone in result["tones"]],
+            [20700.0, 22200.0],
+        )
+        self.assertTrue(all(tone["detected"] for tone in result["tones"]))
+        self.assertTrue(backend.stream.closed)
+
+    def test_ultrasonic_test_rejects_frequencies_outside_safe_band(self):
+        backend = FakeDuplexBackend()
+        with patch("core.audio._sounddevice", return_value=backend):
+            with self.assertRaisesRegex(ValueError, "above 20000"):
+                audio.test_ultrasonic_path(
+                    48000, frequencies=(19000, 22200),
+                )
+        self.assertIsNone(backend.stream)
+
+    def test_ultrasonic_test_requires_sufficient_sample_rate(self):
+        backend = FakeDuplexBackend()
+        with patch("core.audio._sounddevice", return_value=backend):
+            with self.assertRaisesRegex(ValueError, "at least 44100"):
+                audio.test_ultrasonic_path(24000)
+        self.assertIsNone(backend.stream)
 
 
 class MicrophoneMeterTests(unittest.TestCase):
@@ -135,6 +210,7 @@ class AudioSettingsMenuTests(unittest.TestCase):
         values = [value for value, _label in captured["items"]]
         self.assertIn("speaker-test", values)
         self.assertIn("mic-test", values)
+        self.assertIn("ultrasonic-test", values)
 
 
 if __name__ == "__main__":

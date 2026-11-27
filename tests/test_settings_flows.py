@@ -190,8 +190,9 @@ def test_profile_settings_rejects_invalid_name_then_saves_valid_name(monkeypatch
     settings._profile_settings()
 
     assert profile.get_username() == "valid_user"
-    assert "Invalid username:" in capsys.readouterr().out
-    assert "Saved username: valid_user" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Invalid username:" in output
+    assert "Saved username: valid_user" in output
 
 
 def test_setup_virtual_audio_saves_both_owned_devices(monkeypatch, capsys):

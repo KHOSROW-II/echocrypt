@@ -100,7 +100,10 @@ def _setup_virtual_audio():
     print("\nCreating isolated ECHOCRYPT virtual endpoints through PipeWire-Pulse / PulseAudio.")
     print("The system default microphone and speaker are not changed.")
     try:
-        endpoints = setup_virtual_audio(monitor_to_physical_output=True)
+        endpoints = setup_virtual_audio(
+            sample_rate=load().sample_rate,
+            monitor_to_physical_output=True,
+        )
         save_setting("audio", "input_device", endpoints["input_device"])
         save_setting("audio", "output_device", endpoints["output_device"])
         save_setting("audio", "full_duplex", True)

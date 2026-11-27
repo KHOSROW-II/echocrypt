@@ -49,6 +49,21 @@ class NativeHostProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "frame length"):
             native_host._decode_pcm(message)
 
+    def test_native_wrapper_forwards_the_extension_origin_argument(self):
+        wrapper = Path(__file__).resolve().parents[1] / "scripts" / "echocrypt_tab_host"
+        contents = wrapper.read_text(encoding="utf-8")
+        self.assertIn('native_host.py" "$@"', contents)
+
+    def test_native_sink_probe_uses_pactl_sink_names(self):
+        result = type("Result", (), {
+            "returncode": 0,
+            "stdout": "1\\techocrypt_tab_rx\\tmodule-null-sink\\t2\\tRUNNING\\n",
+            "stderr": "",
+        })()
+        with patch("browser_extension.native_host.shutil.which", return_value="/usr/bin/pactl"):
+            with patch("browser_extension.native_host.subprocess.run", return_value=result):
+                self.assertTrue(native_host._sink_exists())
+
     def test_native_host_rejects_unregistered_extension_origin(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(
             native_host, "_config_path", return_value=Path(temp) / "host.json"

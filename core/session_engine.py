@@ -187,6 +187,16 @@ class AudioSessionEngine:
                  max_packet_bytes=None, on_packet=None, on_event=None,
                  listener=None, inter_frame_gap=0.20, channel_access=True,
                  on_debug=None):
+        if bool(getattr(config, "full_duplex_audio", False)):
+            from core.virtual_audio import is_virtual_rx_device, is_virtual_tx_device
+            if not (
+                is_virtual_rx_device(getattr(config, "input_device", None))
+                and is_virtual_tx_device(getattr(config, "output_device", None))
+            ):
+                raise ValueError(
+                    "Full-duplex modem audio requires the isolated ECHOCRYPT virtual "
+                    "speaker input and virtual microphone output."
+                )
         self.config = config
         self.on_debug = on_debug
         self._debug_capture_count = 0

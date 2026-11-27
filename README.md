@@ -12,7 +12,7 @@
 
 ECHO-CRYPT is an experimental acoustic communication system that transfers encrypted messages, files, and voice notes directly between nearby compatible devices using speakers and microphones.
 
-It uses audio as its communication medium. No internet connection, server, TCP/UDP, sockets, or conventional network infrastructure is required.
+Its native acoustic transport uses speakers and microphones without requiring IP networking, a relay, a broker, or a central server. Optional carrier mode can route the waveform through an ordinary Internet call application; in that mode the external application needs its own Internet connection, but ECHOCRYPT still does not depend on a provider API.
 
 The project combines digital signal processing, authenticated encryption, error correction, synchronization, and adaptive acoustic recovery into a single communication system.
 

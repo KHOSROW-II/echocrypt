@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from core import profile
 from core.config import Config
 from interface import settings
 
@@ -64,6 +66,7 @@ def test_settings_debug_log_shows_only_last_eighty_lines(monkeypatch, tmp_path, 
     log_path.parent.mkdir()
     log_path.write_text("\n".join(f"line-{i}" for i in range(100)), encoding="utf-8")
     monkeypatch.setattr(settings, "__file__", str(fake_module))
+    monkeypatch.setattr(settings, "load", lambda: Config())
     monkeypatch.setattr(settings, "render_app_header", lambda **_kwargs: None)
     monkeypatch.setattr(settings, "_pause", lambda: None)
 
@@ -100,9 +103,7 @@ def test_modem_settings_requires_hardware_pass_before_enabling_ultrasonic(monkey
     state = {"enabled": False}
 
     def load():
-        config = Config()
-        config.ultrasonic_enabled = state["enabled"]
-        return config
+        return replace(Config(), ultrasonic_enabled=state["enabled"])
 
     monkeypatch.setattr(settings, "load", load)
     monkeypatch.setattr(settings, "run_ultrasonic_hardware_test", lambda: False)
@@ -126,8 +127,7 @@ def test_modem_settings_requires_hardware_pass_before_enabling_ultrasonic(monkey
 
 def test_transfer_settings_blocks_workers_without_hardware_approval(monkeypatch, capsys):
     _menus(monkeypatch, "multi_worker_enabled", "back")
-    config = Config()
-    config.multi_worker_enabled = False
+    config = replace(Config(), multi_worker_enabled=False)
     monkeypatch.setattr(settings, "load", lambda: config)
     monkeypatch.setattr(settings, "worker_hardware_profile", lambda: {
         "max_workers": 4, "logical_cpus": 4, "memory_display": "8 GiB",
@@ -162,8 +162,7 @@ def test_transfer_settings_blocks_workers_when_resource_cap_is_one(monkeypatch, 
 
 def test_transfer_settings_allows_workers_after_both_gates_pass(monkeypatch, capsys):
     _menus(monkeypatch, "multi_worker_enabled", "back")
-    config = Config()
-    config.multi_worker_enabled = False
+    config = replace(Config(), multi_worker_enabled=False)
     monkeypatch.setattr(settings, "load", lambda: config)
     monkeypatch.setattr(settings, "worker_hardware_profile", lambda: {
         "max_workers": 4, "logical_cpus": 4, "memory_display": "8 GiB",
@@ -179,19 +178,19 @@ def test_transfer_settings_allows_workers_after_both_gates_pass(monkeypatch, cap
     assert "ENABLED" in capsys.readouterr().out
 
 
-def test_profile_settings_rejects_invalid_name_then_saves_valid_name(monkeypatch, capsys):
+def test_profile_settings_rejects_invalid_name_then_saves_valid_name(monkeypatch, tmp_path, capsys):
     _menus(monkeypatch, "username", "username", "back")
     prompts = iter(["x", "valid_user"])
+    monkeypatch.setattr(profile, "PROFILE_PATH", tmp_path / "profile.json")
     monkeypatch.setattr(settings, "get_username", lambda: "guest")
     monkeypatch.setattr(settings, "prompt", lambda _message: next(prompts))
-    saved = []
-    monkeypatch.setattr(settings, "set_username", lambda value: saved.append(value) or value)
     monkeypatch.setattr(settings, "render_app_header", lambda **_kwargs: None)
     monkeypatch.setattr(settings, "_pause", lambda: None)
 
     settings._profile_settings()
 
-    assert saved == ["valid_user"]
+    assert profile.get_username() == "valid_user"
+    assert "Invalid username:" in capsys.readouterr().out
     assert "Saved username: valid_user" in capsys.readouterr().out
 
 
@@ -221,8 +220,7 @@ def test_setup_virtual_audio_saves_both_owned_devices(monkeypatch, capsys):
 
 def test_browser_tab_audio_refuses_ultrasonic_configuration(monkeypatch, capsys):
     monkeypatch.setattr(settings, "render_app_header", lambda **_kwargs: None)
-    config = Config()
-    config.ultrasonic_enabled = True
+    config = replace(Config(), ultrasonic_enabled=True)
     monkeypatch.setattr(settings, "load", lambda: config)
     monkeypatch.setattr(settings, "setup_virtual_audio", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not be called")))
     monkeypatch.setattr(settings, "_pause", lambda: None)

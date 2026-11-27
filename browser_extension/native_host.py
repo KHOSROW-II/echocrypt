@@ -90,7 +90,7 @@ def _sink_exists() -> bool:
     if result.returncode:
         raise RuntimeError((result.stderr or "Could not query the PulseAudio-compatible server").strip())
     return any(
-        len(row := line.split("\\t")) > 1 and row[1] == SINK_NAME
+        len(row := line.split("\t")) > 1 and row[1] == SINK_NAME
         for line in result.stdout.splitlines()
     )
 

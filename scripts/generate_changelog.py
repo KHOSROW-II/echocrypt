@@ -6,12 +6,12 @@ import subprocess
 def git(*args):
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
-def main():
+def main(argv: list[str] | None = None):
     parser=argparse.ArgumentParser()
     parser.add_argument("--ref",required=True)
     parser.add_argument("--tag",required=True)
     parser.add_argument("--output",type=Path,required=True)
-    args=parser.parse_args()
+    args=parser.parse_args(argv)
     tags=[x for x in git("tag","--merged",args.ref,"--sort=-version:refname").splitlines() if x and x!=args.tag]
     previous=tags[0] if tags else None
     rev=f"{previous}..{args.ref}" if previous else args.ref

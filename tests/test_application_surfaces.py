@@ -239,10 +239,9 @@ def test_release_changelog_command_writes_full_notes(monkeypatch, tmp_path):
         raise AssertionError(args)
     output = tmp_path / "release" / "notes.md"
     monkeypatch.setattr(generate_changelog, "git", fake_git)
-    monkeypatch.setattr(generate_changelog.sys, "argv", [
-        "generate_changelog.py", "--ref", "deadbeef", "--tag", "nightly-test", "--output", str(output)
+    generate_changelog.main([
+        "--ref", "deadbeef", "--tag", "nightly-test", "--output", str(output)
     ])
-    generate_changelog.main()
     content = output.read_text(encoding="utf-8")
     assert "# ECHOCRYPT nightly-test" in content
     assert "v0.1.0..deadbeef" in calls[1][1]

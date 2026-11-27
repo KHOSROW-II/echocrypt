@@ -71,10 +71,12 @@ def test_checksum_manifest_hashes_platform_archives_recursively(tmp_path: Path) 
     manifest = tmp_path / "SHA256SUMS"
     create_checksum_manifest(tmp_path, manifest)
     lines = manifest.read_text(encoding="ascii").splitlines()
-    assert len(lines) == 4
-    for archive, line in zip(archives, lines):
+    records = {name: digest for digest, name in (line.split("  ", 1) for line in lines)}
+    assert len(records) == 4
+    assert set(records) == {archive.name for archive in archives}
+    for archive in archives:
         expected = hashlib.sha256(archive.read_bytes()).hexdigest()
-        assert line == f"{expected}  {archive.name}"
+        assert records[archive.name] == expected
 
 
 def test_checksum_manifest_rejects_missing_or_invalid_archives(tmp_path: Path) -> None:

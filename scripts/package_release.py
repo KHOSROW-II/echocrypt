@@ -19,6 +19,7 @@ TARGET_INSTALLERS = {
     "macos-x64": ("pkg",),
 }
 EXPECTED_TARGETS = tuple(TARGET_INSTALLERS)
+BROWSER_EXTENSION_TARGETS = ("chrome", "edge", "firefox")
 RELEASE_FILES = {"SHA256SUMS", "RELEASE_NOTES.md"}
 ASSET_EXTENSIONS = {".zip", ".deb", ".rpm", ".msi", ".pkg"}
 TARGET_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -41,6 +42,7 @@ def expected_release_asset_names() -> tuple[str, ...]:
         for target, extensions in TARGET_INSTALLERS.items()
         for extension in extensions
     )
+    names.update(f"echocrypt-{browser}.zip" for browser in BROWSER_EXTENSION_TARGETS)
     names.update(RELEASE_FILES)
     return tuple(sorted(names))
 
@@ -147,7 +149,7 @@ def _validate_asset_file(path: Path) -> None:
 def create_checksum_manifest(
     directory: str | Path, output: str | Path | None = None
 ) -> Path:
-    """Write SHA256SUMS for every portable archive and native installer."""
+    """Write SHA256SUMS for every desktop package and standalone browser extension."""
     root = Path(directory).resolve()
     if not root.is_dir():
         raise ReleasePackageError(f"Release asset directory does not exist: {root}")
@@ -205,7 +207,7 @@ def _validate_checksum_manifest(root: Path, platform_names: set[str]) -> None:
 
 
 def validate_release_asset_set(directory: str | Path) -> list[Path]:
-    """Require all portable archives, native installers, notes, and checksums."""
+    """Require all desktop packages, browser extensions, notes, and checksums."""
     root = Path(directory).resolve()
     if not root.is_dir():
         raise ReleasePackageError(f"Release asset directory does not exist: {root}")

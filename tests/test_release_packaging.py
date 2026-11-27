@@ -36,6 +36,11 @@ def complete_release_tree(root: Path) -> list[Path]:
             installer = target_dir / f"echocrypt-{target}.{extension}"
             installer.write_bytes(INSTALLER_MAGIC[f".{extension}"] + b"installer-fixture")
             artifacts.append(installer)
+    for browser in ("chrome", "edge", "firefox"):
+        extension_dir = root / f"echocrypt-{browser}"
+        extension = extension_dir / f"echocrypt-{browser}.zip"
+        make_archive(extension, "echocrypt/manifest.json")
+        artifacts.append(extension)
     (root / "RELEASE_NOTES.md").write_text("draft notes", encoding="utf-8")
     create_checksum_manifest(root)
     return artifacts
@@ -80,7 +85,7 @@ def test_checksum_manifest_hashes_every_portable_archive_and_installer(tmp_path:
     create_checksum_manifest(tmp_path, manifest)
     lines = manifest.read_text(encoding="ascii").splitlines()
     records = {name: digest for digest, name in (line.split("  ", 1) for line in lines)}
-    assert len(records) == 14
+    assert len(records) == 17
     assert set(records) == {artifact.name for artifact in artifacts}
     for artifact in artifacts:
         expected = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -116,8 +121,11 @@ def test_release_asset_discovery_excludes_nested_browser_extensions(tmp_path: Pa
 def test_release_validation_requires_exact_six_architectures_and_installers(tmp_path: Path) -> None:
     complete_release_tree(tmp_path)
     assets = validate_release_asset_set(tmp_path)
-    assert len(assets) == 16
+    assert len(assets) == 19
     assert {item.name for item in assets} == set(expected_release_asset_names())
+    assert {"echocrypt-chrome.zip", "echocrypt-edge.zip", "echocrypt-firefox.zip"} <= {
+        item.name for item in assets
+    }
 
 
 def test_release_validation_rejects_missing_or_extra_archives(tmp_path: Path) -> None:

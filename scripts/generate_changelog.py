@@ -41,6 +41,24 @@ def render_download_table(repository: str, tag: str) -> str:
     return "\n".join(rows)
 
 
+def render_extension_downloads(repository: str, tag: str) -> str:
+    """Render direct links to the independently installable browser extension archives."""
+    rows = [
+        "| Browser | Extension package |",
+        "|---|---|",
+    ]
+    for browser, label in (
+        ("chrome", "Chrome / Chromium"),
+        ("edge", "Microsoft Edge"),
+        ("firefox", "Mozilla Firefox"),
+    ):
+        filename = f"echocrypt-{browser}.zip"
+        rows.append(
+            f"| {label} | [Download ZIP]({_download_url(repository, tag, filename)}) |"
+        )
+    return "\n".join(rows)
+
+
 def render_release_notes(
     tag: str,
     repository: str,
@@ -59,7 +77,13 @@ def render_release_notes(
         "",
         render_download_table(repository, tag),
         "",
-        f"Verify downloads with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) file.",
+        "## Browser extensions",
+        "",
+        "The browser add-ons are also available as separate ZIP downloads. Extract the selected archive, then load the included echocrypt/ directory using your browser's extension developer tools. Firefox temporary installation is available through about:debugging, This Firefox, Load Temporary Add-on.",
+        "",
+        render_extension_downloads(repository, tag),
+        "",
+        f"Verify desktop packages and extension archives with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) file.",
         "",
         "## What's changed",
         "",

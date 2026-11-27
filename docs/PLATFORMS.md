@@ -40,9 +40,17 @@ Portable ZIP files include the standalone CLI, Native Messaging host, browser ex
 
 ## Browser packages
 
-- Chrome and Edge: Chromium Manifest V3 adapter based on tabCapture and an offscreen document.
-- Firefox: Manifest V2 adapter captures supported HTML audio/video media elements with captureStream / mozCaptureStream. It is not a general capture of every possible tab sound, protected media, WebAudio-only content, or browser chrome.
-- Each browser has a distinct Native Messaging registration and origin allowlist.
+Standalone extension archives are published alongside the desktop installers:
+
+| Browser | Release asset | Manifest |
+|---|---|---|
+| Chrome / Chromium | echocrypt-chrome.zip | Manifest V3 |
+| Microsoft Edge | echocrypt-edge.zip | Manifest V3 |
+| Mozilla Firefox | echocrypt-firefox.zip | Manifest V2 |
+
+Chrome and Edge use the Chromium adapter based on tabCapture and an offscreen document. Firefox uses a separate adapter that captures supported HTML audio/video media elements with captureStream / mozCaptureStream. It is not a general capture of every possible tab sound, protected media, WebAudio-only content, or browser chrome.
+
+The archives are developer-mode / unpacked-installation packages, not signed Chrome Web Store, Edge Add-ons, or Mozilla Add-ons submissions. Each browser has a distinct Native Messaging registration and origin allowlist.
 
 ## Audio routing
 
@@ -61,4 +69,4 @@ Windows SmartScreen and macOS Gatekeeper may show warnings. Signing and notariza
 
 ## Release gate
 
-The release workflow runs unit / contract tests across the supported operating systems and architectures before packaging. It then builds portable ZIPs and native installers, verifies package signatures and checksums, and creates or updates a GitHub Draft Release. Nothing is published automatically.
+The release workflow runs unit / contract tests across the supported operating systems and architectures before packaging. Pull Requests also build all six native desktop packages and validate the browser extension archives, but do not publish release assets. Main/tag builds produce portable ZIPs, native installers, and standalone browser extension ZIPs; the release gate verifies package file formats and checksums before creating or updating a GitHub Draft Release. Nothing is published automatically.

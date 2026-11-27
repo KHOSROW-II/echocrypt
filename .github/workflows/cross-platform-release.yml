@@ -113,7 +113,7 @@ jobs:
 
   build:
     needs: test
-    if: ${{ needs.test.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ needs.test.result == 'success' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -185,6 +185,30 @@ jobs:
           fi
       - name: Package browser extensions
         run: python scripts/build_browser_extensions.py --browser all --output dist/extensions
+      - name: Upload standalone Chrome extension
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: echocrypt-chrome
+          path: dist/extensions/echocrypt-chrome.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload standalone Edge extension
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: echocrypt-edge
+          path: dist/extensions/echocrypt-edge.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload standalone Firefox extension
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: echocrypt-firefox
+          path: dist/extensions/echocrypt-firefox.zip
+          if-no-files-found: error
+          retention-days: 14
       - name: Assemble complete platform package
         shell: bash
         run: |

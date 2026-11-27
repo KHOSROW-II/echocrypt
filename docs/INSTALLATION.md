@@ -15,6 +15,24 @@ ECHOCRYPT is a terminal application. Installers include the standalone CLI, the 
 
 Download packages from the Assets section of the matching GitHub Release. Verify each file against SHA256SUMS before installation.
 
+## Standalone browser extension downloads
+
+The release also provides independent extension archives:
+
+| Browser | Download |
+|---|---|
+| Chrome / Chromium | echocrypt-chrome.zip |
+| Microsoft Edge | echocrypt-edge.zip |
+| Mozilla Firefox | echocrypt-firefox.zip |
+
+Extract the selected ZIP and load the included echocrypt directory:
+
+- Chrome / Chromium: open chrome://extensions, enable Developer mode, then choose Load unpacked.
+- Edge: open edge://extensions, enable Developer mode, then choose Load unpacked.
+- Firefox: open about:debugging#/runtime/this-firefox and choose Load Temporary Add-on, then select the extracted manifest.json. Temporary Firefox add-ons are removed when the browser restarts.
+
+These are unpacked/developer-mode distribution archives, not signed store submissions. Native Messaging host registration is a separate required step; follow the platform instructions below.
+
 ## Linux
 
 Debian / Ubuntu:

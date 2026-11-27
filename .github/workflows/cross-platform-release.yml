@@ -143,7 +143,8 @@ jobs:
           cp -R dist/extensions dist/package/
           cp scripts/register_browser_host.py dist/package/scripts/
           cp docs/BROWSER_TAB_CAPTURE.md docs/VIRTUAL_AUDIO.md docs/PLATFORMS.md dist/package/docs/
-          cp README.md CHANGELOG.md LICENSE browser_extension/README.md dist/package/
+          cp README.md CHANGELOG.md LICENSE dist/package/
+          cp browser_extension/README.md dist/package/docs/BROWSER_EXTENSION_README.md
           printf '%s\n' "${{ matrix.target }}" > dist/package/PLATFORM.txt
       - name: Create unique platform archive
         run: >-

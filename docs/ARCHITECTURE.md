@@ -35,12 +35,13 @@ A decoded waveform is not automatically a delivered message. Local playback comp
 
 | Subsystem | Main implementation | Responsibility |
 |---|---|---|
-| Audio I/O | `core/audio.py` | Device selection, capture/playback lifecycle, audio stream handling, and local device operations. |
+| Audio I/O | `core/audio.py`, `core/virtual_audio.py` | PortAudio device selection and lifecycle; optional Linux PipeWire-Pulse/PulseAudio virtual TX/RX endpoints. |
 | Acoustic modem | `core/modem.py`, `core/codec.py` | BFSK modulation/demodulation, frame encoding/decoding, supported wire-format handling, and packet-level checks. |
 | Session coordination | `core/session.py`, `core/session_engine.py` | Session state, coordination of receive/transmit work, and application-facing lifecycle integration. |
 | Transport | `core/transport.py`, `core/reliability.py` | Packet delivery workflow, acknowledgement/retry behavior, and bounded reliability policies. |
 | Direct security | `security/identity.py`, `security/peer_handshake.py`, `security/handshake.py`, `core/crypto.py` | Ed25519 identity, pinned peer trust, ephemeral X25519 agreement, transcript-bound key derivation, directional AEAD, and replay defense. |
-| Binary transfer | `core/binary_transfer.py` | Manifest/chunk transfer, resume state, chunk acknowledgements, repair, cancellation, and final digest validation. |
+| Binary transfer | `core/binary_transfer.py` | Manifest/chunk transfer, resume state, chunk acknowledgements, repair, cancellation, final digest validation, and bounded parallel packet preparation. |
+| Worker hardware gate | `core/worker_validation.py`, `interface/audio_tests.py` | Machine-local approval bound to selected input/output endpoints, sample rate, and active modem frequencies. |
 | Broadcast | `core/broadcast.py` | Open public room framing, fragment tracking, duplicate suppression, bounded retransmission cache, and selective missing-fragment requests. |
 | Adaptive recovery (ASRE) | `core/recovery/` | Channel analysis, soft decoding, timing/frequency recovery, interleaving, adaptive FEC selection, profile generation, and recovery metrics. |
 | Voice codec | `core/codec2_backend.py`, `core/codec.py` | Voice-note encoding/decoding using optional Codec2 where available and an ADPCM fallback. Voice notes are store-and-forward, not live calls. |
@@ -95,6 +96,23 @@ Termux's rootless bootstrap can install Python dependencies, but that does not p
 - Keyboard escape-sequence parsing must use short, explicit timeouts so a lone ESC is responsive without breaking ANSI arrow/function-key sequences.
 - Core protocol, crypto, transfer, and audio logic stays outside the UI layer.
 
+## 7.1 Generic virtual audio routing
+
+On Linux systems exposing the PulseAudio protocol (PulseAudio or PipeWire-Pulse), ECHOCRYPT can create two null-sink endpoints:
+
+- `echocrypt_tx`: ECHOCRYPT plays its outgoing modem waveform here. Its monitor source is presented to other applications as **ECHOCRYPT Virtual Microphone**.
+- `echocrypt_rx`: the selected call/application sends its incoming audio here as **ECHOCRYPT Virtual Speaker**. Its monitor source is consumed by ECHOCRYPT RX. An optional per-sink loopback mirrors only this sink to the current physical default output so the user can hear remote audio.
+
+No global default device is changed, and no application/provider API is used. A desktop application simply selects the generic microphone and speaker devices. ECHOCRYPT uses the TX sink as its output and the RX monitor as its input, so isolated full-duplex modem I/O can remain active without pausing microphone capture during TX.
+
+This backend is Linux-only in the current implementation. Windows virtual audio requires a separate driver/backend, and Android/Termux does not expose the same PulseAudio device model. A future browser-tab adapter may capture one explicitly selected tab rather than routing an entire browser output stream; that extension is not part of the current virtual-device backend.
+
+## 7.2 Worker hardware approval
+
+Parallel workers perform CPU/file preparation, not concurrent audio playback. The hardware approval gate is an additional operational requirement: it runs a full-duplex loopback probe over every active MARK/SPACE hopping frequency on the exact configured input/output pair. A passing result is stored outside the repository and fingerprinted against device names/host API, channel capability, default sample rates, modem sample rate, active tone set, and test version. Any mismatch invalidates approval.
+
+The Direct HELLO worker capability is capped by local approval. A device without a current passing approval advertises one worker; after mutual authentication the effective worker count is the lower of the peers' advertised counts. Broadcast remains unaffected.
+
 ## 8. Security and operational boundaries
 
 - Direct mode has not received an independent security audit.
@@ -102,7 +120,7 @@ Termux's rootless bootstrap can install Python dependencies, but that does not p
 - Broadcast has no confidentiality or cryptographic sender authentication.
 - Frequency hopping is not anonymity and does not prevent recording or capable analysis of the acoustic channel.
 - Audio codecs, microphones, speaker processing, echo cancellation, room acoustics, clipping, and collisions affect reliability.
-- The current audio path is half-duplex. Full-duplex live voice is not implemented.
+- The physical speaker/microphone path remains half-duplex by default. Linux virtual audio endpoints can opt into isolated full-duplex modem I/O because ECHOCRYPT TX and RX use separate virtual sink/monitor-source paths. Full-duplex live voice conversation is not implemented.
 - Do not use the prototype for life-critical communications.
 
 ## 9. Development and verification

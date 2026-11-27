@@ -600,7 +600,9 @@ class AudioSessionEngine:
                     raise SessionEngineError("Session stopped before audio playback")
                 if job.cancel_event is not None and job.cancel_event.is_set():
                     raise SessionEngineError("Transmission cancelled before audio playback")
-                self.listener.pause()
+                pause_listener = not bool(getattr(self.config, "full_duplex_audio", False))
+                if pause_listener:
+                    self.listener.pause()
                 try:
                     self._debug("MODULATE", "Creating acoustic waveform", label=job.label,
                                 packet_bytes=len(job.packet), fec=job.fec_mode,
@@ -641,7 +643,8 @@ class AudioSessionEngine:
                                duration=duration, fec=job.fec_mode,
                                symbol_rate=job.symbol_rate)
                 finally:
-                    self.listener.resume()
+                    if pause_listener:
+                        self.listener.resume()
             except Exception as exc:
                 self._debug("TX_ERROR", "Transmit job failed", label=job.label,
                             error=type(exc).__name__, detail=str(exc))

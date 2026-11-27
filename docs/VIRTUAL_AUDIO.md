@@ -47,7 +47,11 @@ The backend is currently Linux-only. It does not work in stock Termux, and it do
 
 ## Selected browser-tab capture
 
-A browser extension is a separate optional approach for RX. Chrome's tab-capture API can capture audio from a user-selected tab, while Native Messaging can connect an extension to a local native process. An eventual ECHOCRYPT extension would forward only bounded PCM blocks from the chosen tab into a local bridge. This can avoid routing all browser/system output to a virtual speaker, but it requires an extension and native host, explicit tab-capture permission, secure origin/port validation, bounded queues, and lifecycle handling. This extension is not implemented yet.
+The Chromium extension is implemented in `browser_extension/` with its native host and installer in `browser_extension/native_host.py` and `scripts/install_browser_tab_host.sh`. It captures one tab only after the user clicks the extension action. The audio is passed through to the browser's normal output and a separate 48 kHz mono PCM copy is sent through Native Messaging to the dedicated `echocrypt_tab_rx` sink. ECHOCRYPT reads **ECHOCRYPT Browser Tab Monitor**.
+
+Install and operating instructions are in [BROWSER_TAB_CAPTURE.md](BROWSER_TAB_CAPTURE.md) and [browser_extension/README.md](../browser_extension/README.md). The initial adapter is Chromium-only. Firefox, Windows, and Android/Termux require separate implementations.
+
+When the extension route is enabled, set the website microphone to **ECHOCRYPT Virtual Microphone** and leave the website speaker on the normal default output. Do not select **ECHOCRYPT Virtual Speaker** at the same time; that generic route is an alternative RX input and would duplicate the signal.
 
 ## Validation
 

@@ -1,5 +1,13 @@
 # ECHO-CRYPT
 
+[![CI](https://github.com/KHOSROW-II/echocrypt/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/KHOSROW-II/echocrypt/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Direct](https://img.shields.io/badge/Direct-E2E%20encrypted-success)
+![Broadcast](https://img.shields.io/badge/Broadcast-Public-orange)
+![Virtual Audio](https://img.shields.io/badge/Virtual%20Audio-Linux%20PipeWire%2FPulseAudio-blue)
+![Workers](https://img.shields.io/badge/Parallel%20Workers-Hardware--gated-purple)
+
 ### Acoustic Messaging & Data Transport
 
 ECHO-CRYPT is an experimental acoustic communication system that transfers encrypted messages, files, and voice notes directly between nearby compatible devices using speakers and microphones.
@@ -24,6 +32,9 @@ The project combines digital signal processing, authenticated encryption, error 
 - **Frequency hopping:** Keyed frequency hopping in authenticated Direct sessions.
 - **Terminal interface:** Interactive keyboard-driven interface with live transmission and reception status.
 - **Audio diagnostics:** Microphone and speaker tests, acoustic metrics, and file-based debugging.
+- **Generic virtual audio:** Optional Linux virtual microphone/speaker endpoints for any application that supports selecting audio devices.
+- **Isolated full-duplex modem I/O:** Separate virtual TX/RX routes without pausing capture during transmission.
+- **Hardware-gated workers:** Parallel Direct chunk preparation is enabled only after a passing device-specific modem-band test.
 
 ## Communication Modes
 
@@ -356,6 +367,202 @@ Hardware compatibility, microphone permissions, room acoustics, speaker response
 
 ---
 
+## Architecture graphs
+
+The diagrams below describe application-independent routes. ECHOCRYPT does not call Meet, Zoom, Discord, or any provider API. Any desktop application exposing microphone and speaker selection can use the generic virtual endpoints.
+
+### Direct encrypted messaging
+
+```text
+Application / SDK
+       |
+       v
+Pinned peer identities + signed Handshake
+       |
+       v
+Directional AEAD encryption (ChaCha20-Poly1305)
+       |
+       v
+ECF framing + integrity + FEC
+       |
+       v
+BFSK modulation + keyed frequency hopping
+       |
+       v
+Physical speaker OR ECHOCRYPT Virtual Microphone
+       |
+       v
+Acoustic path OR an application used as an audio carrier
+       |
+       v
+Peer RX -> synchronization -> demodulation -> FEC/CRC
+       |
+       v
+AEAD authentication/decryption -> replay checks -> application
+```
+
+Direct encryption is provided by ECHOCRYPT, not by the conferencing provider. The provider may still record, transcode, denoise, or suppress the audio waveform. If it alters the modem signal, delivery can fail; ECHOCRYPT ciphertext is confidential only when the receiving peer recovers and authenticates it.
+
+### Public Broadcast
+
+```text
+Public text / file
+       |
+       v
+Broadcast framing + fragment identifiers
+       |
+       v
+CRC / FEC (no Direct handshake and no private key)
+       |
+       v
+BFSK waveform -> speaker / virtual microphone
+       |
+       v
+Open acoustic or audio-carrier channel
+       |
+       v
+Receiver demodulation -> fragment reassembly -> file SHA-256
+```
+
+Broadcast is public and must not carry confidential information.
+
+### File transfer and preparation workers
+
+```text
+File -> manifest + resume state
+               |
+               v
+     Bounded parallel packet preparation
+       |           |           |
+       v           v           v
+    Chunk 0     Chunk 1     Chunk 2 ...
+       \           |           /
+        \          |          /
+         v         v         v
+          Single ordered acoustic TX queue
+                       |
+                       v
+          Send chunk -> wait authenticated ACK
+                       |
+                       v
+         Receiver validates -> repair/resume -> SHA-256
+```
+
+Workers prepare chunks concurrently. They do not play overlapping waveforms; the acoustic TX queue remains serialized.
+
+### Voice notes
+
+```text
+Microphone -> capture -> Codec2 / ADPCM -> .ecv container
+      |
+      v
+Direct encrypted file-transfer channel
+      |
+      v
+Receiver verifies chunks + SHA-256 -> decode -> WAV playback
+```
+
+Voice notes are store-and-forward, not live voice calls.
+
+### Generic virtual audio endpoints (Linux)
+
+```text
+ECHOCRYPT TX
+     |
+     v
+ECHOCRYPT Virtual Microphone TX (virtual sink)
+     |
+     v
+ECHOCRYPT Virtual Microphone (monitor source)
+     |
+     v
+Any call / meeting / browser application's microphone input
+     |
+     v
+Internet / application's audio transport
+     |
+     v
+Remote peer's call / meeting / browser application
+     |
+     v
+ECHOCRYPT Virtual Speaker (virtual sink)
+     |
+     +-------------------------------> Physical speaker (optional per-sink monitor)
+     |
+     v
+ECHOCRYPT Virtual Speaker Monitor (monitor source)
+     |
+     v
+ECHOCRYPT RX
+```
+
+Only the application explicitly routed to **ECHOCRYPT Virtual Speaker** is mirrored into ECHOCRYPT RX. Other desktop audio streams and system defaults are not changed. The optional monitor loopback mirrors that one sink to the current physical output.
+
+### Dedicated worker hardware approval
+
+```text
+Selected microphone + speaker + active modem frequencies
+                         |
+                         v
+            Full-duplex local loopback test
+                         |
+                         v
+      Every mark/space + hopping offset detected?
+                 /                 \\
+               NO                  YES
+               |                    |
+               v                    v
+         Keep workers OFF    Save local device approval
+                                    |
+                                    v
+                     Bind to device identity, sample rate,
+                     active modem tone set and test version
+                                    |
+                                    v
+                   Signed Direct Handshake advertises
+                   approved worker limit (2..8)
+                                    |
+                                    v
+                    Effective count = min(local, peer)
+```
+
+Changing the selected input/output device, sample rate, or active modem frequencies invalidates the approval. A device without a current passing test advertises one worker.
+
+### Receive and recovery
+
+```text
+Input PCM -> ContinuousAudioListener -> burst detection
+       |
+       v
+Preamble/frame synchronization -> BFSK demodulation
+       |
+       v
+ASRE recovery -> header CRC -> FEC -> payload integrity
+       |
+       v
+Direct AEAD/replay verification OR public Broadcast routing
+       |
+       v
+Chat / file / voice-note delivery
+```
+
+### Selected browser-tab capture (future optional backend)
+
+```text
+User-selected browser tab
+       |
+       v
+Browser tab-capture extension
+       |
+       v
+Local PCM bridge
+       |
+       v
+ECHOCRYPT RX
+```
+
+This selective browser path is a future extension, not part of the current virtual-device implementation. Generic virtual audio works without a browser extension.
+
 ## Limitations
 
 ECHO-CRYPT is an experimental communication prototype.
@@ -368,7 +575,7 @@ ECHO-CRYPT is an experimental communication prototype.
 - Direct private identity keys are currently stored unencrypted at rest.
 - Frequency hopping does not provide anonymity or protection against capable observers.
 - FDM remains experimental and has not been validated across physical devices.
-- Full-duplex live voice communication is not implemented.
+- Full-duplex live voice conversation is not implemented. Isolated full-duplex modem I/O is available when the Linux virtual endpoints are configured.
 
 Do not rely on ECHO-CRYPT for life-critical or highly sensitive communications without independent security review and physical-device validation.
 
@@ -400,9 +607,17 @@ The default near-ultrasonic tones are **20.7 kHz** and **22.2 kHz**. With the mo
 
 A loopback pass is only a local path check; it is not a laboratory measurement or a guarantee of good range, sensitivity, or remote compatibility. The speaker, microphone, their analog filters, audio codec, and the acoustic path must all preserve the selected frequencies. Both Direct peers must enable the setting and pass their own local test. The signed Direct handshake negotiates ultrasonic support; if either peer has it disabled, the session stays on the ordinary audible modem frequencies. Broadcast does not use ultrasonic mode.
 
+## Optional Linux virtual microphone and speaker
+
+Open **Configuration → Audio settings → Create / configure ECHOCRYPT virtual microphone + speaker**. ECHOCRYPT creates two isolated PipeWire-Pulse / PulseAudio endpoints and configures its own TX/RX devices. In any call, meeting, browser, or conferencing application, choose **ECHOCRYPT Virtual Microphone** as its microphone and **ECHOCRYPT Virtual Speaker** as its speaker. No provider API or Meet-specific integration is used.
+
+The RX virtual sink can be mirrored to the current physical speakers so the user still hears the selected call. Only audio routed to that sink is mirrored; unrelated desktop audio and system defaults are untouched. ECHOCRYPT uses separate TX/RX endpoints and enables full-duplex modem I/O for this route.
+
+The first backend is Linux-only and requires a running PulseAudio or PipeWire-Pulse server plus `pactl`. Stock Termux and Windows need separate audio backends. See [Virtual audio setup and routing](docs/VIRTUAL_AUDIO.md).
+
 ## Optional parallel Direct file and voice-note preparation
 
-Parallel preparation is disabled by default. Enable it under **Configuration → Direct transfer and worker settings** and choose 2–8 workers. During an authenticated Direct handshake, the two peers negotiate the lower of their configured worker counts. If either peer disables the feature, the session uses one worker.
+Parallel preparation is disabled by default. First run **Configuration → Direct transfer and worker settings → Run dedicated microphone/speaker modem-path test**. Only a passing test enables the worker toggle. Approval is stored outside the repository and bound to the selected input/output endpoints, sample rate, and active modem frequencies. Changing any of them invalidates approval. During an authenticated Direct handshake, the peers negotiate the lower of their locally approved worker limits. A device without current approval advertises one worker.
 
 Workers read file chunks and prepare their authenticated encrypted packets concurrently ahead of transmission. Packets are still emitted in order through the single acoustic transmit queue, and each chunk still requires its authenticated ACK before the next chunk is sent. This avoids unsafe simultaneous playback on one speaker and preserves resumability, replay protection, integrity checks, and the existing stop-and-wait reliability model. The setting applies to Direct file attachments and file-backed voice notes; open Broadcast and live push-to-talk audio do not use this worker pool.
 

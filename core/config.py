@@ -55,6 +55,11 @@ def _is_virtual_tx_device(value):
     return "echocrypt" in name and ("microphone" in name or "echocrypt_tx" in name)
 
 
+def _is_browser_tab_rx_device(value):
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("browser tab" in name or "echocrypt_tab_rx" in name)
+
+
 def _device_value(value):
     """None means: let PortAudio use the operating system's default device."""
     if value is None:
@@ -115,6 +120,10 @@ def _validate(c: Config):
         )
     if not isinstance(c.ultrasonic_enabled, bool):
         raise ValueError("modem.ultrasonic_enabled must be true or false")
+    if c.ultrasonic_enabled and _is_browser_tab_rx_device(c.input_device):
+        raise ValueError(
+            "Ultrasonic mode is not available through Chromium tab audio capture."
+        )
     if not isinstance(c.multi_worker_enabled, bool):
         raise ValueError("transfer.multi_worker_enabled must be true or false")
     if isinstance(c.multi_worker_count, bool) or not isinstance(c.multi_worker_count, int) or not 2 <= c.multi_worker_count <= 8:

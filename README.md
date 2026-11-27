@@ -394,7 +394,7 @@ ECHO-CRYPT is distributed under the MIT License. You may use, copy, modify, merg
 
 ## Optional ultrasonic mode
 
-Ultrasonic operation is disabled by default. Enable it under **Configuration → Modem and frequency settings → Ultrasonic acoustic mode**. Enabling the setting first runs a local full-duplex loopback test: ECHO-CRYPT plays two low-level tones through the selected output and checks whether the selected microphone captures them.
+Ultrasonic operation is disabled by default. Enable it under **Configuration → Modem and frequency settings → Ultrasonic acoustic mode**. Enabling the setting first runs a local full-duplex loopback test: ECHO-CRYPT plays low-level tones covering the configured frequency-hopping range through the selected output and checks whether the selected microphone captures each one.
 
 The default near-ultrasonic tones are **20.7 kHz** and **22.2 kHz**. With the modem's ±600 Hz hopping offsets, the active range is approximately 20.1–22.8 kHz. At a 48 kHz sample rate the Nyquist frequency is 24 kHz, so the configured tones leave a guard band below Nyquist. The application rejects unsafe frequency/sample-rate combinations.
 

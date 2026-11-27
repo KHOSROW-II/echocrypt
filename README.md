@@ -6,6 +6,7 @@
 ![Direct](https://img.shields.io/badge/Direct-E2E%20encrypted-success)
 ![Broadcast](https://img.shields.io/badge/Broadcast-Public-orange)
 ![Virtual Audio](https://img.shields.io/badge/Virtual%20Audio-Linux%20PipeWire%2FPulseAudio-blue)
+![Tab Capture](https://img.shields.io/badge/Tab%20Capture-Chromium%20Native%20Messaging-orange)
 ![Workers](https://img.shields.io/badge/Parallel%20Workers-Hardware--gated-purple)
 
 ### Acoustic Messaging & Data Transport
@@ -33,6 +34,7 @@ The project combines digital signal processing, authenticated encryption, error 
 - **Terminal interface:** Interactive keyboard-driven interface with live transmission and reception status.
 - **Audio diagnostics:** Microphone and speaker tests, acoustic metrics, and file-based debugging.
 - **Generic virtual audio:** Optional Linux virtual microphone/speaker endpoints for any application that supports selecting audio devices.
+- **Selected browser-tab RX:** Chromium extension captures one user-selected tab and feeds its PCM directly into ECHOCRYPT through Native Messaging.
 - **Isolated full-duplex modem I/O:** Separate virtual TX/RX routes without pausing capture during transmission.
 - **Hardware-gated workers:** Parallel Direct chunk preparation is enabled only after a passing device-specific modem-band test.
 
@@ -546,22 +548,33 @@ Direct AEAD/replay verification OR public Broadcast routing
 Chat / file / voice-note delivery
 ```
 
-### Selected browser-tab capture (future optional backend)
+### Selected Chromium browser-tab capture
 
 ```text
-User-selected browser tab
+User-selected meeting / call tab
        |
        v
-Browser tab-capture extension
+Chromium tabCapture (extension action click)
+       |
+       +-------------------------------> AudioContext -> normal speakers
        |
        v
-Local PCM bridge
+48 kHz mono PCM AudioWorklet
+       |
+       v
+Chrome Native Messaging (local stdio)
+       |
+       v
+ECHOCRYPT native host -> pacat -> echocrypt_tab_rx sink
+       |
+       v
+ECHOCRYPT Browser Tab Monitor
        |
        v
 ECHOCRYPT RX
 ```
 
-This selective browser path is a future extension, not part of the current virtual-device implementation. Generic virtual audio works without a browser extension.
+Only the selected tab is captured. Its audio is also passed through to the browser's normal output so it remains audible. Other tabs, desktop applications, the physical microphone, and system-wide audio routing are not captured or changed. The extension has no Meet/Zoom/Discord API integration; it works with the audio rendered by the selected Chromium tab. See [Selected browser-tab capture](docs/BROWSER_TAB_CAPTURE.md).
 
 ## Limitations
 
@@ -576,6 +589,8 @@ ECHO-CRYPT is an experimental communication prototype.
 - Frequency hopping does not provide anonymity or protection against capable observers.
 - FDM remains experimental and has not been validated across physical devices.
 - Full-duplex live voice conversation is not implemented. Isolated full-duplex modem I/O is available when the Linux virtual endpoints are configured.
+- Selected-tab capture is Chromium-only in this implementation and has not yet been validated across real Internet-call providers or their noise-suppression pipelines.
+- Browser-tab RX uses 48 kHz PCM and does not support the ultrasonic modem mode.
 
 Do not rely on ECHO-CRYPT for life-critical or highly sensitive communications without independent security review and physical-device validation.
 
@@ -614,6 +629,14 @@ Open **Configuration → Audio settings → Create / configure ECHOCRYPT virtual
 The RX virtual sink can be mirrored to the current physical speakers so the user still hears the selected call. Only audio routed to that sink is mirrored; unrelated desktop audio and system defaults are untouched. ECHOCRYPT uses separate TX/RX endpoints and enables full-duplex modem I/O for this route.
 
 The first backend is Linux-only and requires a running PulseAudio or PipeWire-Pulse server plus `pactl`. Stock Termux and Windows need separate audio backends. See [Virtual audio setup and routing](docs/VIRTUAL_AUDIO.md).
+
+## Selected Chromium tab RX
+
+For the most isolated receive path, open **Configuration → Audio settings → Use Chromium selected-tab capture as ECHOCRYPT RX**. This creates a dedicated browser-tab input sink that is separate from the generic virtual speaker.
+
+Then install the unpacked extension from `browser_extension/`, register the native host using the extension ID, and restart Chromium. In the target call website, set the **microphone** to **ECHOCRYPT Virtual Microphone** and leave its **speaker** on the normal system/default output. Click the ECHOCRYPT extension icon while the target tab is active; click again to stop. ECHOCRYPT receives only that tab's audio while the browser keeps playing it through the normal output. Full installation steps are in [docs/BROWSER_TAB_CAPTURE.md](docs/BROWSER_TAB_CAPTURE.md).
+
+Do not select **ECHOCRYPT Virtual Speaker** as the website's speaker at the same time as selected-tab capture. Those are two alternative RX routes and using both would duplicate the received audio. Browser-tab capture requires Chromium 116+, PulseAudio/PipeWire-Pulse, `pactl`, and `pacat`. It is currently Linux-only.
 
 ## Optional parallel Direct file and voice-note preparation
 

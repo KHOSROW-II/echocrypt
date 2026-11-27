@@ -6,7 +6,7 @@ from core import virtual_audio
 
 class VirtualAudioParsingTests(unittest.TestCase):
     def test_module_parser_preserves_arguments(self):
-        sample = "42\\tmodule-null-sink\\tsink_name=echocrypt_tx rate=48000"
+        sample = "42\tmodule-null-sink\tsink_name=echocrypt_tx rate=48000"
         with patch.object(virtual_audio, "_pactl", return_value=sample):
             self.assertEqual(
                 virtual_audio._module_rows(),

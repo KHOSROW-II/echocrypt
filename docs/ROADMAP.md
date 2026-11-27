@@ -117,3 +117,16 @@ These are codebase capabilities, not a guarantee of success across all acoustic 
 - Anonymity from frequency hopping.
 
 These require separate designs and evidence; they must not be implied by the current feature set.
+
+## Phase 8 — Generic virtual audio and selected-tab capture
+
+- [x] Linux PulseAudio/PipeWire-Pulse virtual TX microphone and RX speaker endpoints.
+- [x] Route only explicitly selected application audio into the ECHOCRYPT RX monitor.
+- [x] Optional per-endpoint loopback so the selected application remains audible on physical speakers.
+- [x] Keep ECHOCRYPT TX/RX isolated and allow full-duplex modem I/O only on the virtual route.
+- [x] Dedicated machine-local worker hardware approval, invalidated by device/rate/tone changes.
+- [ ] Implement and validate a Chromium/Firefox extension that captures one user-selected tab and streams PCM to a local ECHOCRYPT bridge.
+- [ ] Add Windows virtual audio backend and installer.
+- [ ] Design an Android-native audio backend; stock Termux PortAudio/OpenSL ES must be tested separately.
+
+**Exit criteria:** The selected application must carry ECHOCRYPT packets between two independent endpoints without disturbing unrelated system audio. Test actual conferencing codecs and noise-suppression settings. A successful local virtual loopback is not proof that remote audio services preserve modem frames.

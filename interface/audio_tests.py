@@ -45,10 +45,10 @@ def run_speaker_test():
 def run_ultrasonic_hardware_test():
     cfg = load()
     render_app_header(session_status="ULTRASONIC LOOPBACK TEST")
-    print("\\n  This plays two low-level near-ultrasonic tones and measures them through")
+    print("\n  This plays two low-level near-ultrasonic tones and measures them through")
     print("  the selected microphone. You normally should not hear these tones.")
     print("  Keep the speaker and microphone in the same room and avoid changing volume.")
-    print("  The result checks only this local speaker-to-microphone path.\\n")
+    print("  The result checks only this local speaker-to-microphone path.\n")
     try:
         result = test_ultrasonic_path(
             cfg.sample_rate,
@@ -65,14 +65,14 @@ def run_ultrasonic_hardware_test():
                 f"RMS {tone['rms']:.5f} · band ratio {tone['band_ratio']:.3f}"
             )
         if result["passed"]:
-            print("\\n  ✓ Both ultrasonic tones were detected on the local audio path.")
+            print("\n  ✓ Both ultrasonic tones were detected on the local audio path.")
             print("  This does not guarantee that the remote peer supports them.")
             return True
-        print("\\n  ✗ The local speaker/microphone path did not reliably carry both tones.")
+        print("\n  ✗ The local speaker/microphone path did not reliably carry both tones.")
         print("  Keep ultrasonic mode disabled or use dedicated ultrasonic-capable audio hardware.")
         return False
     except Exception as exc:
-        print(f"\\n  ✗ Ultrasonic hardware test failed: {exc}")
+        print(f"\n  ✗ Ultrasonic hardware test failed: {exc}")
         return False
 
 

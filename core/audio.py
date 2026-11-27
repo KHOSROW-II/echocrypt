@@ -286,6 +286,107 @@ def test_speaker_channels(rate, device=None, duration=2.0, frequency=880.0, ampl
     }
 
 
+def test_ultrasonic_path(rate, input_device=None, output_device=None,
+                         frequencies=(20700.0, 22200.0), duration=0.45,
+                         amplitude=0.20, allow_install=True):
+    """Run a local full-duplex ultrasonic speaker-to-microphone loopback test.
+
+    This is a practical path check, not a certification of the transducer's
+    frequency response or a guarantee that a remote device supports the band.
+    Both frequencies must be above 20 kHz and safely below Nyquist.
+    """
+    if isinstance(rate, bool) or not isinstance(rate, int) or rate < 44100:
+        raise ValueError("Ultrasonic testing requires an integer sample rate of at least 44100 Hz")
+    if len(frequencies) != 2:
+        raise ValueError("Exactly two distinct ultrasonic test frequencies are required")
+    tones = tuple(float(value) for value in frequencies)
+    if (tones[0] == tones[1]
+            or any(not math.isfinite(value) or value <= 20000
+                   or value >= rate / 2 - 500 for value in tones)):
+        raise ValueError("Ultrasonic tones must be distinct, above 20000 Hz and at least 500 Hz below Nyquist")
+    if not math.isfinite(float(duration)) or not 0.20 <= duration <= 2.0:
+        raise ValueError("Each ultrasonic test tone must last between 0.20 and 2 seconds")
+    if not math.isfinite(float(amplitude)) or not 0.02 <= amplitude <= 0.5:
+        raise ValueError("Ultrasonic test amplitude must be between 0.02 and 0.5")
+
+    sd = _sounddevice(allow_install=allow_install)
+    samples_per_tone = int(round(duration * rate))
+    t = np.arange(samples_per_tone, dtype=np.float64) / float(rate)
+    fade_count = min(max(1, int(rate * 0.015)), samples_per_tone // 4)
+    fade = np.ones(samples_per_tone, dtype=np.float64)
+    fade[:fade_count] = np.linspace(0.0, 1.0, fade_count)
+    fade[-fade_count:] = np.linspace(1.0, 0.0, fade_count)
+    blocks = [
+        (float(amplitude) * np.sin(2.0 * np.pi * frequency * t) * fade).astype(np.float32)
+        for frequency in tones
+    ]
+    waveform = np.concatenate(blocks)
+    captured = []
+    position = 0
+    finished = threading.Event()
+    callback_errors = []
+
+    def callback(indata, outdata, frames, time_info, status):
+        nonlocal position
+        if status:
+            callback_errors.append(str(status))
+        outdata.fill(0)
+        remaining = len(waveform) - position
+        count = min(int(frames), max(0, remaining))
+        if count:
+            outdata[:count, 0] = waveform[position:position + count]
+            captured.append(np.asarray(indata[:count, 0], dtype=np.float32).copy())
+            position += count
+        if position >= len(waveform):
+            finished.set()
+            raise sd.CallbackStop
+
+    stream = sd.Stream(
+        samplerate=rate,
+        channels=(1, 1),
+        dtype="float32",
+        device=(input_device, output_device),
+        blocksize=1024,
+        callback=callback,
+    )
+    try:
+        stream.start()
+        if not finished.wait(len(waveform) / float(rate) + 4.0):
+            raise TimeoutError("Ultrasonic full-duplex audio test timed out")
+    finally:
+        try:
+            stream.stop()
+        finally:
+            stream.close()
+
+    if not captured:
+        raise RuntimeError("Ultrasonic test captured no microphone samples")
+    recording = np.concatenate(captured)
+    results = []
+    for index, frequency in enumerate(tones):
+        start = index * samples_per_tone
+        end = min(start + samples_per_tone, len(recording))
+        segment = recording[start:end]
+        if segment.size < int(rate * 0.10):
+            raise RuntimeError("Ultrasonic test capture ended before both tones were measured")
+        rms = float(np.sqrt(np.mean(np.square(segment, dtype=np.float64))))
+        ratio = _tone_band_ratio(segment, rate, (frequency,), bandwidth_hz=180.0)
+        results.append({
+            "frequency": frequency,
+            "rms": rms,
+            "band_ratio": ratio,
+            "detected": bool(rms >= 0.0005 and ratio >= 0.08),
+        })
+    return {
+        "sample_rate": rate,
+        "input_device": input_device,
+        "output_device": output_device,
+        "tones": tuple(results),
+        "passed": all(item["detected"] for item in results),
+        "callback_status": tuple(callback_errors),
+    }
+
+
 class MicrophoneLevelMonitor:
     """Non-recording microphone level monitor backed by a live InputStream."""
 

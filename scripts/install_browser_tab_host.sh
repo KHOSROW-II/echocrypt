@@ -52,9 +52,9 @@ manifest = {
     "type": "stdio",
     "allowed_origins": [f"chrome-extension://{extension_id}/"],
 }
-Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 Path(config_path).write_text(
-    json.dumps({"extension_id": extension_id}, indent=2) + "\\n",
+    json.dumps({"extension_id": extension_id}, indent=2) + "\n",
     encoding="utf-8",
 )
 PY

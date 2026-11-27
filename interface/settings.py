@@ -129,16 +129,66 @@ def _modem_settings():
         ("emergency_symbol_rate", "emergency_symbol_rate", "Emergency PTT symbol rate (baud)"),
         ("mark_hz", "mark_hz", "BFSK MARK frequency (Hz)"),
         ("space_hz", "space_hz", "BFSK SPACE frequency (Hz)"),
+        ("ultrasonic_mark_hz", "ultrasonic_mark_hz", "Ultrasonic MARK frequency (>20 kHz)"),
+        ("ultrasonic_space_hz", "ultrasonic_space_hz", "Ultrasonic SPACE frequency (>20 kHz)"),
     ]
     while True:
         cfg = load()
         menu_items = [(key, f"{label}: {getattr(cfg, attr)}") for key, attr, label in fields]
+        menu_items.insert(
+            0,
+            ("ultrasonic_enabled",
+             f"Ultrasonic acoustic mode: {'ON' if cfg.ultrasonic_enabled else 'OFF'} (toggle)"),
+        )
         menu_items.append(("back", "Back"))
         choice = Menu("MODEM SETTINGS", menu_items).run()
         if choice in (None, "back"):
             return
+        if choice == "ultrasonic_enabled":
+            enabled = not load().ultrasonic_enabled
+            try:
+                save_setting("modem", "ultrasonic_enabled", enabled)
+                print(
+                    "Ultrasonic acoustic mode is now "
+                    f"{'ENABLED' if enabled else 'DISABLED'}. "
+                    "Both peers must enable it and use suitable audio hardware."
+                )
+            except Exception as exc:
+                print("Could not update ultrasonic setting:", exc)
+            _pause()
+            continue
         key, attr, label = next(row for row in fields if row[0] == choice)
         _edit_numeric("modem", key, attr, label, int)
+
+
+def _transfer_settings():
+    while True:
+        cfg = load()
+        choice = Menu("DIRECT TRANSFER SETTINGS", [
+            ("multi_worker_enabled",
+             f"Parallel file/audio preparation: {'ON' if cfg.multi_worker_enabled else 'OFF'} (toggle)"),
+            ("multi_worker_count", f"Maximum preparation workers: {cfg.multi_worker_count} (2-8)"),
+            ("back", "Back"),
+        ]).run()
+        if choice in (None, "back"):
+            return
+        if choice == "multi_worker_enabled":
+            enabled = not load().multi_worker_enabled
+            try:
+                save_setting("transfer", "multi_worker_enabled", enabled)
+                print(
+                    "Parallel Direct preparation is now "
+                    f"{'ENABLED' if enabled else 'DISABLED'}. "
+                    "It is available only when both peers negotiate an authenticated Direct session."
+                )
+            except Exception as exc:
+                print("Could not update transfer setting:", exc)
+            _pause()
+        elif choice == "multi_worker_count":
+            _edit_numeric(
+                "transfer", "multi_worker_count", "multi_worker_count",
+                "Parallel preparation workers (2 to 8)", int,
+            )
 
 
 def _protocol_settings():
@@ -190,6 +240,7 @@ def settings_menu():
             ("debug", f"Acoustic debug logging: {'ON' if cfg.debug_enabled else 'OFF'} (toggle)"),
             ("debug-log", "View latest acoustic debug log"),
             ("modem", "Modem and frequency settings"),
+            ("transfer", "Direct transfer and worker settings"),
             ("protocol", "Protocol, ACK and retry settings"),
             ("defaults", "Reset input/output to system defaults"),
             ("back", "Back"),
@@ -202,6 +253,8 @@ def settings_menu():
             _audio_settings()
         elif choice == "modem":
             _modem_settings()
+        elif choice == "transfer":
+            _transfer_settings()
         elif choice == "protocol":
             _protocol_settings()
         elif choice == "debug":

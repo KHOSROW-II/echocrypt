@@ -131,8 +131,17 @@ async function startCapture(streamId) {
       video: false
     });
 
-    if (!activeStream.getAudioTracks().length) {
+    const audioTracks = activeStream.getAudioTracks();
+    if (!audioTracks.length) {
       throw new Error("The selected tab did not expose an audio track.");
+    }
+    for (const track of audioTracks) {
+      track.addEventListener("ended", () => {
+        if (!stopping) {
+          reportError("The selected tab's audio capture ended.");
+          stopCapture();
+        }
+      }, { once: true });
     }
 
     audioContext = new AudioContext({ sampleRate: PCM_RATE });

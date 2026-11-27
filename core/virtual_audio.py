@@ -112,6 +112,39 @@ def _read_state():
         return {}
 
 
+def is_virtual_rx_device(value) -> bool:
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("speaker" in name or "echocrypt_rx" in name)
+
+
+def is_virtual_tx_device(value) -> bool:
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("microphone" in name or "echocrypt_tx" in name)
+
+
+def _portaudio_virtual_selectors():
+    """Resolve the exact device names PortAudio exposes after pactl creates them."""
+    from core.audio import _sounddevice
+    sd = _sounddevice(allow_install=False)
+    devices = list(sd.query_devices())
+    inputs = [
+        item for item in devices
+        if int(item.get("max_input_channels", 0)) > 0
+        and is_virtual_rx_device(item.get("name", ""))
+    ]
+    outputs = [
+        item for item in devices
+        if int(item.get("max_output_channels", 0)) > 0
+        and is_virtual_tx_device(item.get("name", ""))
+    ]
+    if not inputs or not outputs:
+        raise RuntimeError(
+            "PulseAudio/PipeWire created the virtual nodes, but PortAudio does not expose "
+            "both endpoints. Check the PortAudio PulseAudio host API and restart ECHOCRYPT."
+        )
+    return str(inputs[0]["name"]), str(outputs[0]["name"])
+
+
 def device_selectors():
     """Stable PulseAudio description selectors used by PortAudio and call apps."""
     return {
@@ -231,6 +264,7 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
                 "The audio server did not expose both ECHOCRYPT virtual endpoints. "
                 + str(status.get("reason", "Check the PulseAudio/PipeWire session."))
             )
+        portaudio_input, portaudio_output = _portaudio_virtual_selectors()
         _write_state({
             "version": 1,
             "owned_module_ids": sorted(owned),
@@ -240,6 +274,8 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
         })
         return {
             **device_selectors(),
+            "input_device": portaudio_input,
+            "output_device": portaudio_output,
             "server": status.get("server"),
             "monitor_to_physical_output": bool(loopback_id),
             "loopback_warning": loopback_warning,
@@ -272,10 +308,28 @@ def remove_virtual_audio():
     state = _read_state()
     removed = []
     errors = []
-    for module_id in reversed(state.get("owned_module_ids", [])):
+    live_modules = {module_id: (name, arguments) for module_id, name, arguments in _module_rows()}
+    for raw_id in reversed(state.get("owned_module_ids", [])):
         try:
-            _pactl("unload-module", str(int(module_id)))
-            removed.append(int(module_id))
+            module_id = int(raw_id)
+            entry = live_modules.get(module_id)
+            if entry is None:
+                continue
+            name, arguments = entry
+            owned_sink = (
+                name == "module-null-sink"
+                and (f"sink_name={TX_SINK}" in arguments or f"sink_name={RX_SINK}" in arguments)
+            )
+            owned_loopback = (
+                name == "module-loopback"
+                and f"source={RX_SINK}.monitor" in arguments
+                and "sink=@DEFAULT_SINK@" in arguments
+            )
+            if not (owned_sink or owned_loopback):
+                errors.append(f"Skipped module {module_id}: it no longer matches an ECHOCRYPT-owned endpoint.")
+                continue
+            _pactl("unload-module", str(module_id))
+            removed.append(module_id)
         except Exception as exc:
             errors.append(str(exc))
     try:

@@ -152,6 +152,12 @@ def _modem_settings():
             return
         if choice == "ultrasonic_enabled":
             enabled = not load().ultrasonic_enabled
+            if enabled:
+                print("\\nRun the local ultrasonic speaker-to-microphone check before enabling this mode.")
+                if not run_ultrasonic_hardware_test():
+                    print("Ultrasonic mode was NOT enabled. The local audio path did not pass its test.")
+                    _pause()
+                    continue
             try:
                 save_setting("modem", "ultrasonic_enabled", enabled)
                 print(

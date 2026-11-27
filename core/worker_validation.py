@@ -89,9 +89,32 @@ def worker_hardware_approval_status(cfg, sd=None):
 
 
 def approve_worker_hardware(cfg, result):
-    """Persist approval only after every configured test tone was detected."""
+    """Persist approval only after every configured modem tone was detected."""
     if not isinstance(result, dict) or result.get("passed") is not True:
         raise ValueError("A failed or incomplete hardware test cannot approve workers")
+
+    from core.modem import HOP_OFFSETS
+    bases = (
+        (int(cfg.ultrasonic_mark_hz), int(cfg.ultrasonic_space_hz))
+        if bool(getattr(cfg, "ultrasonic_enabled", False))
+        else (int(cfg.mark_hz), int(cfg.space_hz))
+    )
+    expected = {
+        int(base + offset) for base in bases for offset in HOP_OFFSETS
+    }
+    tones = result.get("tones")
+    if not isinstance(tones, (tuple, list)):
+        raise ValueError("Hardware test did not return per-frequency results")
+    try:
+        observed = {int(round(float(item["frequency"]))) for item in tones}
+        all_detected = all(item.get("detected") is True for item in tones)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Hardware test frequency results are malformed") from exc
+    if observed != expected or len(tones) != len(expected) or not all_detected:
+        raise ValueError(
+            "Hardware test must detect every active MARK/SPACE frequency and hopping offset"
+        )
+
     fingerprint = hardware_fingerprint(cfg)
     path = _approval_path()
     path.parent.mkdir(parents=True, exist_ok=True)

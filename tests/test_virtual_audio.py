@@ -13,6 +13,19 @@ class VirtualAudioParsingTests(unittest.TestCase):
                 [(42, "module-null-sink", "sink_name=echocrypt_tx rate=48000")],
             )
 
+    def test_existing_virtual_sink_with_wrong_rate_is_rejected(self):
+        with patch.object(virtual_audio, "_find_module", return_value=42), \\
+             patch.object(virtual_audio, "_module_rows", return_value=[
+                 (42, "module-null-sink", "sink_name=echocrypt_tx rate=48000")
+             ]):
+            with self.assertRaisesRegex(RuntimeError, "different sample rate"):
+                virtual_audio._ensure_module(
+                    "module-null-sink",
+                    "sink_name=echocrypt_tx rate=96000 channels=2",
+                    "sink_name=echocrypt_tx",
+                    {42},
+                )
+
     def test_device_selectors_are_stable_names_not_ephemeral_indexes(self):
         selectors = virtual_audio.device_selectors()
         self.assertEqual(selectors["input_device"], "ECHOCRYPT Virtual Speaker Monitor")

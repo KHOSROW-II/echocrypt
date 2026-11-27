@@ -38,13 +38,13 @@ esac
 mkdir -p "$HOST_DIR" "$CONFIG_DIR"
 chmod +x "$HOST_WRAPPER"
 
-python3 - "$HOST_DIR/$HOST_NAME.json" "$HOST_WRAPPER" "$EXTENSION_ID" "$CONFIG_DIR/browser-native-host.json" <<'PY'
+python3 - "$HOST_DIR/$HOST_NAME.json" "$HOST_WRAPPER" "$EXTENSION_ID" "$CONFIG_DIR/browser-native-host.json" "$BROWSER" <<'PY'
 import json
 import os
 import sys
 from pathlib import Path
 
-manifest_path, host_path, extension_id, config_path = sys.argv[1:]
+manifest_path, host_path, extension_id, config_path, browser = sys.argv[1:]
 manifest = {
     "name": "org.echocrypt.tab_audio",
     "description": "ECHOCRYPT selected browser-tab PCM bridge",
@@ -52,12 +52,20 @@ manifest = {
     "type": "stdio",
     "allowed_origins": [f"chrome-extension://{extension_id}/"],
 }
-Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-Path(config_path).write_text(
-    json.dumps({"extension_id": extension_id}, indent=2) + "\n",
+Path(manifest_path).write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+config_file = Path(config_path)
+try:
+    stored = json.loads(config_file.read_text(encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    stored = {}
+extensions = stored.get("extensions", {})
+if not isinstance(extensions, dict):
+    extensions = {}
+extensions[browser] = extension_id
+config_file.write_text(
+    json.dumps({"extensions": extensions}, indent=2) + "\\n",
     encoding="utf-8",
 )
 PY
-
 echo "ECHOCRYPT Native Messaging host registered for $BROWSER."
 echo "Restart $BROWSER completely, then click the ECHOCRYPT extension icon on the tab to capture."

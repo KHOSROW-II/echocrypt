@@ -17,7 +17,7 @@ class PlatformBuildTests(unittest.TestCase):
             self.assertEqual(platform_paths.user_data_dir().name, "ECHOCRYPT")
             self.assertEqual(platform_paths.user_data_dir().parent.name, "Local")
         with patch.object(platform_paths.sys, "platform", "darwin"):
-            self.assertIn("Library/Application Support/ECHOCRYPT", str(platform_paths.user_config_dir()))
+            self.assertEqual(platform_paths.user_config_dir().parts[-3:], ("Library", "Application Support", "ECHOCRYPT"))
     def test_extension_packages_are_valid(self):
         with tempfile.TemporaryDirectory() as temp:
             for browser in ("chrome", "edge", "firefox"):

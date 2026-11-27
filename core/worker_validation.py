@@ -56,6 +56,7 @@ def hardware_fingerprint(cfg, sd=None) -> str:
         "input": _device_snapshot(sd, cfg.input_device, "input"),
         "output": _device_snapshot(sd, cfg.output_device, "output"),
         "sample_rate": int(cfg.sample_rate),
+        "playback_gain": float(getattr(cfg, "gain", 0.35)),
         "frequencies": sorted({
             int(base + offset) for base in bases for offset in HOP_OFFSETS
         }),

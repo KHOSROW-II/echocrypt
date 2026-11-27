@@ -4,10 +4,13 @@ from prompt_toolkit import prompt
 from core.audio import list_devices
 from core.config import load, save_setting
 from core.profile import get_username, set_username
+from core.virtual_audio import setup_virtual_audio, remove_virtual_audio
+from core.worker_validation import worker_hardware_approval_status
 from interface.dashboard import render as render_app_header
 from interface.terminal import Menu
 from interface.audio_tests import (
     run_microphone_level_test, run_speaker_test, run_ultrasonic_hardware_test,
+    run_worker_hardware_test,
 )
 
 
@@ -55,6 +58,7 @@ def _select_device(direction: str):
     value = "default" if selected == "default" else int(selected)
     try:
         save_setting("audio", section_key, value)
+        save_setting("audio", "full_duplex", False)
         print(f"Saved {direction} device: {'System default' if value == 'default' else value}")
     except Exception as exc:
         print(f"Could not save audio device: {exc}")
@@ -88,6 +92,53 @@ def _request_termux_android_microphone():
         _pause()
 
 
+def _setup_virtual_audio():
+    render_app_header(session_status="VIRTUAL AUDIO SETUP")
+    print("\\nCreating isolated ECHOCRYPT virtual endpoints through PipeWire-Pulse / PulseAudio.")
+    print("The system default microphone and speaker are not changed.")
+    try:
+        endpoints = setup_virtual_audio(monitor_to_physical_output=True)
+        save_setting("audio", "input_device", endpoints["input_device"])
+        save_setting("audio", "output_device", endpoints["output_device"])
+        save_setting("audio", "full_duplex", True)
+        print("\\nECHOCRYPT endpoints configured:")
+        print("  RX input  :", endpoints["input_device"])
+        print("  TX output :", endpoints["output_device"])
+        print("\\nIn your call/browser application choose:")
+        print("  Microphone:", endpoints["application_microphone"])
+        print("  Speaker   :", endpoints["application_speaker"])
+        print("\\nFull-duplex mode is enabled only for these isolated endpoints.")
+        if endpoints.get("loopback_warning"):
+            print("\\nAudio-monitoring warning:", endpoints["loopback_warning"])
+    except Exception as exc:
+        print("\\nVirtual audio setup failed:", exc)
+    _pause()
+
+
+def _remove_virtual_audio():
+    render_app_header(session_status="REMOVE VIRTUAL AUDIO")
+    try:
+        cfg = load()
+        result = remove_virtual_audio()
+        using_virtual = (
+            isinstance(cfg.input_device, str)
+            and "ECHOCRYPT Virtual Speaker Monitor" in cfg.input_device
+        ) or (
+            isinstance(cfg.output_device, str)
+            and "ECHOCRYPT Virtual Microphone TX" in cfg.output_device
+        )
+        if using_virtual:
+            save_setting("audio", "input_device", "default")
+            save_setting("audio", "output_device", "default")
+            save_setting("audio", "full_duplex", False)
+        print("Unloaded ECHOCRYPT-owned virtual audio modules:", result["removed_module_ids"])
+        for error in result["errors"]:
+            print("Cleanup warning:", error)
+    except Exception as exc:
+        print("Could not remove virtual audio endpoints:", exc)
+    _pause()
+
+
 def _audio_settings():
     while True:
         cfg = load()
@@ -97,6 +148,8 @@ def _audio_settings():
             ("speaker-test", "Test speakers (LEFT then RIGHT, 2 seconds each)"),
             ("mic-test", "Test microphone (live level meter)"),
             ("ultrasonic-test", "Test ultrasonic speaker → microphone path"),
+            ("virtual-setup", "Create / configure ECHOCRYPT virtual microphone + speaker (Linux)"),
+            ("virtual-remove", "Remove ECHOCRYPT virtual audio endpoints"),
             ("android-mic", "Request Android microphone permission (Termux:API)"),
             ("sample", f"Sample rate            : {cfg.sample_rate} Hz"),
             ("record", f"Maximum record window  : {cfg.record_seconds:g} sec"),
@@ -117,6 +170,10 @@ def _audio_settings():
         elif c == "ultrasonic-test":
             run_ultrasonic_hardware_test()
             _pause()
+        elif c == "virtual-setup":
+            _setup_virtual_audio()
+        elif c == "virtual-remove":
+            _remove_virtual_audio()
         elif c == "android-mic":
             _request_termux_android_microphone()
         elif c == "sample":
@@ -176,7 +233,11 @@ def _modem_settings():
 def _transfer_settings():
     while True:
         cfg = load()
+        approved, approval_reason = worker_hardware_approval_status(cfg)
+        approval_label = "APPROVED" if approved else "NOT APPROVED"
         choice = Menu("DIRECT TRANSFER SETTINGS", [
+            ("worker-hardware-test", "Run dedicated microphone/speaker modem-path test"),
+            ("worker-hardware-status", f"Hardware gate: {approval_label} — {approval_reason}"),
             ("multi_worker_enabled",
              f"Parallel file/audio preparation: {'ON' if cfg.multi_worker_enabled else 'OFF'} (toggle)"),
             ("multi_worker_count", f"Maximum preparation workers: {cfg.multi_worker_count} (2-8)"),
@@ -184,8 +245,22 @@ def _transfer_settings():
         ]).run()
         if choice in (None, "back"):
             return
-        if choice == "multi_worker_enabled":
+        if choice == "worker-hardware-test":
+            run_worker_hardware_test()
+            _pause()
+        elif choice == "worker-hardware-status":
+            print("\\nWorker hardware approval:", approval_label)
+            print(approval_reason)
+            _pause()
+        elif choice == "multi_worker_enabled":
             enabled = not load().multi_worker_enabled
+            if enabled:
+                approved, reason = worker_hardware_approval_status(load())
+                if not approved:
+                    print("\\nParallel workers were NOT enabled.")
+                    print("Run the dedicated hardware test first:", reason)
+                    _pause()
+                    continue
             try:
                 save_setting("transfer", "multi_worker_enabled", enabled)
                 print(

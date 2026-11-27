@@ -1,12 +1,17 @@
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from core.binary_transfer import ChunkIntegrityError, ReliableBinaryChannel
+from core.binary_transfer import (
+    ChunkIntegrityError, ReliableBinaryChannel, iter_chunk_packets_parallel,
+)
 from security.peer_handshake import PeerHandshake
 
 
@@ -78,6 +83,58 @@ class BinaryTransferIntegrityTests(unittest.TestCase):
             repaired = receiver.receive_chunk(repaired_packet)
             self.assertIsNotNone(repaired.completed_path)
             self.assertEqual(repaired.completed_path.read_bytes(), payload)
+
+
+class ParallelChunkPreparationTests(unittest.TestCase):
+    def test_parallel_workers_prepare_chunks_concurrently_but_yield_in_order(self):
+        class FakeChannel:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.active = 0
+                self.maximum_active = 0
+
+            def chunk_packet(self, _outgoing, index, _max_packet_size):
+                with self.lock:
+                    self.active += 1
+                    self.maximum_active = max(self.maximum_active, self.active)
+                try:
+                    time.sleep(0.025)
+                    return f"packet-{index}".encode()
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+        channel = FakeChannel()
+        outgoing = SimpleNamespace(manifest=SimpleNamespace(total_chunks=8))
+        result = list(iter_chunk_packets_parallel(
+            channel, outgoing, range(8), max_packet_size=1024, worker_count=3,
+        ))
+
+        self.assertEqual([index for index, _packet in result], list(range(8)))
+        self.assertEqual(
+            [packet for _index, packet in result],
+            [f"packet-{index}".encode() for index in range(8)],
+        )
+        self.assertGreater(channel.maximum_active, 1)
+        self.assertLessEqual(channel.maximum_active, 3)
+
+    def test_single_worker_path_preserves_sequential_behavior(self):
+        class FakeChannel:
+            def chunk_packet(self, _outgoing, index, _max_packet_size):
+                return bytes([index])
+
+        outgoing = SimpleNamespace(manifest=SimpleNamespace(total_chunks=4))
+        result = list(iter_chunk_packets_parallel(
+            FakeChannel(), outgoing, range(1, 4), worker_count=1,
+        ))
+        self.assertEqual(result, [(1, b"\\x01"), (2, b"\\x02"), (3, b"\\x03")])
+
+    def test_parallel_worker_count_is_bounded(self):
+        outgoing = SimpleNamespace(manifest=SimpleNamespace(total_chunks=1))
+        with self.assertRaisesRegex(ValueError, "worker_count"):
+            list(iter_chunk_packets_parallel(
+                object(), outgoing, range(1), worker_count=9,
+            ))
 
 
 if __name__ == "__main__":

@@ -293,7 +293,7 @@ def test_ultrasonic_path(rate, input_device=None, output_device=None,
 
     This is a practical path check, not a certification of the transducer's
     frequency response or a guarantee that a remote device supports the band.
-    Both frequencies must be above 20 kHz and safely below Nyquist.
+    Every test frequency must be above 20 kHz and safely below Nyquist.
     """
     if isinstance(rate, bool) or not isinstance(rate, int) or rate < 44100:
         raise ValueError("Ultrasonic testing requires an integer sample rate of at least 44100 Hz")
@@ -355,6 +355,9 @@ def test_ultrasonic_path(rate, input_device=None, output_device=None,
     finally:
         try:
             stream.stop()
+        except Exception:
+            # Preserve the original open/callback failure; close still runs.
+            pass
         finally:
             stream.close()
 

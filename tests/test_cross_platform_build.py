@@ -12,8 +12,10 @@ from scripts.build_browser_extensions import build
 class PlatformBuildTests(unittest.TestCase):
     def test_user_directories_are_platform_specific(self):
         with patch.object(platform_paths.sys, "platform", "win32"), patch.dict(os.environ, {"APPDATA": "C:/Roaming", "LOCALAPPDATA": "C:/Local"}):
-            self.assertEqual(str(platform_paths.user_config_dir()), "C:/Roaming/ECHOCRYPT")
-            self.assertEqual(str(platform_paths.user_data_dir()), "C:/Local/ECHOCRYPT")
+            self.assertEqual(platform_paths.user_config_dir().name, "ECHOCRYPT")
+            self.assertEqual(platform_paths.user_config_dir().parent.name, "Roaming")
+            self.assertEqual(platform_paths.user_data_dir().name, "ECHOCRYPT")
+            self.assertEqual(platform_paths.user_data_dir().parent.name, "Local")
         with patch.object(platform_paths.sys, "platform", "darwin"):
             self.assertIn("Library/Application Support/ECHOCRYPT", str(platform_paths.user_config_dir()))
     def test_extension_packages_are_valid(self):

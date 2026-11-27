@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "ECHOCRYPT Selected Tab Audio",
+  "version": "0.1.0",
+  "description": "Route only the user-selected Chromium tab's audio into ECHOCRYPT.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_title": "ECHOCRYPT: capture or stop this tab"
+  }
+}

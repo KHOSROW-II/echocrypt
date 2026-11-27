@@ -200,9 +200,10 @@ def virtual_audio_status():
         sink_names = {row[1] for row in _rows("sinks")}
         source_names = {row[1] for row in _rows("sources")}
         active = (
-            TX_SINK in sink_names and RX_SINK in sink_names
+            TX_SINK in sink_names and RX_SINK in sink_names and TAB_RX_SINK in sink_names
             and f"{TX_SINK}.monitor" in source_names
             and f"{RX_SINK}.monitor" in source_names
+            and f"{TAB_RX_SINK}.monitor" in source_names
         )
         server = _pactl("info")
         return {
@@ -237,7 +238,23 @@ def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
 
     previous = _read_state()
     previously_owned = {int(value) for value in previous.get("owned_module_ids", [])}
+    live_modules = {module_id: (name, arguments) for module_id, name, arguments in _module_rows()}
     owned = set()
+    for module_id in previously_owned:
+        entry = live_modules.get(module_id)
+        if entry is None:
+            continue
+        name, arguments = entry
+        if name == "module-null-sink" and any(
+            f"sink_name={sink}" in arguments for sink in (TX_SINK, RX_SINK, TAB_RX_SINK)
+        ):
+            owned.add(module_id)
+        elif (
+            name == "module-loopback"
+            and f"source={RX_SINK}.monitor" in arguments
+            and "sink=@DEFAULT_SINK@" in arguments
+        ):
+            owned.add(module_id)
     created_now = []
     loopback_warning = None
     loopback_id = None

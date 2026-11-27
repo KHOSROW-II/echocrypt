@@ -96,7 +96,7 @@ def test_audio_settings_dispatches_diagnostics_and_numeric_editors(monkeypatch):
 
 
 def test_modem_settings_requires_hardware_pass_before_enabling_ultrasonic(monkeypatch, capsys):
-    _menus(monkeypatch, "ultrasonic_enabled", "ultrasonic_enabled", "symbol_rate", "back")
+    _menus(monkeypatch, "ultrasonic_enabled", "back")
     state = {"enabled": False}
 
     def load():

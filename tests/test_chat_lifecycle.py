@@ -25,13 +25,17 @@ class _FakeApp:
 
 
 def _screen(messages=None, **kwargs):
-    pipe = create_pipe_input()
-    chat = ChatScreen(
-        "peer", "local", messages,
-        input=pipe, output=DummyOutput(), **kwargs,
-    )
-    chat._test_input_pipe = pipe
-    chat._test_input_pipe.__enter__()
+    pipe_context = create_pipe_input()
+    pipe = pipe_context.__enter__()
+    try:
+        chat = ChatScreen(
+            "peer", "local", messages,
+            input=pipe, output=DummyOutput(), **kwargs,
+        )
+    except Exception:
+        pipe_context.__exit__(*__import__("sys").exc_info())
+        raise
+    chat._test_input_pipe = pipe_context
     chat._app = _FakeApp()
     return chat
 

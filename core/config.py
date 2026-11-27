@@ -44,7 +44,10 @@ class Config:
 
 def _is_virtual_rx_device(value):
     name = str(value or "").casefold()
-    return "echocrypt" in name and ("speaker" in name or "echocrypt_rx" in name)
+    return "echocrypt" in name and (
+        "speaker" in name or "echocrypt_rx" in name
+        or "browser tab" in name or "echocrypt_tab_rx" in name
+    )
 
 
 def _is_virtual_tx_device(value):

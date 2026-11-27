@@ -57,7 +57,7 @@ class NativeHostProtocolTests(unittest.TestCase):
     def test_native_sink_probe_uses_pactl_sink_names(self):
         result = type("Result", (), {
             "returncode": 0,
-            "stdout": "1\\techocrypt_tab_rx\\tmodule-null-sink\\t2\\tRUNNING\\n",
+            "stdout": "1" + chr(9) + "echocrypt_tab_rx" + chr(9) + "module-null-sink" + chr(9) + "2" + chr(9) + "RUNNING" + chr(10),
             "stderr": "",
         })()
         with patch("browser_extension.native_host.shutil.which", return_value="/usr/bin/pactl"):

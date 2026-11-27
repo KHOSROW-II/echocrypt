@@ -152,6 +152,36 @@ class UltrasonicPathTests(unittest.TestCase):
         self.assertIsNone(backend.stream)
 
 
+class UltrasonicSettingsGateTests(unittest.TestCase):
+    def _run_modem_menu(self, answers, test_result):
+        from interface import settings
+        from core.config import Config
+
+        class FakeMenu:
+            def __init__(self, _title, _items):
+                pass
+
+            def run(self):
+                return answers.pop(0)
+
+        with patch.object(settings, "load", return_value=Config()), \
+             patch.object(settings, "Menu", FakeMenu), \
+             patch.object(settings, "run_ultrasonic_hardware_test", return_value=test_result), \
+             patch.object(settings, "_pause"), \
+             patch.object(settings, "save_setting") as save, \
+             patch("builtins.print"):
+            settings._modem_settings()
+        return save
+
+    def test_ultrasonic_setting_is_not_enabled_when_local_loopback_fails(self):
+        save = self._run_modem_menu(["ultrasonic_enabled", "back"], False)
+        save.assert_not_called()
+
+    def test_ultrasonic_setting_is_enabled_only_after_local_loopback_passes(self):
+        save = self._run_modem_menu(["ultrasonic_enabled", "back"], True)
+        save.assert_called_once_with("modem", "ultrasonic_enabled", True)
+
+
 class MicrophoneMeterTests(unittest.TestCase):
     def test_microphone_monitor_updates_live_rms_and_peak_without_recording(self):
         backend = FakeInputBackend()

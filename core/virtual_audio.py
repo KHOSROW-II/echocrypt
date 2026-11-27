@@ -85,6 +85,22 @@ def _find_module(module_name: str, marker: str):
 def _ensure_module(module_name: str, arguments: str, marker: str, previously_owned):
     existing = _find_module(module_name, marker)
     if existing is not None:
+        expected_rate = next(
+            (token for token in arguments.split() if token.startswith("rate=")),
+            None,
+        )
+        if expected_rate is not None:
+            active = next(
+                (args for module_id, name, args in _module_rows()
+                 if module_id == existing and name == module_name),
+                "",
+            )
+            if expected_rate not in active.split():
+                raise RuntimeError(
+                    f"{module_name} already exists with a different sample rate. "
+                    "Remove the existing ECHOCRYPT virtual endpoints and recreate them "
+                    "using the current audio sample rate."
+                )
         return existing, existing in previously_owned
     module_id = int(_pactl("load-module", module_name, *arguments.split()))
     return module_id, True
@@ -182,13 +198,15 @@ def virtual_audio_status():
         return {"supported": True, "active": False, "reason": str(exc)}
 
 
-def setup_virtual_audio(*, monitor_to_physical_output=True):
+def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
     """Create a TX microphone source and an RX speaker sink.
 
     Only applications explicitly selecting ECHOCRYPT Virtual Speaker are routed
     through the RX monitor. An optional loopback mirrors just that sink to the
     current physical default output. System defaults are never replaced.
     """
+    if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or not 8000 <= sample_rate <= 192000:
+        raise ValueError("Virtual audio sample rate must be an integer between 8000 and 192000 Hz")
     if not is_supported():
         raise RuntimeError(
             "Virtual audio setup is supported on Linux with pactl and a running "
@@ -205,14 +223,14 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
         _pactl("info")
         tx_id, tx_owned = _ensure_module(
             "module-null-sink",
-            f"sink_name={TX_SINK} rate=48000 channels=2 "
+            f"sink_name={TX_SINK} rate={sample_rate} channels=2 "
             f"channel_map=front-left,front-right "
             f"sink_properties=device.description={TX_OUTPUT_DESCRIPTION.replace(' ', '_')}",
             f"sink_name={TX_SINK}", previously_owned,
         )
         rx_id, rx_owned = _ensure_module(
             "module-null-sink",
-            f"sink_name={RX_SINK} rate=48000 channels=2 "
+            f"sink_name={RX_SINK} rate={sample_rate} channels=2 "
             f"channel_map=front-left,front-right "
             f"sink_properties=device.description={RX_SPEAKER_DESCRIPTION.replace(' ', '_')}",
             f"sink_name={RX_SINK}", previously_owned,
@@ -267,6 +285,7 @@ def setup_virtual_audio(*, monitor_to_physical_output=True):
         portaudio_input, portaudio_output = _portaudio_virtual_selectors()
         _write_state({
             "version": 1,
+            "sample_rate": sample_rate,
             "owned_module_ids": sorted(owned),
             "tx_sink": TX_SINK,
             "rx_sink": RX_SINK,

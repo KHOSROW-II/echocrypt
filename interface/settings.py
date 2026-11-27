@@ -121,6 +121,32 @@ def _setup_virtual_audio():
     _pause()
 
 
+def _setup_browser_tab_audio():
+    render_app_header(session_status="BROWSER TAB AUDIO SETUP")
+    print("\nPreparing the isolated Chromium tab-audio input.")
+    print("Only the browser tab captured by the ECHOCRYPT extension will enter RX.")
+    print("The extension forwards captured PCM locally; other applications are not routed.")
+    try:
+        cfg = load()
+        endpoints = setup_virtual_audio(
+            sample_rate=cfg.sample_rate,
+            monitor_to_physical_output=False,
+        )
+        save_setting("audio", "input_device", endpoints["browser_tab_input_device"])
+        save_setting("audio", "output_device", endpoints["output_device"])
+        save_setting("audio", "full_duplex", True)
+        print("\nECHOCRYPT routing configured:")
+        print("  RX input  :", endpoints["browser_tab_input_device"])
+        print("  TX output :", endpoints["output_device"])
+        print("\nIn the meeting website, select ECHOCRYPT Virtual Microphone as its microphone.")
+        print("Leave the website's speaker output on its ordinary system/default output.")
+        print("Then load browser_extension/ as an unpacked Chromium extension and register its native host.")
+        print("See docs/BROWSER_TAB_CAPTURE.md for installation.")
+    except Exception as exc:
+        print("\nBrowser-tab audio setup failed:", exc)
+    _pause()
+
+
 def _remove_virtual_audio():
     render_app_header(session_status="REMOVE VIRTUAL AUDIO")
     try:
@@ -151,7 +177,8 @@ def _audio_settings():
             ("speaker-test", "Test speakers (LEFT then RIGHT, 2 seconds each)"),
             ("mic-test", "Test microphone (live level meter)"),
             ("ultrasonic-test", "Test ultrasonic speaker → microphone path"),
-            ("virtual-setup", "Create / configure ECHOCRYPT virtual microphone + speaker (Linux)"),
+            ("virtual-setup", "Create / configure generic ECHOCRYPT virtual microphone + speaker (Linux)"),
+            ("browser-tab-setup", "Use Chromium selected-tab capture as ECHOCRYPT RX"),
             ("virtual-remove", "Remove ECHOCRYPT virtual audio endpoints"),
             ("android-mic", "Request Android microphone permission (Termux:API)"),
             ("sample", f"Sample rate            : {cfg.sample_rate} Hz"),
@@ -175,6 +202,8 @@ def _audio_settings():
             _pause()
         elif c == "virtual-setup":
             _setup_virtual_audio()
+        elif c == "browser-tab-setup":
+            _setup_browser_tab_audio()
         elif c == "virtual-remove":
             _remove_virtual_audio()
         elif c == "android-mic":

@@ -91,7 +91,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml;config" echocrypt.py
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py
+            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --hidden-import sounddevice browser_extension/native_host.py
           else
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml:config" echocrypt.py
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py

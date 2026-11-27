@@ -98,14 +98,17 @@ Termux's rootless bootstrap can install Python dependencies, but that does not p
 
 ## 7.1 Generic virtual audio routing
 
-On Linux systems exposing the PulseAudio protocol (PulseAudio or PipeWire-Pulse), ECHOCRYPT can create two null-sink endpoints:
+On Linux systems exposing the PulseAudio protocol (PulseAudio or PipeWire-Pulse), ECHOCRYPT can create three null-sink endpoints:
 
 - `echocrypt_tx`: ECHOCRYPT plays its outgoing modem waveform here. Its monitor source is presented to other applications as **ECHOCRYPT Virtual Microphone**.
-- `echocrypt_rx`: the selected call/application sends its incoming audio here as **ECHOCRYPT Virtual Speaker**. Its monitor source is consumed by ECHOCRYPT RX. An optional per-sink loopback mirrors only this sink to the current physical default output so the user can hear remote audio.
+- `echocrypt_rx`: a selected call/application sends incoming audio here as **ECHOCRYPT Virtual Speaker**. Its monitor source is consumed by ECHOCRYPT RX. An optional per-sink loopback mirrors only this sink to the current physical default output.
+- `echocrypt_tab_rx`: the Chromium native host writes PCM captured from one user-selected tab here. Its monitor source is presented to ECHOCRYPT as **ECHOCRYPT Browser Tab Monitor**. This path is separate from the generic virtual speaker path and has no physical-output loopback.
 
-No global default device is changed, and no application/provider API is used. A desktop application simply selects the generic microphone and speaker devices. ECHOCRYPT uses the TX sink as its output and the RX monitor as its input, so isolated full-duplex modem I/O can remain active without pausing microphone capture during TX.
+The TX sink is the same in both modes. The generic route requires the selected call application to use ECHOCRYPT Virtual Microphone and ECHOCRYPT Virtual Speaker. The selected-tab route instead uses the Chromium extension to capture one tab's rendered audio and pass it to `echocrypt_tab_rx`; the tab's audio is also connected to the browser's normal output so the user can still hear it. Its website microphone is set to ECHOCRYPT Virtual Microphone, while the website speaker stays on the normal system output. Do not select both RX routes at once.
 
-This backend is Linux-only in the current implementation. Windows virtual audio requires a separate driver/backend, and Android/Termux does not expose the same PulseAudio device model. A future browser-tab adapter may capture one explicitly selected tab rather than routing an entire browser output stream; that extension is not part of the current virtual-device backend.
+No global default device is changed, and no provider API is used. The selected-tab adapter uses Chromium `tabCapture` plus a restricted Native Messaging host over local stdio. It opens no TCP/UDP listener or localhost WebSocket. Its native host checks the registered extension origin before accepting PCM messages.
+
+These virtual endpoints and the browser adapter are Linux-only in the current implementation. Windows requires a separate virtual audio backend, and Android/Termux does not expose this PulseAudio device model. The initial browser extension targets Chromium 116+; Firefox support is not implemented.
 
 ## 7.2 Worker hardware approval
 

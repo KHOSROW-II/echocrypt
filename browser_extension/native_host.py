@@ -229,8 +229,17 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
                 write_message(output_stream, {"type": "ready", "sample_rate": SAMPLE_RATE})
 
             elif kind == "pcm":
-                if player is None or player.poll() is not None or player.stdin is None:
+                if player is None:
                     raise RuntimeError("The ECHOCRYPT PCM playback stream is not running.")
+                if mode == "pacat":
+                    if player.poll() is not None or player.stdin is None:
+                        raise RuntimeError("The ECHOCRYPT PCM playback stream is not running.")
+                elif mode == "sounddevice":
+                    if not bool(getattr(player, "active", True)):
+                        raise RuntimeError("The ECHOCRYPT PCM playback stream is not running.")
+                else:
+                    raise RuntimeError("The ECHOCRYPT PCM playback stream is not initialized.")
+
                 pcm = _decode_pcm(message)
                 try:
                     if mode == "pacat":

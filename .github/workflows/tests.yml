@@ -23,31 +23,60 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install project dependencies
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install project and development dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install -e ".[dev]"
 
-      - name: Install the developer package and pytest tooling
-        run: python -m pip install -e ".[dev]"
+      - name: Compile all Python sources
+        run: python -m compileall -q core interface security browser_extension scripts tests echocrypt.py
 
-      - name: Validate browser extension and native host scripts
+      - name: Validate browser manifests and JavaScript
         run: |
           python -m json.tool browser_extension/manifest.json >/dev/null
+          python -m json.tool browser_extension/firefox/manifest.json >/dev/null
           node --check browser_extension/service_worker.js
           node --check browser_extension/offscreen.js
           node --check browser_extension/pcm_worklet.js
+          node --check browser_extension/firefox/background.js
+          node --check browser_extension/firefox/content.js
+          node --test tests/browser_extension_contract.test.cjs
+
+      - name: Validate shell scripts
+        run: |
           bash -n scripts/install_browser_tab_host.sh
           bash -n scripts/uninstall_browser_tab_host.sh
+          bash -n scripts/bootstrap_linux.sh
           sh -n scripts/echocrypt_tab_host
 
-      - name: Run pytest suite with coverage
-        run: python -m pytest -q --cov=core --cov=security --cov=echocrypt_sdk --cov-report=term-missing --cov-report=xml:coverage.xml
+      - name: Run full pytest suite with application-wide branch coverage
+        run: >-
+          python -m pytest -q
+          --cov-branch
+          --cov=core
+          --cov=security
+          --cov=echocrypt_sdk
+          --cov=interface
+          --cov=browser_extension
+          --cov=scripts
+          --cov=echocrypt
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --cov-report=html:htmlcov
 
-      - name: Upload coverage report
+      - name: Upload application coverage
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: pytest-coverage
-          path: coverage.xml
+          name: application-coverage
+          path: |
+            coverage.xml
+            htmlcov/
           if-no-files-found: ignore
+          retention-days: 14

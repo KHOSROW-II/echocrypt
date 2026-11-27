@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: echocrypt-ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Tests / ${{ matrix.os }} / Python ${{ matrix.python }}
@@ -36,19 +40,19 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Install dependencies
+      - name: Install dependencies and test tools
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
           python -m pip install -e ".[dev]"
       - name: Compile all Python sources
-        run: python -m compileall -q core interface security browser_extension scripts tests
-      - name: Validate manifests and build all browser packages
+        run: python -m compileall -q core interface security browser_extension scripts tests echocrypt.py
+      - name: Validate browser manifests and build all extension archives
         run: |
           python -m json.tool browser_extension/manifest.json
           python -m json.tool browser_extension/firefox/manifest.json
           python scripts/build_browser_extensions.py --browser all --output dist/extensions
-      - name: Validate JavaScript
+      - name: Validate JavaScript and browser contracts
         shell: bash
         run: |
           node --check browser_extension/service_worker.js
@@ -56,14 +60,38 @@ jobs:
           node --check browser_extension/pcm_worklet.js
           node --check browser_extension/firefox/background.js
           node --check browser_extension/firefox/content.js
+          node --test tests/browser_extension_contract.test.cjs
       - name: Validate shell scripts
         if: runner.os != 'Windows'
         run: |
           bash -n scripts/install_browser_tab_host.sh
           bash -n scripts/uninstall_browser_tab_host.sh
           sh -n scripts/echocrypt_tab_host
-      - name: Run pytest suite with coverage
-        run: python -m pytest -q --cov=core --cov=security --cov=echocrypt_sdk --cov-report=term-missing --cov-report=xml:coverage.xml
+          bash -n scripts/bootstrap_linux.sh
+      - name: Run pytest with application-wide branch coverage
+        run: >-
+          python -m pytest -q
+          --cov-branch
+          --cov=core
+          --cov=security
+          --cov=echocrypt_sdk
+          --cov=interface
+          --cov=browser_extension
+          --cov=scripts
+          --cov=echocrypt
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --cov-report=html:htmlcov
+      - name: Upload application-wide coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ runner.os }}-py${{ matrix.python }}
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: ignore
+          retention-days: 14
 
   build:
     needs: test
@@ -86,32 +114,49 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller sounddevice
-      - name: Build standalone CLI
+      - name: Build standalone CLI and native messaging host
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml;config" echocrypt.py
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py
+            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --hidden-import sounddevice browser_extension/native_host.py
           else
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --add-data "config/default.toml:config" echocrypt.py
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost browser_extension/native_host.py
+            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --hidden-import sounddevice browser_extension/native_host.py
           fi
       - name: Package browser extensions
         run: python scripts/build_browser_extensions.py --browser all --output dist/extensions
-      - name: Assemble release package
+      - name: Assemble complete platform package
         shell: bash
         run: |
-          mkdir -p dist/package
-          if [ "$RUNNER_OS" = "Windows" ]; then cp dist/ECHOCRYPT.exe dist/package/; else cp dist/ECHOCRYPT dist/package/; fi
+          set -euo pipefail
+          mkdir -p dist/package/scripts dist/package/docs
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp dist/ECHOCRYPT.exe dist/package/
+            cp dist/ECHOCRYPT-NativeHost.exe dist/package/
+            cp scripts/install_browser_tab_host.ps1 dist/package/scripts/
+          else
+            cp dist/ECHOCRYPT dist/package/
+            cp dist/ECHOCRYPT-NativeHost dist/package/
+            cp scripts/install_browser_tab_host.sh scripts/uninstall_browser_tab_host.sh dist/package/scripts/
+          fi
           cp -R dist/extensions dist/package/
-          if [ "$RUNNER_OS" = "Windows" ]; then cp dist/ECHOCRYPT-NativeHost.exe dist/package/; else cp dist/ECHOCRYPT-NativeHost dist/package/; fi
-          cp README.md CHANGELOG.md LICENSE dist/package/
-          echo "${{ matrix.target }}" > dist/package/PLATFORM.txt
+          cp scripts/register_browser_host.py dist/package/scripts/
+          cp docs/BROWSER_TAB_CAPTURE.md docs/VIRTUAL_AUDIO.md docs/PLATFORMS.md dist/package/docs/
+          cp README.md CHANGELOG.md LICENSE browser_extension/README.md dist/package/
+          printf '%s\n' "${{ matrix.target }}" > dist/package/PLATFORM.txt
+      - name: Create unique platform archive
+        run: >-
+          python scripts/package_release.py archive
+          --source dist/package
+          --target "${{ matrix.target }}"
+          --output-dir dist/release
       - uses: actions/upload-artifact@v7
         with:
           name: echocrypt-${{ matrix.target }}
-          path: dist/package/
+          path: dist/release/echocrypt-${{ matrix.target }}.zip
           if-no-files-found: error
+          retention-days: 14
 
   draft-release:
     needs: [test, build]
@@ -123,33 +168,107 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
       - uses: actions/download-artifact@v8
         with:
           path: release-assets
-      - name: Choose draft tag
+      - name: Choose Draft tag
         id: tag
         shell: bash
         run: |
+          set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF#refs/tags/}"
           else
-            echo "tag=nightly-$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            TAG="nightly-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
           fi
+          [[ -n "$TAG" ]] || { echo "Release tag is empty."; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Generate complete release changelog
-        run: python scripts/generate_changelog.py --ref "$GITHUB_SHA" --tag "${{ steps.tag.outputs.tag }}" --output release-assets/RELEASE_NOTES.md
-      - name: Create or update Draft release
+        run: >-
+          python scripts/generate_changelog.py
+          --ref "$GITHUB_SHA"
+          --tag "${{ steps.tag.outputs.tag }}"
+          --output release-assets/RELEASE_NOTES.md
+      - name: Validate platform archives and generate checksums
+        run: |
+          set -euo pipefail
+          python scripts/package_release.py checksums --directory release-assets --output release-assets/SHA256SUMS
+          python scripts/package_release.py validate --directory release-assets
+      - name: Create or update verified Draft Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
-            if [ "$IS_DRAFT" != "true" ]; then
-              echo "Refusing to modify published release $TAG; this workflow only manages Draft releases."
-              exit 1
-            fi
+
+          # Create the Git tag before asking gh to create a release. This avoids
+          # GitHub's untagged placeholder release behavior when a tag is absent.
+          git fetch --tags origin
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
           else
-            gh release create "$TAG" --draft --title "ECHOCRYPT $TAG" --notes-file release-assets/RELEASE_NOTES.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" "$GITHUB_SHA" -m "ECHOCRYPT Draft release $TAG"
+            git push origin "refs/tags/$TAG"
           fi
-          gh release upload "$TAG" release-assets/RELEASE_NOTES.md release-assets/*/* --clobber
+
+          TAG_COMMIT="$(git rev-parse "$TAG^{commit}")"
+          if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "Refusing release: tag $TAG points to $TAG_COMMIT, expected $GITHUB_SHA."
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            EXISTING_TAG="$(gh release view "$TAG" --json tagName --jq '.tagName')"
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+            [[ "$EXISTING_TAG" == "$TAG" ]] || { echo "Release tag mismatch."; exit 1; }
+            [[ "$IS_DRAFT" == "true" ]] || {
+              echo "Refusing to modify published release $TAG."
+              exit 1
+            }
+          else
+            gh release create "$TAG" --verify-tag --draft \
+              --title "ECHOCRYPT $TAG" \
+              --notes-file release-assets/RELEASE_NOTES.md
+          fi
+
+          EXISTING_TAG="$(gh release view "$TAG" --json tagName --jq '.tagName')"
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+          [[ "$EXISTING_TAG" == "$TAG" && "$IS_DRAFT" == "true" ]] || {
+            echo "Release tag/state verification failed before upload."
+            exit 1
+          }
+
+          mapfile -d '' RELEASE_ASSETS < <(
+            find release-assets -type f \\( -name 'echocrypt-*.zip' -o -name 'SHA256SUMS' -o -name 'RELEASE_NOTES.md' \\) -print0 | sort -z
+          )
+          [[ "${#RELEASE_ASSETS[@]}" -eq 6 ]] || {
+            echo "Expected exactly six regular files to upload; found ${#RELEASE_ASSETS[@]}."
+            exit 1
+          }
+          gh release upload "$TAG" "${RELEASE_ASSETS[@]}" --clobber
           gh release edit "$TAG" --draft --notes-file release-assets/RELEASE_NOTES.md
+
+          FINAL_STATE="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+          [[ "$FINAL_STATE" == "true" ]] || {
+            echo "Release is no longer Draft; refusing to report success."
+            exit 1
+          }
+
+          EXPECTED_NAMES="$(printf '%s\\n' \
+            echocrypt-linux-x64.zip \
+            echocrypt-windows-x64.zip \
+            echocrypt-macos-arm64.zip \
+            echocrypt-macos-x64.zip \
+            RELEASE_NOTES.md SHA256SUMS | sort)"
+          ACTUAL_NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          [[ "$ACTUAL_NAMES" == "$EXPECTED_NAMES" ]] || {
+            echo "Uploaded release asset set does not match the six expected files."
+            printf 'Expected:\\n%s\\nActual:\\n%s\\n' "$EXPECTED_NAMES" "$ACTUAL_NAMES"
+            exit 1
+          }

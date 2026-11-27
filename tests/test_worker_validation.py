@@ -45,6 +45,23 @@ def passing_result(cfg):
 
 
 class WorkerHardwareApprovalTests(unittest.TestCase):
+    def test_cpu_and_ram_resource_gate_caps_worker_count_separately(self):
+        mib = 1024 * 1024
+        gib = 1024 * mib
+        self.assertEqual(worker_validation.compute_worker_hardware_limit(1, 8 * gib), 1)
+        self.assertEqual(worker_validation.compute_worker_hardware_limit(2, 512 * mib), 1)
+        self.assertEqual(worker_validation.compute_worker_hardware_limit(2, 1 * gib), 2)
+        self.assertEqual(worker_validation.compute_worker_hardware_limit(16, 1 * gib), 8)
+        self.assertEqual(worker_validation.compute_worker_hardware_limit(16, None), 8)
+
+    def test_audio_approval_is_still_required_after_cpu_ram_capacity_passes(self):
+        cfg = make_config()
+        with patch.object(worker_validation, "worker_hardware_profile", return_value={
+            "logical_cpus": 8, "memory_bytes": 8 * 1024**3,
+            "memory_display": "8.0 GiB", "max_workers": 8,
+        }):
+            self.assertEqual(worker_validation.effective_worker_count(cfg), 1)
+
     def test_missing_approval_disables_parallel_workers(self):
         cfg = make_config()
         with tempfile.TemporaryDirectory() as temp, \

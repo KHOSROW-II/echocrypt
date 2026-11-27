@@ -245,7 +245,7 @@ jobs:
           }
 
           mapfile -d '' RELEASE_ASSETS < <(
-            find release-assets -type f \\( -name 'echocrypt-*.zip' -o -name 'SHA256SUMS' -o -name 'RELEASE_NOTES.md' \\) -print0 | sort -z
+            find release-assets -type f \( -name 'echocrypt-*.zip' -o -name 'SHA256SUMS' -o -name 'RELEASE_NOTES.md' \) -print0 | sort -z
           )
           [[ "${#RELEASE_ASSETS[@]}" -eq 6 ]] || {
             echo "Expected exactly six regular files to upload; found ${#RELEASE_ASSETS[@]}."
@@ -260,7 +260,7 @@ jobs:
             exit 1
           }
 
-          EXPECTED_NAMES="$(printf '%s\\n' \
+          EXPECTED_NAMES="$(printf '%s\n' \
             echocrypt-linux-x64.zip \
             echocrypt-windows-x64.zip \
             echocrypt-macos-arm64.zip \
@@ -269,6 +269,6 @@ jobs:
           ACTUAL_NAMES="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
           [[ "$ACTUAL_NAMES" == "$EXPECTED_NAMES" ]] || {
             echo "Uploaded release asset set does not match the six expected files."
-            printf 'Expected:\\n%s\\nActual:\\n%s\\n' "$EXPECTED_NAMES" "$ACTUAL_NAMES"
+            printf 'Expected:\n%s\nActual:\n%s\n' "$EXPECTED_NAMES" "$ACTUAL_NAMES"
             exit 1
           }

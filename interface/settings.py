@@ -94,24 +94,24 @@ def _request_termux_android_microphone():
 
 def _setup_virtual_audio():
     render_app_header(session_status="VIRTUAL AUDIO SETUP")
-    print("\\nCreating isolated ECHOCRYPT virtual endpoints through PipeWire-Pulse / PulseAudio.")
+    print("\nCreating isolated ECHOCRYPT virtual endpoints through PipeWire-Pulse / PulseAudio.")
     print("The system default microphone and speaker are not changed.")
     try:
         endpoints = setup_virtual_audio(monitor_to_physical_output=True)
         save_setting("audio", "input_device", endpoints["input_device"])
         save_setting("audio", "output_device", endpoints["output_device"])
         save_setting("audio", "full_duplex", True)
-        print("\\nECHOCRYPT endpoints configured:")
+        print("\nECHOCRYPT endpoints configured:")
         print("  RX input  :", endpoints["input_device"])
         print("  TX output :", endpoints["output_device"])
-        print("\\nIn your call/browser application choose:")
+        print("\nIn your call/browser application choose:")
         print("  Microphone:", endpoints["application_microphone"])
         print("  Speaker   :", endpoints["application_speaker"])
-        print("\\nFull-duplex mode is enabled only for these isolated endpoints.")
+        print("\nFull-duplex mode is enabled only for these isolated endpoints.")
         if endpoints.get("loopback_warning"):
-            print("\\nAudio-monitoring warning:", endpoints["loopback_warning"])
+            print("\nAudio-monitoring warning:", endpoints["loopback_warning"])
     except Exception as exc:
-        print("\\nVirtual audio setup failed:", exc)
+        print("\nVirtual audio setup failed:", exc)
     _pause()
 
 
@@ -249,7 +249,7 @@ def _transfer_settings():
             run_worker_hardware_test()
             _pause()
         elif choice == "worker-hardware-status":
-            print("\\nWorker hardware approval:", approval_label)
+            print("\nWorker hardware approval:", approval_label)
             print(approval_reason)
             _pause()
         elif choice == "multi_worker_enabled":
@@ -257,7 +257,7 @@ def _transfer_settings():
             if enabled:
                 approved, reason = worker_hardware_approval_status(load())
                 if not approved:
-                    print("\\nParallel workers were NOT enabled.")
+                    print("\nParallel workers were NOT enabled.")
                     print("Run the dedicated hardware test first:", reason)
                     _pause()
                     continue

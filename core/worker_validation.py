@@ -53,8 +53,14 @@ def _memory_limit_bytes():
 
 
 def _logical_cpu_limit():
-    """Return logical CPUs available to this process, including cgroup quotas."""
+    """Return logical CPUs available to this process, including affinity and cgroup quotas."""
     cpus = max(1, int(os.cpu_count() or 1))
+    try:
+        affinity = os.sched_getaffinity(0)
+        if affinity:
+            cpus = min(cpus, len(affinity))
+    except (AttributeError, OSError):
+        pass
     for path in (
         Path("/sys/fs/cgroup/cpu.max"),
         Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),

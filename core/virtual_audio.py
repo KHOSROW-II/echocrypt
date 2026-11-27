@@ -53,7 +53,7 @@ def _pactl(*args: str, check: bool = True) -> str:
 def _rows(kind: str):
     rows = []
     for line in _pactl("list", "short", kind).splitlines():
-        fields = line.split("\\t")
+        fields = line.split("\t")
         if len(fields) < 2:
             fields = line.split(None, 2)
         if len(fields) >= 2:
@@ -64,7 +64,7 @@ def _rows(kind: str):
 def _module_rows():
     rows = []
     for line in _pactl("list", "short", "modules").splitlines():
-        fields = line.split("\\t", 2)
+        fields = line.split("\t", 2)
         if len(fields) < 3:
             fields = line.split(None, 2)
         if len(fields) >= 3:

@@ -1,0 +1,40 @@
+{
+  "manifest_version": 2,
+  "name": "ECHOCRYPT Selected Tab Audio",
+  "version": "0.2.0",
+  "description": "Capture supported media elements from the selected Firefox tab into ECHOCRYPT.",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "nativeMessaging",
+    "<all_urls>"
+  ],
+  "browser_action": {
+    "default_title": "ECHOCRYPT: capture/stop this tab"
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "echocrypt@khosrow-ii.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "web_accessible_resources": [
+    "pcm_worklet.js"
+  ]
+}

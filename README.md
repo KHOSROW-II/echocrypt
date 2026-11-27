@@ -642,3 +642,14 @@ Parallel preparation is disabled by default. First run **Configuration → Direc
 Workers read file chunks and prepare their authenticated encrypted packets concurrently ahead of transmission. Packets are still emitted in order through the single acoustic transmit queue, and each chunk still requires its authenticated ACK before the next chunk is sent. This avoids unsafe simultaneous playback on one speaker and preserves resumability, replay protection, integrity checks, and the existing stop-and-wait reliability model. The setting applies to Direct file attachments and file-backed voice notes; open Broadcast and live push-to-talk audio do not use this worker pool.
 
 Both optional capabilities are advertised inside the existing signed HELLO header. With both features disabled and one worker selected, the default capability fields retain their legacy values. When either feature is enabled, both devices must run a compatible ECHO-CRYPT version so the peer can understand the negotiated capability fields.
+
+
+## Cross-platform desktop builds and browser extensions
+
+The build pipeline packages console binaries for Linux x64, Windows x64, macOS Apple Silicon and Intel, and browser ZIPs for Chrome, Edge and Firefox. Firefox captures supported HTML media elements; it does not claim complete arbitrary tab audio capture. Windows/macOS audio routing requires user-configured virtual audio devices. Packages are unsigned/notarized CLI distributions, not GUI installers.
+
+Build browser packages locally:
+
+    python scripts/build_browser_extensions.py --browser all --output dist/extensions
+
+See [platform support](docs/PLATFORMS.md). The cross-platform release workflow runs the full test matrix first; only a completely green matrix unlocks builds. Successful builds create or update a GitHub **Draft** Release with commit history and the complete CHANGELOG.md. Nothing is published automatically.

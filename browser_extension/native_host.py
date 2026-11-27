@@ -25,8 +25,13 @@ MAX_PCM_BYTES = 8192
 
 
 def _config_path() -> Path:
-    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return base / "echocrypt" / "browser-native-host.json"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "ECHOCRYPT" / "browser-native-host.json"
 
 
 def _read_exact(stream, count: int) -> bytes | None:
@@ -90,6 +95,22 @@ def origin_is_allowed(origin: str) -> bool:
             str(item).strip() for item in per_browser.values() if str(item).strip()
         )
     return origin in {f"chrome-extension://{extension_id}/" for extension_id in extension_ids}
+
+
+def _resolve_sounddevice_output(sd, configured):
+    devices = sd.query_devices()
+    if isinstance(configured, int) or (isinstance(configured, str) and configured.isdecimal()):
+        index = int(configured)
+        if index < 0 or index >= len(devices) or devices[index]["max_output_channels"] < 1:
+            raise ValueError("Configured audio_output_device is not a valid output device.")
+        return index
+    if not isinstance(configured, str) or not configured.strip():
+        raise RuntimeError("Set audio_output_device in the ECHOCRYPT browser-native-host.json configuration.")
+    matches = [i for i, item in enumerate(devices)
+               if item["max_output_channels"] > 0 and configured.casefold() in item["name"].casefold()]
+    if len(matches) != 1:
+        raise RuntimeError(f"Audio output selector matched {len(matches)} devices; configure a unique name or index.")
+    return matches[0]
 
 
 def _sink_exists() -> bool:
@@ -160,6 +181,7 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
         return 2
 
     player = None
+    mode = None
     try:
         while True:
             message = read_message(input_stream)
@@ -170,31 +192,36 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
             if kind == "start":
                 if message.get("sample_rate") != SAMPLE_RATE:
                     raise ValueError("The browser bridge currently requires 48000 Hz PCM.")
-                if not _sink_exists():
-                    raise RuntimeError(
-                        "ECHOCRYPT browser-tab input is not configured. In ECHOCRYPT choose "
-                        "Configuration → Audio settings → Use Chromium selected-tab capture as ECHOCRYPT RX."
-                    )
-                if shutil.which("pacat") is None:
-                    raise RuntimeError("pacat is missing. Install the PulseAudio client utilities.")
                 if player is not None:
                     _stop_player(player)
-                player = subprocess.Popen(
-                    [
-                        "pacat", "--playback", "--raw",
-                        "--format=s16le", "--rate=48000", "--channels=1",
-                        f"--device={SINK_NAME}",
-                        "--client-name=ECHOCRYPT_Tab_Audio",
-                    ],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    bufsize=0,
-                )
-                time.sleep(0.08)
-                if player.poll() is not None:
                     player = None
-                    raise RuntimeError("pacat could not open the ECHOCRYPT browser-tab sink.")
+                if sys.platform.startswith("linux") and _sink_exists():
+                    if shutil.which("pacat") is None:
+                        raise RuntimeError("pacat is required for the Linux ECHOCRYPT virtual sink.")
+                    player = subprocess.Popen(
+                        ["pacat", "--playback", "--raw", "--format=s16le",
+                         "--rate=48000", "--channels=1", f"--device={SINK_NAME}"],
+                        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, bufsize=0,
+                    )
+                    mode = "pacat"
+                    time.sleep(0.08)
+                    if player.poll() is not None:
+                        player = None
+                        raise RuntimeError("pacat could not open the ECHOCRYPT browser-tab sink.")
+                else:
+                    try:
+                        import sounddevice as sd
+                    except ImportError as exc:
+                        raise RuntimeError("Install sounddevice and PortAudio, then configure audio_output_device.") from exc
+                    config = json.loads(_config_path().read_text(encoding="utf-8"))
+                    device = _resolve_sounddevice_output(sd, config.get("audio_output_device"))
+                    player = sd.RawOutputStream(
+                        samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                        device=device, blocksize=960,
+                    )
+                    player.start()
+                    mode = "sounddevice"
                 write_message(output_stream, {"type": "ready", "sample_rate": SAMPLE_RATE})
 
             elif kind == "pcm":
@@ -202,13 +229,21 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
                     raise RuntimeError("The ECHOCRYPT PCM playback stream is not running.")
                 pcm = _decode_pcm(message)
                 try:
-                    _write_all(player.stdin, pcm)
+                    if mode == "pacat":
+                        _write_all(player.stdin, pcm)
+                    else:
+                        player.write(pcm)
                 except (BrokenPipeError, OSError) as exc:
                     raise RuntimeError("The ECHOCRYPT PCM playback stream closed unexpectedly.") from exc
 
             elif kind == "stop":
-                _stop_player(player)
+                if mode == "pacat":
+                    _stop_player(player)
+                elif player is not None:
+                    player.stop()
+                    player.close()
                 player = None
+                mode = None
                 write_message(output_stream, {"type": "stopped"})
 
             else:
@@ -223,7 +258,14 @@ def run_native_host(origin: str, input_stream=None, output_stream=None):
             pass
         return 1
     finally:
-        _stop_player(player)
+        if mode == "pacat":
+            _stop_player(player)
+        elif player is not None:
+            try:
+                player.stop()
+                player.close()
+            except Exception:
+                pass
     return 0
 
 

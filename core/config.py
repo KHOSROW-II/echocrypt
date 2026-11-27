@@ -4,15 +4,30 @@ import json
 import math
 import os
 import re
+import shutil
+import sys
 import tempfile
+
+from core.platform_paths import bundled_resource_dir, user_config_dir
 
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "config" / "default.toml"
+ROOT = bundled_resource_dir()
+_BUNDLED_CONFIG_PATH = ROOT / "config" / "default.toml"
+CONFIG_PATH = user_config_dir() / "default.toml" if getattr(sys, "frozen", False) else ROOT / "config" / "default.toml"
+
+
+def _ensure_config_file() -> None:
+    if CONFIG_PATH.exists():
+        return
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _BUNDLED_CONFIG_PATH.is_file():
+        shutil.copy2(_BUNDLED_CONFIG_PATH, CONFIG_PATH)
+    else:
+        CONFIG_PATH.write_text("", encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,7 @@ def _device_value(value):
 
 
 def load() -> Config:
+    _ensure_config_file()
     raw = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     a, m, pr = raw.get("audio", {}), raw.get("modem", {}), raw.get("protocol", {})
     transfer = raw.get("transfer", {})
@@ -180,6 +196,7 @@ def _toml_value(value):
 
 def save_setting(section: str, key: str, value):
     """Atomically update one known setting and validate the resulting config."""
+    _ensure_config_file()
     if section not in {"audio", "modem", "protocol", "transfer", "debug"}:
         raise ValueError("Unknown configuration section")
     raw = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}

@@ -316,10 +316,16 @@ def test_acoustic_path(rate, input_device=None, output_device=None,
     fade = np.ones(samples_per_tone, dtype=np.float64)
     fade[:fade_count] = np.linspace(0.0, 1.0, fade_count)
     fade[-fade_count:] = np.linspace(1.0, 0.0, fade_count)
-    waveform = np.concatenate([
+    tone_waveform = np.concatenate([
         (float(amplitude) * np.sin(2.0 * np.pi * frequency * t) * fade).astype(np.float32)
         for frequency in tones
     ])
+    # Keep the stream alive briefly after the final tone so input latency does
+    # not truncate the last frequency at the callback boundary.
+    waveform = np.concatenate((
+        tone_waveform,
+        np.zeros(int(round(rate * 0.20)), dtype=np.float32),
+    ))
 
     captured = []
     position = 0

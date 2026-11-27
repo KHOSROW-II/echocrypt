@@ -56,9 +56,11 @@ def test_require_python_package_does_not_prompt_in_noninteractive_session(monkey
 
 def test_require_python_package_respects_declined_prompt(monkeypatch, tmp_path):
     _set_mode(monkeypatch, tmp_path, "rootless")
-    monkeypatch.setattr(dependencies.importlib, "import_module", lambda _name: (_ for _ in ()).throw(ImportError()))
-    monkeypatch.setattr(dependencies.sys, "stdin", _Stdin(True))
+    # Patch builtins.input before importlib.import_module: pytest resolves
+    # dotted monkeypatch targets through importlib.import_module itself.
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(dependencies.sys, "stdin", _Stdin(True))
+    monkeypatch.setattr(dependencies.importlib, "import_module", lambda _name: (_ for _ in ()).throw(ImportError()))
     with pytest.raises(RuntimeError, match="was not started"):
         dependencies.require_python_package("fake_pkg", "fake-dist", "Audio")
 

@@ -16,8 +16,8 @@ fi
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_NAME="org.echocrypt.tab_audio"
-HOST_WRAPPER="$ROOT/scripts/echocrypt_tab_host"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/echocrypt"
+HOST_WRAPPER="$ROOT/scripts/ECHOCRYPT_tab_host"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ECHOCRYPT"
 
 case "$BROWSER" in
     chrome)

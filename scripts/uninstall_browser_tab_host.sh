@@ -20,7 +20,7 @@ case "$BROWSER" in
 esac
 
 rm -f "$HOST_DIR/$HOST_NAME.json"
-python3 - "${XDG_CONFIG_HOME:-$HOME/.config}/echocrypt/browser-native-host.json" "$BROWSER" <<'PY'
+python3 - "${XDG_CONFIG_HOME:-$HOME/.config}/ECHOCRYPT/browser-native-host.json" "$BROWSER" <<'PY'
 import json
 import sys
 from pathlib import Path

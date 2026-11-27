@@ -46,13 +46,17 @@ async function startSelectedTabCapture(tab) {
     throw new Error("Could not identify the active browser tab.");
   }
 
-  // This call occurs directly from the extension action click. Chrome requires
-  // a user gesture before issuing a tab-capture stream ID.
+  // Prepare the offscreen consumer before requesting a stream ID. Chromium
+  // stream IDs expire after a few seconds, so do not spend that lifetime while
+  // creating the hidden document.
+  await ensureOffscreenDocument();
+
+  // This call still occurs in the extension action-click flow, which grants the
+  // user gesture required to capture the active tab.
   const streamId = await chrome.tabCapture.getMediaStreamId({
     targetTabId: tab.id
   });
 
-  await ensureOffscreenDocument();
   const response = await chrome.runtime.sendMessage({
     target: OFFSCREEN_TARGET,
     type: "START_CAPTURE",

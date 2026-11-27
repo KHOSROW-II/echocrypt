@@ -600,9 +600,7 @@ Do not rely on ECHO-CRYPT for life-critical or highly sensitive communications w
 
 ECHO-CRYPT is an actively developed experimental acoustic communication project.
 
-Its primary objective is to make direct, network-independent data exchange possible through ordinary audio hardware while improving reliability under real-world acoustic conditions.
-
-**No conventional network transport is used. Communication takes place through the acoustic path only.**
+Its native acoustic mode exchanges data directly through ordinary audio hardware without an IP transport. An optional carrier mode can route the same ECHOCRYPT waveform through a user-selected third-party call application. In that mode, the call application supplies the Internet transport, while ECHOCRYPT remains independent of that provider's API or SDK.
 
 ## Security
 

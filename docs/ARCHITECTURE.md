@@ -112,9 +112,9 @@ These virtual endpoints and the browser adapter are Linux-only in the current im
 
 ## 7.2 Worker hardware approval
 
-Parallel workers perform CPU/file preparation, not concurrent audio playback. The hardware approval gate is an additional operational requirement: it runs a full-duplex loopback probe over every active MARK/SPACE hopping frequency on the exact configured input/output pair. A passing result is stored outside the repository and fingerprinted against device names/host API, channel capability, default sample rates, modem sample rate, active tone set, and test version. Any mismatch invalidates approval.
+Parallel workers perform CPU/file preparation, not concurrent audio playback. They never create concurrent acoustic output streams. The audio-path approval gate runs a full-duplex loopback probe over every active MARK/SPACE hopping frequency on the configured input/output pair. A passing result is stored outside the repository and fingerprinted against PortAudio-reported device names/host API, channel capability, default sample rates, modem sample rate, playback gain, active tone set, and test version. Any mismatch invalidates approval.
 
-The Direct HELLO worker capability is capped by local approval. A device without a current passing approval advertises one worker; after mutual authentication the effective worker count is the lower of the peers' advertised counts. Broadcast remains unaffected.
+A separate resource gate computes the local worker cap from logical CPU availability, Linux cgroup CPU quota where present, and the tighter visible RAM limit (cgroup or physical RAM). It reserves 512 MiB for the system and budgets 64 MiB per preparation worker; if RAM cannot be measured, the cap falls back to CPU availability. The authenticated Direct HELLO advertises no more than the configured count, the audio-approved state, and this CPU/RAM cap. After mutual authentication, the effective worker count is the lower of both peers' advertised counts. Either local gate can force one worker. Broadcast remains unaffected.
 
 ## 8. Security and operational boundaries
 

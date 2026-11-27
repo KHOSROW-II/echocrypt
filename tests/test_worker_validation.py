@@ -60,7 +60,11 @@ class WorkerHardwareApprovalTests(unittest.TestCase):
             "logical_cpus": 8, "memory_bytes": 8 * 1024**3,
             "memory_display": "8.0 GiB", "max_workers": 8,
         }):
-            self.assertEqual(worker_validation.effective_worker_count(cfg), 1)
+            with patch.object(
+                worker_validation, "worker_hardware_approval_status",
+                return_value=(False, "audio path not approved"),
+            ):
+                self.assertEqual(worker_validation.effective_worker_count(cfg), 1)
 
     def test_missing_approval_disables_parallel_workers(self):
         cfg = make_config()

@@ -1,23 +1,64 @@
 # Desktop and browser platform matrix
 
-## Desktop targets
-- Linux x64: standalone ECHOCRYPT console binary, native runner build.
-- Windows x64: standalone ECHOCRYPT console executable.
-- macOS Apple Silicon and Intel: standalone console binaries, native architecture runners.
+## Official desktop targets
 
-These are CLI executables, not a GUI installer, MSI, or DMG application bundle. Code signing and notarization are not configured, so SmartScreen/Gatekeeper warnings may appear.
+ECHOCRYPT publishes native 64-bit builds for these six operating-system / CPU combinations:
 
-Frozen builds store mutable configuration in the operating system's per-user ECHOCRYPT configuration directory. They do not write beside the executable.
+| Operating system | CPU architecture | Portable archive | Native installer |
+|---|---|---|---|
+| Linux | x86-64 (amd64) | ZIP | DEB and RPM |
+| Linux | ARM64 (aarch64) | ZIP | DEB and RPM |
+| Windows | x86-64 (amd64) | ZIP | MSI |
+| Windows | ARM64 (aarch64) | ZIP | MSI |
+| macOS | Intel x86-64 | ZIP | PKG |
+| macOS | Apple Silicon ARM64 | ZIP | PKG |
+
+Each target is built on a native GitHub-hosted runner. The matrix is tested independently before packaging; the release job refuses to proceed unless every target succeeds. See the [installation guide](INSTALLATION.md) for per-platform commands and optional browser host registration.
+
+These are CLI and Native Messaging host distributions, not a graphical desktop application. Native installers place the executable, host, browser extensions, and documentation in platform-appropriate locations. Portable ZIP archives remain available for users who prefer manual installation.
+
+## Architecture boundaries
+
+The official release matrix covers the six mainstream 64-bit desktop targets above. It does not claim support for every CPU architecture or legacy ABI.
+
+The following are not currently official release targets:
+- 32-bit Linux (i686) and 32-bit ARM (ARMv7).
+- 32-bit Windows.
+- RISC-V 64, PowerPC 64 LE, and IBM Z.
+- macOS versions or CPU generations outside the supported Apple / Intel 64-bit platforms.
+
+Those targets require their own native dependency builds, runtime validation, and installation testing. PyInstaller alone being capable of targeting an architecture is not sufficient to call the complete application supported.
+
+## Package formats and runtime dependencies
+
+- Debian / Ubuntu: DEB; requires the distribution's PortAudio runtime (libportaudio2).
+- Fedora / RHEL-family: RPM; requires the distribution's PortAudio runtime (portaudio).
+- Windows: MSI; the bundled CLI and Native Messaging host are installed under Program Files.
+- macOS: PKG; installs the CLI, native host, extensions, and documentation under /usr/local.
+
+Portable ZIP files include the standalone CLI, Native Messaging host, browser extension archives, scripts, and platform documentation. Browser and audio routing setup still requires the appropriate browser registration and audio backend configuration.
 
 ## Browser packages
-- Chrome and Edge: Chromium Manifest V3 adapter based on tabCapture/offscreen document.
-- Firefox: Manifest V2 adapter captures supported HTML audio/video media elements with captureStream/mozCaptureStream. It is not a general capture of every possible tab sound, protected media, WebAudio-only content or browser chrome.
+
+- Chrome and Edge: Chromium Manifest V3 adapter based on tabCapture and an offscreen document.
+- Firefox: Manifest V2 adapter captures supported HTML audio/video media elements with captureStream / mozCaptureStream. It is not a general capture of every possible tab sound, protected media, WebAudio-only content, or browser chrome.
 - Each browser has a distinct Native Messaging registration and origin allowlist.
 
 ## Audio routing
-Linux uses PulseAudio/PipeWire-Pulse null sinks. Windows/macOS require user-installed virtual audio endpoints. Configure the RX capture endpoint as the ECHOCRYPT input and a separate TX playback endpoint as ECHOCRYPT output. The Native Messaging host audio_output_device must point to the RX virtual playback endpoint. Keep full-duplex disabled for external routes to avoid feedback. The browser tab remains audible through its normal speaker output.
 
-No driver is silently installed. Real browser/provider/driver validation is required before claiming production-ready audio routing.
+Linux uses PulseAudio / PipeWire-Pulse virtual sinks. Windows and macOS audio routing requires a user-configured virtual audio endpoint. The installer does not silently install kernel drivers or alter the system's default audio devices.
+
+Hardware-specific playback, recording, microphone permissions, browser/provider behavior, and virtual audio drivers require validation on the actual target machine. CI verifies package creation and software tests; it cannot prove physical audio compatibility.
+
+## Signing and notarization
+
+Current packages are unsigned:
+- Windows MSI packages are not Authenticode-signed.
+- macOS PKG packages are not Developer ID-signed or notarized.
+- Linux packages are not repository/GPG-signed.
+
+Windows SmartScreen and macOS Gatekeeper may show warnings. Signing and notarization require release credentials that are not stored in the repository workflow.
 
 ## Release gate
-The release workflow has a seven-target test matrix: Python 3.10-3.13 on Ubuntu, Windows, macOS arm64 and macOS x64. All test jobs must pass before build jobs can start. The release job depends on both test and build and creates/updates a GitHub Draft Release only.
+
+The release workflow runs unit / contract tests across the supported operating systems and architectures before packaging. It then builds portable ZIPs and native installers, verifies package signatures and checksums, and creates or updates a GitHub Draft Release. Nothing is published automatically.

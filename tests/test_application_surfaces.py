@@ -228,25 +228,34 @@ def test_browser_host_registration_rejects_invalid_extension_id(monkeypatch, tmp
         register_browser_host.main()
 
 
-def test_release_changelog_command_writes_full_notes(monkeypatch, tmp_path):
-    calls = []
-    def fake_git(*args):
-        calls.append(args)
-        if args[0] == "tag":
-            return "v0.1.0"
-        if args[0] == "log":
-            return "abc123 Add regression tests"
-        raise AssertionError(args)
+def test_release_changelog_command_renders_download_table_and_generated_notes(tmp_path):
+    generated = tmp_path / "github-notes.md"
+    generated.write_text(
+        "## What's Changed\n\n- Add authenticated worker preparation (#142)\n",
+        encoding="utf-8",
+    )
     output = tmp_path / "release" / "notes.md"
-    monkeypatch.setattr(generate_changelog, "git", fake_git)
     generate_changelog.main([
-        "--ref", "deadbeef", "--tag", "nightly-test", "--output", str(output)
+        "--tag", "nightly-test",
+        "--repository", "KHOSROW-II/echocrypt",
+        "--previous-tag", "nightly-previous",
+        "--generated-notes", str(generated),
+        "--output", str(output),
     ])
     content = output.read_text(encoding="utf-8")
     assert "# ECHOCRYPT nightly-test" in content
-    assert "v0.1.0..deadbeef" in calls[1][1]
-    assert "abc123 Add regression tests" in content
-    assert "Complete project changelog" in content
+    assert "## Downloads" in content
+    assert "| Operating system | Architecture | Installer | Portable |" in content
+    assert "linux-arm64" in content and "windows-arm64" in content
+    assert "macos-x64.pkg" in content and "macos-arm64.pkg" in content
+    assert "releases/download/nightly-test/echocrypt-linux-x64.deb" in content
+    assert "releases/download/nightly-test/echocrypt-linux-x64.zip" in content
+    assert "SHA256SUMS" in content
+    assert "GitHub-generated changes since nightly-previous" in content
+    assert "Add authenticated worker preparation (#142)" in content
+    assert "Complete project changelog" not in content
+    assert "Complete repository history" not in content
+    assert "232 commits" not in content
     assert "Draft" in content
 
 

@@ -8,10 +8,13 @@ import pytest
 
 from scripts.package_release import (
     EXPECTED_TARGETS,
+    INSTALLER_MAGIC,
+    TARGET_INSTALLERS,
     ReleasePackageError,
     collect_release_assets,
     create_checksum_manifest,
     create_platform_archive,
+    expected_release_asset_names,
     validate_release_asset_set,
 )
 
@@ -23,14 +26,19 @@ def make_archive(path: Path, member: str = "ECHOCRYPT/PROGRAM") -> None:
 
 
 def complete_release_tree(root: Path) -> list[Path]:
-    archives = []
+    artifacts = []
     for target in EXPECTED_TARGETS:
-        archive = root / f"echocrypt-{target}" / f"echocrypt-{target}.zip"
+        target_dir = root / f"echocrypt-{target}"
+        archive = target_dir / f"echocrypt-{target}.zip"
         make_archive(archive, f"ECHOCRYPT-{target}/binary")
-        archives.append(archive)
+        artifacts.append(archive)
+        for extension in TARGET_INSTALLERS[target]:
+            installer = target_dir / f"echocrypt-{target}.{extension}"
+            installer.write_bytes(INSTALLER_MAGIC[f".{extension}"] + b"installer-fixture")
+            artifacts.append(installer)
     (root / "RELEASE_NOTES.md").write_text("draft notes", encoding="utf-8")
     create_checksum_manifest(root)
-    return archives
+    return artifacts
 
 
 def test_platform_archive_contains_complete_package_tree(tmp_path: Path) -> None:
@@ -66,34 +74,35 @@ def test_platform_archive_rejects_missing_source_directory(tmp_path: Path) -> No
         create_platform_archive(tmp_path / "missing", "windows-x64", tmp_path / "out")
 
 
-def test_checksum_manifest_hashes_platform_archives_recursively(tmp_path: Path) -> None:
-    archives = complete_release_tree(tmp_path)
+def test_checksum_manifest_hashes_every_portable_archive_and_installer(tmp_path: Path) -> None:
+    artifacts = complete_release_tree(tmp_path)
     manifest = tmp_path / "SHA256SUMS"
     create_checksum_manifest(tmp_path, manifest)
     lines = manifest.read_text(encoding="ascii").splitlines()
     records = {name: digest for digest, name in (line.split("  ", 1) for line in lines)}
-    assert len(records) == 4
-    assert set(records) == {archive.name for archive in archives}
-    for archive in archives:
-        expected = hashlib.sha256(archive.read_bytes()).hexdigest()
-        assert records[archive.name] == expected
+    assert len(records) == 14
+    assert set(records) == {artifact.name for artifact in artifacts}
+    for artifact in artifacts:
+        expected = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        assert records[artifact.name] == expected
 
 
 def test_checksum_manifest_rejects_missing_or_invalid_archives(tmp_path: Path) -> None:
-    with pytest.raises(ReleasePackageError, match="No platform ZIP"):
+    with pytest.raises(ReleasePackageError, match="No platform packages"):
         create_checksum_manifest(tmp_path)
-    bad = tmp_path / "echocrypt-linux-x64.zip"
-    bad.write_bytes(b"not a zip")
+    bad = tmp_path / "echocrypt-linux-x64"
+    bad.mkdir()
+    (bad / "echocrypt-linux-x64.zip").write_bytes(b"not a zip")
     with pytest.raises(ReleasePackageError, match="not a valid ZIP"):
         create_checksum_manifest(tmp_path)
 
 
-def test_release_asset_discovery_never_returns_directories(tmp_path: Path) -> None:
+def test_release_asset_discovery_excludes_nested_browser_extensions(tmp_path: Path) -> None:
     folder = tmp_path / "echocrypt-linux-x64"
     (folder / "extensions").mkdir(parents=True)
     archive = folder / "echocrypt-linux-x64.zip"
     make_archive(archive)
-    (folder / "extensions" / "echocrypt-extension.zip").write_bytes(b"inner")
+    (folder / "extensions" / "echocrypt-firefox.zip").write_bytes(b"inner")
     (tmp_path / "RELEASE_NOTES.md").write_text("notes", encoding="utf-8")
     (tmp_path / "SHA256SUMS").write_text("checksum", encoding="ascii")
     assets = collect_release_assets(tmp_path)
@@ -101,22 +110,20 @@ def test_release_asset_discovery_never_returns_directories(tmp_path: Path) -> No
     assert archive in assets
     assert (tmp_path / "RELEASE_NOTES.md") in assets
     assert (tmp_path / "SHA256SUMS") in assets
+    assert not any(path.name == "echocrypt-firefox.zip" for path in assets)
 
 
-def test_release_validation_requires_exact_four_platform_archives(tmp_path: Path) -> None:
+def test_release_validation_requires_exact_six_architectures_and_installers(tmp_path: Path) -> None:
     complete_release_tree(tmp_path)
     assets = validate_release_asset_set(tmp_path)
-    assert len(assets) == 6
-    assert {item.name for item in assets} == {
-        *(f"echocrypt-{target}.zip" for target in EXPECTED_TARGETS),
-        "SHA256SUMS", "RELEASE_NOTES.md",
-    }
+    assert len(assets) == 16
+    assert {item.name for item in assets} == set(expected_release_asset_names())
 
 
 def test_release_validation_rejects_missing_or_extra_archives(tmp_path: Path) -> None:
     complete_release_tree(tmp_path)
-    (tmp_path / "echocrypt-linux-arm64.zip").write_bytes(b"extra")
-    with pytest.raises(ReleasePackageError, match="Platform archive set mismatch"):
+    (tmp_path / "echocrypt-linux-i686.zip").write_bytes(b"extra")
+    with pytest.raises(ReleasePackageError, match="Release asset set mismatch"):
         validate_release_asset_set(tmp_path)
 
 
@@ -124,4 +131,25 @@ def test_release_validation_rejects_missing_metadata(tmp_path: Path) -> None:
     complete_release_tree(tmp_path)
     (tmp_path / "SHA256SUMS").unlink()
     with pytest.raises(ReleasePackageError, match="SHA256SUMS"):
+        validate_release_asset_set(tmp_path)
+
+
+def test_release_validation_rejects_corrupt_installer_and_bad_checksum(tmp_path: Path) -> None:
+    complete_release_tree(tmp_path)
+    rpm = tmp_path / "echocrypt-linux-x64" / "echocrypt-linux-x64.rpm"
+    rpm.write_bytes(b"not an rpm")
+    with pytest.raises(ReleasePackageError, match="bad file signature"):
+        validate_release_asset_set(tmp_path)
+
+    rpm.write_bytes(INSTALLER_MAGIC[".rpm"] + b"restored")
+    manifest = tmp_path / "SHA256SUMS"
+    lines = manifest.read_text(encoding="ascii").splitlines()
+    manifest.write_text(
+        "\n".join(
+            ("0" * 64 + "  " + rpm.name) if line.endswith("  " + rpm.name) else line
+            for line in lines
+        ) + "\n",
+        encoding="ascii",
+    )
+    with pytest.raises(ReleasePackageError, match="SHA256SUMS mismatch"):
         validate_release_asset_set(tmp_path)

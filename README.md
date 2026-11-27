@@ -644,12 +644,22 @@ Workers read file chunks and prepare their authenticated encrypted packets concu
 Both optional capabilities are advertised inside the existing signed HELLO header. With both features disabled and one worker selected, the default capability fields retain their legacy values. When either feature is enabled, both devices must run a compatible ECHO-CRYPT version so the peer can understand the negotiated capability fields.
 
 
-## Cross-platform desktop builds and browser extensions
+## Cross-platform binaries and installers
 
-The build pipeline packages console binaries for Linux x64, Windows x64, macOS Apple Silicon and Intel, and browser ZIPs for Chrome, Edge and Firefox. Firefox captures supported HTML media elements; it does not claim complete arbitrary tab audio capture. Windows/macOS audio routing requires user-configured virtual audio devices. Packages are unsigned/notarized CLI distributions, not GUI installers.
+Official 64-bit desktop builds cover Linux x86-64 and ARM64, Windows x86-64 and ARM64, and macOS Intel and Apple Silicon. Every target receives a portable ZIP plus a native installer:
+
+| Platform | x86-64 | ARM64 |
+|---|---|---|
+| Linux | ZIP + DEB + RPM | ZIP + DEB + RPM |
+| Windows | ZIP + MSI | ZIP + MSI |
+| macOS | ZIP + PKG (Intel) | ZIP + PKG (Apple Silicon) |
+
+The installers include the standalone CLI, Native Messaging host, browser extensions, and documentation. They are CLI distributions, not GUI desktop applications. Packages are currently unsigned; Windows MSI packages are not Authenticode-signed and macOS PKG packages are not notarized.
+
+The official matrix does not currently include 32-bit Linux/Windows, ARMv7, RISC-V, PowerPC, or IBM Z. See [platform support](docs/PLATFORMS.md) for runtime requirements and the exact support boundary. See the [installation guide](docs/INSTALLATION.md) for platform-specific install commands and optional browser host registration.
 
 Build browser packages locally:
 
     python scripts/build_browser_extensions.py --browser all --output dist/extensions
 
-See [platform support](docs/PLATFORMS.md). The cross-platform release workflow runs the full test matrix first; only a completely green matrix unlocks builds. Successful builds create or update a GitHub **Draft** Release with commit history and the complete CHANGELOG.md. Nothing is published automatically.
+The release workflow runs native tests on supported operating systems and architectures before building ZIPs and native installers. It verifies the exact release asset set and SHA-256 checksums, then creates or updates a GitHub **Draft** Release. Release Notes use GitHub's generated changes since the previous release and a direct-download table; raw repository history is not dumped into the notes. Nothing is published automatically.

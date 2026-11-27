@@ -140,6 +140,68 @@ class PeerProtocolTests(unittest.TestCase):
         with self.assertRaises(HandshakeError):
             bob.receive(alice.start())
 
+    def test_handshake_negotiates_ultrasonic_and_worker_capabilities(self):
+        alice_identity = Ed25519PrivateKey.generate()
+        bob_identity = Ed25519PrivateKey.generate()
+        alice_public = raw_public(alice_identity.public_key())
+        bob_public = raw_public(bob_identity.public_key())
+        alice = PeerHandshake(
+            "initiator", alice_identity, bob_public, hashlib.sha256(bob_public).hexdigest(),
+            ultrasonic_enabled=True, max_workers=6,
+        )
+        bob = PeerHandshake(
+            "responder", bob_identity, alice_public, hashlib.sha256(alice_public).hexdigest(),
+            ultrasonic_enabled=True, max_workers=3,
+        )
+
+        hello_r = bob.receive(alice.start())
+        finish_i = alice.receive(hello_r)
+        finish_r = bob.receive(finish_i)
+        alice.receive(finish_r)
+
+        self.assertTrue(alice.established)
+        self.assertTrue(bob.established)
+        self.assertTrue(alice.negotiated_ultrasonic_enabled)
+        self.assertTrue(bob.negotiated_ultrasonic_enabled)
+        self.assertEqual(alice.negotiated_worker_count, 3)
+        self.assertEqual(bob.negotiated_worker_count, 3)
+
+    def test_handshake_disables_ultrasonic_unless_both_peers_advertise_it(self):
+        alice_identity = Ed25519PrivateKey.generate()
+        bob_identity = Ed25519PrivateKey.generate()
+        alice_public = raw_public(alice_identity.public_key())
+        bob_public = raw_public(bob_identity.public_key())
+        alice = PeerHandshake(
+            "initiator", alice_identity, bob_public, hashlib.sha256(bob_public).hexdigest(),
+            ultrasonic_enabled=True, max_workers=4,
+        )
+        bob = PeerHandshake(
+            "responder", bob_identity, alice_public, hashlib.sha256(alice_public).hexdigest(),
+            ultrasonic_enabled=False, max_workers=1,
+        )
+
+        hello_r = bob.receive(alice.start())
+        finish_i = alice.receive(hello_r)
+        finish_r = bob.receive(finish_i)
+        alice.receive(finish_r)
+
+        self.assertFalse(alice.negotiated_ultrasonic_enabled)
+        self.assertFalse(bob.negotiated_ultrasonic_enabled)
+        self.assertEqual(alice.negotiated_worker_count, 1)
+        self.assertEqual(bob.negotiated_worker_count, 1)
+
+    def test_default_handshake_capability_advertisement_keeps_single_worker(self):
+        alice, bob = self.make_peers()
+        hello_r = bob.receive(alice.start())
+        finish_i = alice.receive(hello_r)
+        finish_r = bob.receive(finish_i)
+        alice.receive(finish_r)
+
+        self.assertFalse(alice.negotiated_ultrasonic_enabled)
+        self.assertFalse(bob.negotiated_ultrasonic_enabled)
+        self.assertEqual(alice.negotiated_worker_count, 1)
+        self.assertEqual(bob.negotiated_worker_count, 1)
+
     def test_secure_channel_padding_is_authenticated_and_length_aligned(self):
         key = b"p" * 32
         sender = SecureChannel(key, padding_block=64)

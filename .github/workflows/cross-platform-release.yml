@@ -52,8 +52,8 @@ jobs:
           if (-not $env:VCPKG_INSTALLATION_ROOT) {
             throw "VCPKG_INSTALLATION_ROOT is missing on this Windows ARM64 runner."
           }
-          vcpkg install openssl:arm64-windows
-          $opensslRoot = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed/arm64-windows"
+          vcpkg install openssl:arm64-windows-static
+          $opensslRoot = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed/arm64-windows-static"
           "OPENSSL_DIR=$opensslRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_INCLUDE_DIR=$(Join-Path $opensslRoot 'include')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_LIB_DIR=$(Join-Path $opensslRoot 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -140,8 +140,8 @@ jobs:
           if (-not $env:VCPKG_INSTALLATION_ROOT) {
             throw "VCPKG_INSTALLATION_ROOT is missing on this Windows ARM64 runner."
           }
-          vcpkg install openssl:arm64-windows
-          $opensslRoot = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\arm64-windows"
+          vcpkg install openssl:arm64-windows-static
+          $opensslRoot = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed/arm64-windows-static"
           "OPENSSL_DIR=$opensslRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_INCLUDE_DIR=$(Join-Path $opensslRoot 'include')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "OPENSSL_LIB_DIR=$(Join-Path $opensslRoot 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

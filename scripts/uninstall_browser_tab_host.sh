@@ -35,7 +35,7 @@ extensions = stored.get("extensions", {})
 if isinstance(extensions, dict):
     extensions.pop(browser, None)
 if extensions:
-    path.write_text(json.dumps({"extensions": extensions}, indent=2) + "\\n", encoding="utf-8")
+    path.write_text(json.dumps({"extensions": extensions}, indent=2) + "\n", encoding="utf-8")
 else:
     path.unlink(missing_ok=True)
 PY

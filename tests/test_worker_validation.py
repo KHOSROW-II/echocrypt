@@ -45,6 +45,12 @@ def passing_result(cfg):
 
 
 class WorkerHardwareApprovalTests(unittest.TestCase):
+    def test_cpu_limit_respects_process_affinity(self):
+        with patch.object(worker_validation.os, "cpu_count", return_value=16):
+            with patch.object(worker_validation.os, "sched_getaffinity", return_value={0, 1}):
+                with patch.object(Path, "read_text", side_effect=FileNotFoundError):
+                    self.assertEqual(worker_validation._logical_cpu_limit(), 2)
+
     def test_cpu_and_ram_resource_gate_caps_worker_count_separately(self):
         mib = 1024 * 1024
         gib = 1024 * mib

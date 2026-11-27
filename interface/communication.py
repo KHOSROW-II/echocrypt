@@ -3014,7 +3014,8 @@ def _connect_to_contact(contact: Contact):
         )
         render_app_header(session_status=f"HANDSHAKE: {contact.name}")
         print(f"\nConnecting acoustically to {contact.name} ({contact.short_fingerprint})")
-        print("No server, internet, sockets or direct network connection are used.")
+        print("ECHOCRYPT itself opens no network sockets or provider API.")
+        print("To use an Internet call as an audio carrier, select the virtual microphone/speaker in that call app; the external app supplies its own network transport.")
         print("Both users must choose opposite handshake roles and be ready at the same time.")
         _establish(order, handshake, cfg)
         negotiated = handshake.negotiated_profile

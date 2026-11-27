@@ -15,7 +15,7 @@ from core.audio import (
     test_acoustic_path,
 )
 from core.config import load
-from core.virtual_audio import temporary_worker_test_route
+from core.virtual_audio import temporary_worker_test_route, is_virtual_rx_device, is_virtual_tx_device
 from core.worker_validation import approve_worker_hardware
 from core.modem import HOP_OFFSETS
 from interface.dashboard import render as render_app_header
@@ -103,10 +103,8 @@ def run_worker_hardware_test():
     test_amplitude = min(max(float(cfg.gain) * 0.35, 0.02), 0.25)
     try:
         virtual_pair = (
-            isinstance(cfg.input_device, str)
-            and "ECHOCRYPT Virtual Speaker Monitor" in cfg.input_device
-            and isinstance(cfg.output_device, str)
-            and "ECHOCRYPT Virtual Microphone TX" in cfg.output_device
+            is_virtual_rx_device(cfg.input_device)
+            and is_virtual_tx_device(cfg.output_device)
         )
         if virtual_pair:
             with temporary_worker_test_route():

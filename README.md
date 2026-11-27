@@ -391,3 +391,19 @@ Please read the [Security Policy](SECURITY.md) before using ECHO-CRYPT or report
 ## License
 
 ECHO-CRYPT is distributed under the MIT License. You may use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software, subject to the conditions in [LICENSE](LICENSE). The software is provided without warranty.
+
+## Optional ultrasonic mode
+
+Ultrasonic operation is disabled by default. Enable it under **Configuration → Modem and frequency settings → Ultrasonic acoustic mode**. Enabling the setting first runs a local full-duplex loopback test: ECHO-CRYPT plays two low-level tones through the selected output and checks whether the selected microphone captures them.
+
+The default near-ultrasonic tones are **20.7 kHz** and **22.2 kHz**. With the modem's ±600 Hz hopping offsets, the active range is approximately 20.1–22.8 kHz. At a 48 kHz sample rate the Nyquist frequency is 24 kHz, so the configured tones leave a guard band below Nyquist. The application rejects unsafe frequency/sample-rate combinations.
+
+A loopback pass is only a local path check; it is not a laboratory measurement or a guarantee of good range, sensitivity, or remote compatibility. The speaker, microphone, their analog filters, audio codec, and the acoustic path must all preserve the selected frequencies. Both Direct peers must enable the setting and pass their own local test. The signed Direct handshake negotiates ultrasonic support; if either peer has it disabled, the session stays on the ordinary audible modem frequencies. Broadcast does not use ultrasonic mode.
+
+## Optional parallel Direct file and voice-note preparation
+
+Parallel preparation is disabled by default. Enable it under **Configuration → Direct transfer and worker settings** and choose 2–8 workers. During an authenticated Direct handshake, the two peers negotiate the lower of their configured worker counts. If either peer disables the feature, the session uses one worker.
+
+Workers read file chunks and prepare their authenticated encrypted packets concurrently ahead of transmission. Packets are still emitted in order through the single acoustic transmit queue, and each chunk still requires its authenticated ACK before the next chunk is sent. This avoids unsafe simultaneous playback on one speaker and preserves resumability, replay protection, integrity checks, and the existing stop-and-wait reliability model. The setting applies to Direct file attachments and file-backed voice notes; open Broadcast and live push-to-talk audio do not use this worker pool.
+
+Both optional capabilities are advertised inside the existing signed HELLO header. With both features disabled and one worker selected, the default capability fields retain their legacy values. When either feature is enabled, both devices must run a compatible ECHO-CRYPT version so the peer can understand the negotiated capability fields.

@@ -4,11 +4,105 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import math
 from pathlib import Path
 import tempfile
 import time
 
 TEST_VERSION = 1
+
+
+def _physical_memory_bytes():
+    """Return physical RAM bytes where the current platform exposes it."""
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        if pages > 0 and page_size > 0:
+            return pages * page_size
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
+
+
+def _memory_limit_bytes():
+    """Use the tightest visible cgroup or physical memory limit."""
+    candidates = []
+    physical = _physical_memory_bytes()
+    if physical:
+        candidates.append(physical)
+    for path in (
+        Path("/sys/fs/cgroup/memory.max"),
+        Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ):
+        try:
+            raw = path.read_text(encoding="ascii").strip()
+            if raw.lower() == "max":
+                continue
+            value = int(raw)
+            # Ignore common cgroup-v1 unlimited sentinels.
+            if 0 < value < (1 << 60):
+                candidates.append(value)
+        except (OSError, ValueError):
+            continue
+    return min(candidates) if candidates else None
+
+
+def _logical_cpu_limit():
+    """Return logical CPUs available to this process, including cgroup quotas."""
+    cpus = max(1, int(os.cpu_count() or 1))
+    for path in (
+        Path("/sys/fs/cgroup/cpu.max"),
+        Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+    ):
+        try:
+            raw = path.read_text(encoding="ascii").strip()
+            if path.name == "cpu.max":
+                quota_text, period_text = raw.split()[:2]
+                if quota_text == "max":
+                    continue
+                quota, period = int(quota_text), int(period_text)
+            else:
+                quota = int(raw)
+                period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text(encoding="ascii").strip())
+            if quota > 0 and period > 0:
+                cpus = min(cpus, max(1, quota // period))
+                break
+        except (OSError, ValueError, IndexError):
+            continue
+    return cpus
+
+
+def compute_worker_hardware_limit(logical_cpus, memory_bytes):
+    """Conservative CPU/RAM worker cap, separate from the audio-path approval.
+
+    Reserve 512 MiB for the OS/application and budget 64 MiB per preparation
+    worker. Unknown RAM falls back to the CPU cap; worker count is always <= 8.
+    """
+    cpus = max(1, int(logical_cpus or 1))
+    if memory_bytes is None:
+        memory_cap = 8
+    else:
+        memory = max(0, int(memory_bytes))
+        memory_cap = max(1, (memory - 512 * 1024 * 1024) // (64 * 1024 * 1024))
+    return min(8, cpus, memory_cap)
+
+
+def worker_hardware_profile():
+    logical_cpus = _logical_cpu_limit()
+    memory_bytes = _memory_limit_bytes()
+    memory_text = f"{memory_bytes / (1024 ** 3):.1f} GiB" if memory_bytes else "unknown"
+    return {
+        "logical_cpus": logical_cpus,
+        "memory_bytes": memory_bytes,
+        "memory_display": memory_text,
+        "max_workers": compute_worker_hardware_limit(logical_cpus, memory_bytes),
+    }
 
 
 def _approval_path() -> Path:
@@ -149,4 +243,6 @@ def effective_worker_count(cfg) -> int:
     if not approved:
         return 1
     count = int(getattr(cfg, "multi_worker_count", 1))
-    return count if 2 <= count <= 8 else 1
+    if not 2 <= count <= 8:
+        return 1
+    return min(count, worker_hardware_profile()["max_workers"])

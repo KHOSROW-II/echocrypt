@@ -97,7 +97,7 @@ def run_worker_hardware_test():
     frequencies = tuple(sorted({
         float(base + offset) for base in bases for offset in HOP_OFFSETS
     }))
-    print("\\nDedicated test for the currently selected microphone and speaker.")
+    print("\nDedicated test for the currently selected microphone and speaker.")
     print("Tests every active modem tone, including the configured frequency-hopping offsets.")
     print("Do not run during a live call. Keep a physical speaker audible to its microphone.")
     try:
@@ -124,18 +124,18 @@ def run_worker_hardware_test():
         if result["callback_status"]:
             print("  Audio callback status:", "; ".join(result["callback_status"]))
         if not result["passed"]:
-            print("\\n✗ Hardware validation failed. Parallel workers remain disabled.")
+            print("\n✗ Hardware validation failed. Parallel workers remain disabled.")
             return False
         approval = approve_worker_hardware(cfg, result)
         print(
-            f"\\n✓ Hardware path approved for the current device pair at {cfg.sample_rate} Hz "
+            f"\n✓ Hardware path approved for the current device pair at {cfg.sample_rate} Hz "
             f"({approval['tone_count']} tones)."
         )
         print("Changing the microphone, speaker, sample rate or modem frequencies invalidates this approval.")
         print("This is a local audio-path check, not a test of the remote conferencing codec.")
         return True
     except Exception as exc:
-        print("\\n✗ Worker hardware test failed:", exc)
+        print("\n✗ Worker hardware test failed:", exc)
         print("Parallel workers remain disabled until this dedicated test passes.")
         return False
 

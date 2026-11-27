@@ -100,6 +100,7 @@ def run_worker_hardware_test():
     print("\nDedicated test for the currently selected microphone and speaker.")
     print("Tests every active modem tone, including the configured frequency-hopping offsets.")
     print("Do not run during a live call. Keep a physical speaker audible to its microphone.")
+    test_amplitude = min(max(float(cfg.gain) * 0.35, 0.02), 0.25)
     try:
         virtual_pair = (
             isinstance(cfg.input_device, str)
@@ -111,12 +112,12 @@ def run_worker_hardware_test():
             with temporary_worker_test_route():
                 result = test_acoustic_path(
                     cfg.sample_rate, cfg.input_device, cfg.output_device,
-                    frequencies=frequencies, duration=0.22, amplitude=0.08,
+                    frequencies=frequencies, duration=0.22, amplitude=test_amplitude,
                 )
         else:
             result = test_acoustic_path(
                 cfg.sample_rate, cfg.input_device, cfg.output_device,
-                frequencies=frequencies, duration=0.22, amplitude=0.10,
+                frequencies=frequencies, duration=0.22, amplitude=test_amplitude,
             )
         for tone in result["tones"]:
             state = "DETECTED" if tone["detected"] else "NOT DETECTED"

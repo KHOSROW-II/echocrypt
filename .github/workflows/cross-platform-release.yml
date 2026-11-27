@@ -154,6 +154,7 @@ jobs:
         if: runner.os != 'macOS'
         with:
           go-version: stable
+          cache: false
       - name: Install nFPM on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -166,12 +167,18 @@ jobs:
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.49.0
           "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Generate Windows executable version resources
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python scripts/generate_windows_version_info.py --name ECHOCRYPT --output "$RUNNER_TEMP/ECHOCRYPT.version"
+          python scripts/generate_windows_version_info.py --name ECHOCRYPT-NativeHost --output "$RUNNER_TEMP/ECHOCRYPT-NativeHost.version"
       - name: Build standalone CLI and native messaging host
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --collect-all sounddevice --add-data "config/default.toml;config" echocrypt.py
-            pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --collect-all sounddevice browser_extension/native_host.py
+            pyinstaller --clean --noconfirm --onefile --version-file "$RUNNER_TEMP/ECHOCRYPT.version" --name ECHOCRYPT --collect-all sounddevice --add-data "config/default.toml;config" echocrypt.py
+            pyinstaller --clean --noconfirm --onefile --version-file "$RUNNER_TEMP/ECHOCRYPT-NativeHost.version" --name ECHOCRYPT-NativeHost --collect-all sounddevice browser_extension/native_host.py
           else
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT --collect-all sounddevice --add-data "config/default.toml:config" echocrypt.py
             pyinstaller --clean --noconfirm --onefile --name ECHOCRYPT-NativeHost --collect-all sounddevice browser_extension/native_host.py

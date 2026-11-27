@@ -128,6 +128,11 @@ def _setup_browser_tab_audio():
     print("The extension forwards captured PCM locally; other applications are not routed.")
     try:
         cfg = load()
+        if cfg.ultrasonic_enabled:
+            raise RuntimeError(
+                "Disable Ultrasonic acoustic mode before using browser-tab capture. "
+                "Internet call audio is not a transparent ultrasonic channel."
+            )
         endpoints = setup_virtual_audio(
             sample_rate=cfg.sample_rate,
             monitor_to_physical_output=False,

@@ -43,10 +43,16 @@ function waitForNativeReady(port, timeoutMs = 7000) {
         settled = true;
         clearTimeout(timeout);
         resolve();
-      } else if (message?.type === "error" && !settled) {
-        settled = true;
-        clearTimeout(timeout);
-        reject(new Error(message.message || "ECHOCRYPT native host failed."));
+      } else if (message?.type === "error") {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error(message.message || "ECHOCRYPT native host failed."));
+        } else if (!stopping) {
+          const error = new Error(message.message || "ECHOCRYPT native host failed.");
+          reportError(error);
+          stopCapture();
+        }
       }
     });
 
@@ -57,6 +63,7 @@ function waitForNativeReady(port, timeoutMs = 7000) {
         reject(new Error(chrome.runtime.lastError?.message || "ECHOCRYPT native host disconnected."));
       } else if (!stopping) {
         reportError(chrome.runtime.lastError?.message || "ECHOCRYPT native host disconnected.");
+        stopCapture();
       }
     });
 

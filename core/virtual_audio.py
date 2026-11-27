@@ -16,10 +16,13 @@ from contextlib import contextmanager
 
 TX_SINK = "echocrypt_tx"
 RX_SINK = "echocrypt_rx"
+TAB_RX_SINK = "echocrypt_tab_rx"
 TX_MIC_DESCRIPTION = "ECHOCRYPT Virtual Microphone"
 TX_OUTPUT_DESCRIPTION = "ECHOCRYPT Virtual Microphone TX"
 RX_SPEAKER_DESCRIPTION = "ECHOCRYPT Virtual Speaker"
 RX_MONITOR_DESCRIPTION = "ECHOCRYPT Virtual Speaker Monitor"
+TAB_RX_MONITOR_DESCRIPTION = "ECHOCRYPT Browser Tab Monitor"
+TAB_RX_SINK_DESCRIPTION = "ECHOCRYPT Browser Tab Capture"
 
 
 def is_supported() -> bool:
@@ -130,7 +133,14 @@ def _read_state():
 
 def is_virtual_rx_device(value) -> bool:
     name = str(value or "").casefold()
-    return "echocrypt" in name and ("speaker" in name or "echocrypt_rx" in name)
+    return "echocrypt" in name and (
+        "speaker" in name or "echocrypt_rx" in name or "browser tab" in name or "echocrypt_tab_rx" in name
+    )
+
+
+def is_browser_tab_rx_device(value) -> bool:
+    name = str(value or "").casefold()
+    return "echocrypt" in name and ("browser tab" in name or "echocrypt_tab_rx" in name)
 
 
 def is_virtual_tx_device(value) -> bool:
@@ -147,18 +157,29 @@ def _portaudio_virtual_selectors():
         item for item in devices
         if int(item.get("max_input_channels", 0)) > 0
         and is_virtual_rx_device(item.get("name", ""))
+        and not is_browser_tab_rx_device(item.get("name", ""))
+    ]
+    tab_inputs = [
+        item for item in devices
+        if int(item.get("max_input_channels", 0)) > 0
+        and is_browser_tab_rx_device(item.get("name", ""))
     ]
     outputs = [
         item for item in devices
         if int(item.get("max_output_channels", 0)) > 0
         and is_virtual_tx_device(item.get("name", ""))
     ]
-    if not inputs or not outputs:
+    if not inputs or not outputs or not tab_inputs:
         raise RuntimeError(
             "PulseAudio/PipeWire created the virtual nodes, but PortAudio does not expose "
-            "both endpoints. Check the PortAudio PulseAudio host API and restart ECHOCRYPT."
+            "the ECHOCRYPT speaker, browser-tab input and microphone endpoints. "
+            "Check the PortAudio PulseAudio host API and restart ECHOCRYPT."
         )
-    return str(inputs[0]["name"]), str(outputs[0]["name"])
+    return (
+        str(inputs[0]["name"]),
+        str(outputs[0]["name"]),
+        str(tab_inputs[0]["name"]),
+    )
 
 
 def device_selectors():
@@ -168,6 +189,7 @@ def device_selectors():
         "output_device": TX_OUTPUT_DESCRIPTION,
         "application_microphone": TX_MIC_DESCRIPTION,
         "application_speaker": RX_SPEAKER_DESCRIPTION,
+        "browser_tab_input_device": TAB_RX_MONITOR_DESCRIPTION,
     }
 
 
@@ -235,14 +257,25 @@ def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
             f"sink_properties=device.description={RX_SPEAKER_DESCRIPTION.replace(' ', '_')}",
             f"sink_name={RX_SINK}", previously_owned,
         )
+        tab_rx_id, tab_rx_owned = _ensure_module(
+            "module-null-sink",
+            f"sink_name={TAB_RX_SINK} rate={sample_rate} channels=1 "
+            f"channel_map=mono "
+            f"sink_properties=device.description={TAB_RX_SINK_DESCRIPTION.replace(' ', '_')}",
+            f"sink_name={TAB_RX_SINK}", previously_owned,
+        )
         if tx_owned:
             owned.add(tx_id)
         if rx_owned:
             owned.add(rx_id)
+        if tab_rx_owned:
+            owned.add(tab_rx_id)
         if tx_id not in previously_owned:
             created_now.append(tx_id)
         if rx_id not in previously_owned:
             created_now.append(rx_id)
+        if tab_rx_id not in previously_owned:
+            created_now.append(tab_rx_id)
 
         _pactl(
             "update-sink-proplist", TX_SINK,
@@ -259,6 +292,14 @@ def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
         _pactl(
             "update-sink-proplist", RX_SINK,
             f"device.description={RX_SPEAKER_DESCRIPTION}",
+        )
+        _pactl(
+            "update-sink-proplist", TAB_RX_SINK,
+            f"device.description={TAB_RX_SINK_DESCRIPTION}",
+        )
+        _pactl(
+            "update-source-proplist", f"{TAB_RX_SINK}.monitor",
+            f"device.description={TAB_RX_MONITOR_DESCRIPTION}",
         )
 
         if monitor_to_physical_output:
@@ -282,19 +323,21 @@ def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
                 "The audio server did not expose both ECHOCRYPT virtual endpoints. "
                 + str(status.get("reason", "Check the PulseAudio/PipeWire session."))
             )
-        portaudio_input, portaudio_output = _portaudio_virtual_selectors()
+        portaudio_input, portaudio_output, portaudio_tab_input = _portaudio_virtual_selectors()
         _write_state({
             "version": 1,
             "sample_rate": sample_rate,
             "owned_module_ids": sorted(owned),
             "tx_sink": TX_SINK,
             "rx_sink": RX_SINK,
+            "tab_rx_sink": TAB_RX_SINK,
             "monitor_to_physical_output": bool(loopback_id),
         })
         return {
             **device_selectors(),
             "input_device": portaudio_input,
             "output_device": portaudio_output,
+            "browser_tab_input_device": portaudio_tab_input,
             "server": status.get("server"),
             "monitor_to_physical_output": bool(loopback_id),
             "loopback_warning": loopback_warning,
@@ -306,14 +349,16 @@ def setup_virtual_audio(*, sample_rate=48000, monitor_to_physical_output=True):
 
 
 @contextmanager
-def temporary_worker_test_route():
-    """Temporarily loop TX into RX for a local virtual-endpoint test."""
+def temporary_worker_test_route(target_sink=RX_SINK):
+    """Temporarily loop TX into one ECHOCRYPT RX sink for a local path test."""
+    if target_sink not in {RX_SINK, TAB_RX_SINK}:
+        raise ValueError("Worker test route target must be an ECHOCRYPT receive sink")
     status = virtual_audio_status()
     if not status.get("active"):
         raise RuntimeError("ECHOCRYPT virtual audio endpoints are not active")
     module_id = int(_pactl(
         "load-module", "module-loopback",
-        f"source={TX_SINK}.monitor", f"sink={RX_SINK}",
+        f"source={TX_SINK}.monitor", f"sink={target_sink}",
         "latency_msec=20",
     ))
     try:
@@ -337,7 +382,11 @@ def remove_virtual_audio():
             name, arguments = entry
             owned_sink = (
                 name == "module-null-sink"
-                and (f"sink_name={TX_SINK}" in arguments or f"sink_name={RX_SINK}" in arguments)
+                and (
+                    f"sink_name={TX_SINK}" in arguments
+                    or f"sink_name={RX_SINK}" in arguments
+                    or f"sink_name={TAB_RX_SINK}" in arguments
+                )
             )
             owned_loopback = (
                 name == "module-loopback"

@@ -64,6 +64,18 @@ class NativeHostProtocolTests(unittest.TestCase):
             with patch("browser_extension.native_host.subprocess.run", return_value=result):
                 self.assertTrue(native_host._sink_exists())
 
+    def test_native_host_accepts_each_registered_browser_extension_id(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            native_host, "_config_path", return_value=Path(temp) / "host.json"
+        ):
+            Path(temp, "host.json").write_text(
+                json.dumps({"extensions": {"chrome": "a" * 32, "brave": "b" * 32}}),
+                encoding="utf-8",
+            )
+            self.assertTrue(native_host.origin_is_allowed("chrome-extension://" + "a" * 32 + "/"))
+            self.assertTrue(native_host.origin_is_allowed("chrome-extension://" + "b" * 32 + "/"))
+            self.assertFalse(native_host.origin_is_allowed("chrome-extension://" + "c" * 32 + "/"))
+
     def test_native_host_rejects_unregistered_extension_origin(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(
             native_host, "_config_path", return_value=Path(temp) / "host.json"

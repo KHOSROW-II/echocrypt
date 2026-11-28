@@ -9,6 +9,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
@@ -112,7 +114,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Gold, background = Background,
                 surface = Panel, onPrimary = Background, onBackground = Color.White, onSurface = Color.White)) {
                 Surface(Modifier.fillMaxSize(), color = Background) {
-                    Column(Modifier.fillMaxSize().padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Lock, null, tint = Gold, modifier = Modifier.size(34.dp))
                             Spacer(Modifier.width(12.dp))
@@ -127,8 +129,7 @@ class MainActivity : ComponentActivity() {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("AUDIO INPUT", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                                    Spacer(Modifier.weight(1f))
-                                    Text(status, color = Muted, fontSize = 11.sp)
+                                                Text(status, color = Muted, fontSize = 11.sp)
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Mic, null, tint = Gold)
@@ -232,7 +233,7 @@ class MainActivity : ComponentActivity() {
                                 Text("PROTOCOL INTEGRATION", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
                                 Spacer(Modifier.height(8.dp))
                                 Text("ECF3 transmit encoder connected", fontWeight = FontWeight.SemiBold)
-                                Text("Native microphone capture, speaker output and diagnostic ECF3 transmission are available. Receive-side demodulation, ASRE recovery, Direct/Broadcast sessions, cryptographic handshake and file transfer are not implemented yet.",
+                                Text("Native microphone capture, live ECF3 stream scanning, speaker output and diagnostic transmission are connected. ASRE recovery, secure handshake/session management, Direct/Broadcast orchestration, encrypted messaging and file transfer are not implemented yet.",
                                     color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                             }
                         }

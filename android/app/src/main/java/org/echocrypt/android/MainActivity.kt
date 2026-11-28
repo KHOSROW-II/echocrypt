@@ -476,7 +476,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onOpenAudio = { /* navigate via the Audio tab */ }
                 )
             }
         }

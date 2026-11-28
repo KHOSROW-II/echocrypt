@@ -185,7 +185,8 @@ fun EchocryptAppShell(
                         outputError = outputError,
                         onStart = onStartDuplex,
                         onStop = onStopDuplex,
-                        onPlayTestTone = onPlayTestTone
+                        onPlayTestTone = onPlayTestTone,
+                        speakerTestFrequencyHz = settings.speakerTestFrequencyHz
                     )
                     AppSection.DIAGNOSTICS -> DiagnosticsScreen(
                         duplexRunning = duplexRunning,
@@ -554,7 +555,8 @@ private fun AudioScreen(
     outputError: String?,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onPlayTestTone: () -> Unit
+    onPlayTestTone: () -> Unit,
+    speakerTestFrequencyHz: Int
 ) {
     PageColumn {
         PageTitle("Audio controls", "Full-duplex acoustic input and output are managed separately from the Direct session.")
@@ -590,7 +592,7 @@ private fun AudioScreen(
         }
         SectionCard("Speaker test", "Play a tone to check the selected Android output device.") {
             Button(onClick = onPlayTestTone, enabled = !duplexRunning, modifier = Modifier.fillMaxWidth()) {
-                Text("Play 1,800 Hz test tone")
+                Text("Play " + speakerTestFrequencyHz + " Hz test tone")
             }
             Text("The standalone output test is disabled while Full Duplex is active.", color = ShellMuted, fontSize = 10.sp)
             outputError?.let { Text(it, color = ShellRed, fontSize = 11.sp) }

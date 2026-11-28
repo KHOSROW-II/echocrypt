@@ -33,6 +33,7 @@ object NativeModem {
         val samples: FloatArray,
         val payloadBytes: Int,
         val symbolCount: Int,
+        val symbols: IntArray,
         val durationSeconds: Double
     )
 
@@ -84,6 +85,7 @@ object NativeModem {
             samples = output,
             payloadBytes = payload.size,
             symbolCount = bits.size,
+            symbols = bits,
             durationSeconds = output.size.toDouble() / SAMPLE_RATE
         )
     }

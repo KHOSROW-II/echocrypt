@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.json.JSONObject
 import java.io.File
@@ -108,7 +109,7 @@ object NativeIdentity {
             require(peerPublicKey.size == 32) { "X25519 public key must be 32 bytes" }
             val output = ByteArray(32)
             X25519PrivateKeyParameters(privateBytes, 0)
-                .generateSecret(X25519PrivateKeyParameters(peerPublicKey, 0), output, 0)
+                .generateSecret(X25519PublicKeyParameters(peerPublicKey, 0), output, 0)
             require(output.any { it.toInt() != 0 }) { "Invalid all-zero X25519 shared secret" }
             return output
         }

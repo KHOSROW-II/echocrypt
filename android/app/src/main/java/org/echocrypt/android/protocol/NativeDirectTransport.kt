@@ -2,6 +2,7 @@ package org.echocrypt.android.protocol
 
 import android.content.Context
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Connects the authenticated ECH1 handshake and ECP1 secure channel to the
@@ -16,23 +17,28 @@ class NativeDirectTransport(
     private val onError: (String) -> Unit,
     private val onFileReceived: (File) -> Unit = {}
 ) {
-    private val vault = NativeIdentity.Vault(context.applicationContext)
-    private val peers = TrustedPeersStore(context.applicationContext)
-    private val receivedFilesDirectory = File(context.applicationContext.filesDir, "received")
+    private val appContext = context.applicationContext
+    private val vault = NativeIdentity.Vault(appContext)
+    private val peers = TrustedPeersStore(appContext)
+    private val receivedFilesDirectory = File(appContext.filesDir, "received")
+    private val transferStateDirectory = File(appContext.filesDir, "file-transfers")
     private var localIdentity: NativeIdentity.PrivateIdentity? = null
     private var handshake: NativePeerHandshake? = null
     private var reliable: ReliablePacketLayer? = null
     private var fileTransfer: NativeFileTransfer? = null
     private var peerName: String = ""
+    private var peerFingerprint: String = ""
 
-    @Synchronized fun trustedPeers(): List<TrustedPeersStore.TrustedPeer> = peers.list()
+    @Synchronized
+    fun trustedPeers(): List<TrustedPeersStore.TrustedPeer> = peers.list()
 
     val isActive: Boolean
         @Synchronized get() = handshake?.state?.let { it != NativePeerHandshake.State.CLOSED } == true
     val isEstablished: Boolean
         @Synchronized get() = handshake?.established == true
 
-    @Synchronized fun startInitiator(peerFingerprint: String) {
+    @Synchronized
+    fun startInitiator(peerFingerprint: String) {
         start(peerFingerprint, NativePeerHandshake.Role.INITIATOR)
         try {
             transmit(checkNotNull(handshake).start())
@@ -45,7 +51,8 @@ class NativeDirectTransport(
         }
     }
 
-    @Synchronized fun startResponder(peerFingerprint: String) {
+    @Synchronized
+    fun startResponder(peerFingerprint: String) {
         start(peerFingerprint, NativePeerHandshake.Role.RESPONDER)
         publishState()
     }
@@ -66,6 +73,7 @@ class NativeDirectTransport(
             )
             localIdentity = local
             handshake = direct
+            this.peerFingerprint = peer.identity.fingerprint
             peerName = peer.name
             onStateChanged(if (role == NativePeerHandshake.Role.INITIATOR)
                 "WAIT_REPLY · authenticating $peerName" else "WAIT_HELLO · listening for $peerName")
@@ -75,11 +83,14 @@ class NativeDirectTransport(
         }
     }
 
-    @Synchronized fun onIncomingPayload(payload: ByteArray) {
+    @Synchronized
+    fun onIncomingPayload(payload: ByteArray) {
         val active = handshake ?: return
         try {
             if (active.established) {
+                val firstApplicationPacket = reliable == null
                 ensureReliableLayer(active)
+                if (firstApplicationPacket) fileTransfer?.resumePending()
                 checkNotNull(reliable).receive(payload, android.os.SystemClock.elapsedRealtime())
                 return
             }
@@ -91,13 +102,16 @@ class NativeDirectTransport(
                 localIdentity?.destroy()
                 localIdentity = null
                 onStateChanged("ESTABLISHED · $peerName · ECP1 encrypted")
+                // A fresh authenticated session always renegotiates the durable receiver bitmap.
+                fileTransfer?.resumePending()
             }
         } catch (error: Exception) {
             onError(error.message ?: "Direct packet rejected")
         }
     }
 
-    @Synchronized fun sendText(text: String) {
+    @Synchronized
+    fun sendText(text: String) {
         require(text.isNotBlank()) { "Message cannot be empty" }
         val bytes = text.toByteArray(Charsets.UTF_8)
         require(bytes.size <= ReliablePacketLayer.MAX_MESSAGE_BYTES) { "Message exceeds reliable transport limit" }
@@ -107,35 +121,67 @@ class NativeDirectTransport(
         checkNotNull(reliable).send(bytes, android.os.SystemClock.elapsedRealtime())
     }
 
-    @Synchronized fun startFileTransfer(file: File, displayName: String = file.name) {
+    @Synchronized
+    fun startFileTransfer(file: File, displayName: String = file.name) {
         val active = checkNotNull(handshake) { "No Direct session is active" }
         check(active.established) { "Direct handshake has not completed" }
         ensureReliableLayer(active)
-        checkNotNull(fileTransfer).start(file, displayName)
+        // The picker stages a short-lived cache file; the transfer manager takes its own durable copy.
+        checkNotNull(fileTransfer).start(file, displayName, deleteSourceAfterSend = true)
     }
 
-    @Synchronized fun tick() { reliable?.tick(android.os.SystemClock.elapsedRealtime()) }
+    @Synchronized
+    fun resumeFileTransfers() {
+        val active = checkNotNull(handshake) { "No Direct session is active" }
+        check(active.established) { "Direct handshake has not completed" }
+        ensureReliableLayer(active)
+        fileTransfer?.resumePending()
+    }
 
-    @Synchronized fun retryHandshake() {
+    @Synchronized
+    fun tick() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        reliable?.tick(now)
+        fileTransfer?.tick(System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun retryHandshake() {
         val retry = checkNotNull(handshake) { "No Direct handshake is active" }.retryPacket
             ?: throw IllegalStateException("There is no handshake flight waiting for retry")
         transmit(retry)
         publishState()
     }
 
-    @Synchronized fun disconnect() {
+    @Synchronized
+    fun latestReceivedFile(): File? =
+        receivedFilesDirectory.listFiles { file -> file.isFile }
+            ?.maxByOrNull { it.lastModified() }
+
+    @Synchronized
+    fun pendingOutgoingFileName(): String? = fileTransfer?.pendingOutgoingName()
+
+    @Synchronized
+    fun disconnect() {
         closeUnlocked()
-        onStateChanged("IDLE")
+        onStateChanged("IDLE · transfers saved; reconnect to resume")
     }
 
     private fun ensureReliableLayer(active: NativePeerHandshake) {
         if (reliable != null) return
+        val peerStoreKey = MessageDigest.getInstance("SHA-256")
+            .digest(peerFingerprint.toByteArray(Charsets.UTF_8))
+            .take(16).joinToString("") { "%02x".format(it) }
         fileTransfer = NativeFileTransfer(
-            storageDirectory = receivedFilesDirectory,
-            sendPacket = { packet -> checkNotNull(reliable).send(packet, android.os.SystemClock.elapsedRealtime()) },
+            storageDirectory = File(transferStateDirectory, peerStoreKey),
+            sendPacket = { packet ->
+                checkNotNull(reliable).send(packet, android.os.SystemClock.elapsedRealtime())
+            },
             onProgress = { value -> onStateChanged("FILE · $value") },
             onReceived = onFileReceived,
-            onError = onError
+            onError = onError,
+            onSent = { name -> onStateChanged("FILE · delivery confirmed · $name") },
+            receivedDirectory = receivedFilesDirectory
         )
         reliable = ReliablePacketLayer(
             encrypt = { plain -> active.sendPayload(plain, maxPacketSize = 1024) },
@@ -156,13 +202,18 @@ class NativeDirectTransport(
                     onError(error.message ?: "Received application packet is invalid")
                 }
             },
-            onDelivered = { _ -> fileTransfer?.onReliablePacketDelivered() },
-            onFailure = { id, reason -> onError("Message #$id failed: $reason") }
+            onDelivered = { messageId -> fileTransfer?.onReliablePacketDelivered(messageId) },
+            onFailure = { messageId, reason ->
+                fileTransfer?.onReliablePacketFailed(messageId, reason)
+                onError("Reliable message #$messageId failed: $reason")
+            }
         )
     }
 
     private fun transmit(packet: ByteArray) {
-        require(packet.isNotEmpty() && packet.size <= 1024) { "Direct protocol packet exceeds the current ECF3 payload limit" }
+        require(packet.isNotEmpty() && packet.size <= 1024) {
+            "Direct protocol packet exceeds the current ECF3 payload limit"
+        }
         val frame = NativeModem.encode(packet)
         check(enqueueAudio(frame.samples)) { "Audio playback queue is full or duplex audio is not running" }
     }
@@ -173,6 +224,7 @@ class NativeDirectTransport(
     }
 
     private fun closeUnlocked() {
+        // Closing a session must never erase partial files or staged outgoing sources.
         fileTransfer?.close()
         fileTransfer = null
         reliable?.close()
@@ -182,5 +234,6 @@ class NativeDirectTransport(
         localIdentity?.destroy()
         localIdentity = null
         peerName = ""
+        peerFingerprint = ""
     }
 }

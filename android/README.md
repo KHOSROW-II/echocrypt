@@ -4,6 +4,8 @@ Standalone native Android app. No Termux, terminal emulator, Python runtime, or 
 
 ## Current implementation
 
+Android CI installs an explicit SDK package set; the generated APK is a development artifact, not a signed production release.
+
 - Kotlin + Jetpack Compose native application shell.
 - Runtime microphone permission and native 48 kHz mono PCM capture via AudioRecord.
 - Native AudioTrack playback and output diagnostic.

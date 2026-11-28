@@ -57,6 +57,14 @@ class NativeModemTest {
 
 
     @Test
+    fun fastSyncPrefilterSeparatesEcf3FromSilence() {
+        val frame = NativeModem.encode("FAST SYNC FILTER".toByteArray(Charsets.UTF_8))
+        val confidence = NativeDemodulator.fastSyncConfidence(frame.samples, 0)
+        assertTrue("valid ECF3 sync should pass prefilter: $confidence", confidence >= 0.08)
+        assertTrue(NativeDemodulator.fastSyncConfidence(FloatArray(64 * 240), 0) < 0.08)
+    }
+
+    @Test
     fun nativeDemodulatorDecodesAlignedEcf3Waveform() {
         val payloads = listOf(
             "E".toByteArray(Charsets.UTF_8),

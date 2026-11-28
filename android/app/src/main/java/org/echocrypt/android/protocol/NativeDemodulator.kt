@@ -9,9 +9,9 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * First native ECF3 receive path. Requires an already aligned frame start and
- * symbol clock; ASRE, timing/frequency recovery, hopping and stream sync remain
- * deliberately out of scope for this initial decoder.
+ * Native ECF3 demodulator. Supports sync-based acquisition of small
+ * symbol-clock errors and nominal-clock resampling. Continuous PLL tracking,
+ * carrier recovery and frequency hopping remain out of scope.
  */
 object NativeDemodulator {
     private const val SAMPLE_RATE = 48_000

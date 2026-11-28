@@ -32,6 +32,7 @@ import androidx.core.content.ContextCompat
 import org.echocrypt.android.audio.AndroidAudioEngine
 import org.echocrypt.android.audio.DuplexAudioSession
 import org.echocrypt.android.protocol.NativeDirectTransport
+import org.echocrypt.android.protocol.NativeBroadcastTransport
 import org.echocrypt.android.protocol.NativeModem
 import org.echocrypt.android.protocol.NativeStreamReceiver
 import org.echocrypt.android.protocol.PcmChunkSequenceGuard
@@ -61,11 +62,21 @@ class MainActivity : ComponentActivity() {
     private val chunkSequence = AtomicLong(0L)
     private val sequenceGuard = PcmChunkSequenceGuard()
     private lateinit var directTransport: NativeDirectTransport
+    private lateinit var broadcastTransport: NativeBroadcastTransport
+    private lateinit var settingsStore: EchocryptSettingsStore
+    @Volatile private var lastLoggedDirectStatus = ""
+    private var broadcastJoined by mutableStateOf(false)
+    private var broadcastStatus by mutableStateOf("NOT JOINED")
+    private var broadcastError by mutableStateOf<String?>(null)
+    private val broadcastMessages = mutableStateListOf<String>()
     private val reliabilityHandler = Handler(Looper.getMainLooper())
     private val reliabilityTicker = object : Runnable {
         override fun run() {
-            if (::directTransport.isInitialized && directTransport.isActive) {
-                executor.execute { runCatching { directTransport.tick() } }
+            if (::directTransport.isInitialized || ::broadcastTransport.isInitialized) {
+                executor.execute {
+                    if (::directTransport.isInitialized && directTransport.isActive) runCatching { directTransport.tick() }
+                    if (::broadcastTransport.isInitialized) runCatching { broadcastTransport.tick() }
+                }
             }
             reliabilityHandler.postDelayed(this, 1_000L)
         }
@@ -83,19 +94,52 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppEventLog.initialize(applicationContext)
+        settingsStore = EchocryptSettingsStore(applicationContext)
+        val initialSettings = settingsStore.load()
         directTransport = NativeDirectTransport(
             context = applicationContext,
+            settingsProvider = { settingsStore.load() },
             enqueueAudio = { samples -> duplexSession?.enqueuePlayback(samples) == true },
-            onStateChanged = { value -> runOnUiThread { directStatus = value } },
-            onTextReceived = { value -> runOnUiThread { addDirectMessage("Peer: $value") } },
-            onError = { value -> runOnUiThread { directError = value } },
-            onFileReceived = { file -> runOnUiThread { lastReceivedFile = file; addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage") } }
+            onStateChanged = { value ->
+                if (value != lastLoggedDirectStatus) {
+                    AppEventLog.record("DIRECT_STATE", value)
+                    lastLoggedDirectStatus = value
+                }
+                runOnUiThread { directStatus = value }
+            },
+            onTextReceived = { value ->
+                AppEventLog.record("DIRECT_RX_TEXT", "utf8Bytes=" + value.toByteArray(Charsets.UTF_8).size)
+                runOnUiThread { addDirectMessage("Peer: $value") }
+            },
+            onError = { value ->
+                AppEventLog.record("DIRECT_ERROR", value)
+                runOnUiThread { directError = value }
+            },
+            onFileReceived = { file -> runOnUiThread {
+                lastReceivedFile = file
+                addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage")
+            } }
+        )
+        broadcastTransport = NativeBroadcastTransport(
+            enqueueAudio = { samples, onPlayed -> duplexSession?.enqueuePlayback(samples, onPlayed) == true },
+            onTextReceived = { sender, text -> runOnUiThread { addBroadcastMessage(sender + ": " + text) } },
+            onError = { value ->
+                AppEventLog.record("BROADCAST_ERROR", value)
+                runOnUiThread { broadcastError = value }
+            },
+            onStateChanged = { value -> runOnUiThread {
+                broadcastStatus = value
+                broadcastJoined = value.startsWith("JOINED")
+            } }
         )
         lastReceivedFile = directTransport.latestReceivedFile()
         refreshTrustedPeers()
         reliabilityHandler.postDelayed(reliabilityTicker, 1_000L)
 
         setContent {
+            var appSettings by remember { mutableStateOf(initialSettings) }
+            val logDirectoryPath = remember { AppEventLog.directoryPath(applicationContext) }
             var listening by remember { mutableStateOf(false) }
             var level by remember { mutableFloatStateOf(-90f) }
             var status by remember { mutableStateOf("READY") }
@@ -173,7 +217,10 @@ class MainActivity : ComponentActivity() {
                         }
                         val frames = streamReceiver.push(pcm)
                         if (frames.isNotEmpty()) {
-                            frames.forEach { frame -> directTransport.onIncomingPayload(frame.payload) }
+                            frames.forEach { frame ->
+                                directTransport.onIncomingPayload(frame.payload)
+                                broadcastTransport.onIncomingPayload(frame.payload)
+                            }
                             runOnUiThread {
                                 receivedCount += frames.size
                                 lastReceived = frames.joinToString(" · ") { frame -> "ECF3 payload · ${frame.payload.size} bytes" }
@@ -191,23 +238,28 @@ class MainActivity : ComponentActivity() {
                 receiveExecutor.execute { streamReceiver.reset(); sequenceGuard.reset() }
                 executor.execute {
                     try {
+                        AppEventLog.record("AUDIO_DUPLEX_START_REQUESTED", "preferredOutputRate=" + appSettings.preferredOutputSampleRate)
                         val session = DuplexAudioSession(
                             onPcm = onCapturedPcm,
                             onError = { message ->
+                                AppEventLog.record("AUDIO_DUPLEX_ERROR", message)
                                 runOnUiThread {
                                     listening = false; status = "AUDIO ERROR"; error = message
-                                    directTransport.disconnect()
+                                    directTransport.disconnect(); broadcastTransport.leave()
                                 }
                                 executor.execute { duplexSession?.stop(); duplexSession = null }
                             },
-                            onInputLevel = { value -> runOnUiThread { level = value } }
+                            onInputLevel = { value -> runOnUiThread { level = value } },
+                            settings = appSettings
                         )
                         duplexSession = session
                         session.start()
                         runOnUiThread {
                             status = "FULL DUPLEX"
                             effectsStatus = "AEC: " + (if (session.supportsEchoCancellation) "ON" else "unavailable") +
-                                " · Noise suppression: " + (if (session.supportsNoiseSuppression) "ON" else "unavailable")
+                                " · Noise suppression: " + (if (session.supportsNoiseSuppression) "ON" else "unavailable") +
+                                " · Output: " + session.outputDescription
+                            AppEventLog.record("AUDIO_DUPLEX_STARTED", effectsStatus)
                         }
                     } catch (e: Exception) {
                         duplexSession?.stop(); duplexSession = null
@@ -263,6 +315,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onStopDuplex = {
                         directTransport.disconnect()
+                        broadcastTransport.leave()
+                        AppEventLog.record("AUDIO_DUPLEX_STOPPED")
                         executor.execute { duplexSession?.stop(); duplexSession = null }
                         listening = false
                         level = -90f
@@ -271,8 +325,12 @@ class MainActivity : ComponentActivity() {
                     onPlayTestTone = {
                         outputError = null
                         executor.execute {
-                            try { engine.playTestTone() }
-                            catch (e: Exception) {
+                            try {
+                                AppEventLog.record("AUDIO_TEST_TONE", "frequencyHz=" + appSettings.speakerTestFrequencyHz + " durationMs=" + appSettings.speakerTestDurationMs)
+                                engine.playTestTone(appSettings.speakerTestFrequencyHz, appSettings.speakerTestDurationMs,
+                                    appSettings.preferredOutputSampleRate)
+                            } catch (e: Exception) {
+                                AppEventLog.record("AUDIO_TEST_TONE_ERROR", e.message ?: e.javaClass.simpleName)
                                 runOnUiThread { outputError = e.message ?: "Output test failed" }
                             }
                         }
@@ -313,7 +371,10 @@ class MainActivity : ComponentActivity() {
                     onStartInitiator = { fingerprint ->
                         directError = null
                         executor.execute {
-                            try { directTransport.startInitiator(fingerprint) }
+                            try {
+                                check(!broadcastTransport.isJoined) { "Leave Broadcast before connecting Direct" }
+                                directTransport.startInitiator(fingerprint)
+                            }
                             catch (e: Exception) {
                                 runOnUiThread { directError = e.message ?: "Could not connect" }
                             }
@@ -322,7 +383,10 @@ class MainActivity : ComponentActivity() {
                     onStartResponder = { fingerprint ->
                         directError = null
                         executor.execute {
-                            try { directTransport.startResponder(fingerprint) }
+                            try {
+                                check(!broadcastTransport.isJoined) { "Leave Broadcast before waiting for Direct" }
+                                directTransport.startResponder(fingerprint)
+                            }
                             catch (e: Exception) {
                                 runOnUiThread { directError = e.message ?: "Could not wait for peer" }
                             }
@@ -346,6 +410,7 @@ class MainActivity : ComponentActivity() {
                         executor.execute {
                             try {
                                 directTransport.sendText(message)
+                                AppEventLog.record("DIRECT_TX_TEXT", "utf8Bytes=" + message.toByteArray(Charsets.UTF_8).size)
                                 runOnUiThread { addDirectMessage("Me: $message") }
                             } catch (e: Exception) {
                                 runOnUiThread {
@@ -355,10 +420,58 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onPeersChanged = { refreshTrustedPeers() },
-                    outputError = outputError
+                    outputError = outputError,
+                    settings = appSettings,
+                    logDirectoryPath = logDirectoryPath,
+                    onSettingsChanged = { updated ->
+                        try {
+                            settingsStore.save(updated)
+                            appSettings = updated
+                            AppEventLog.record("SETTINGS_UPDATED", updated.toString())
+                        } catch (failure: Exception) {
+                            AppEventLog.record("SETTINGS_SAVE_ERROR", failure.message ?: failure.javaClass.simpleName)
+                            directError = failure.message ?: "Could not save settings"
+                        }
+                    },
+                    broadcastJoined = broadcastJoined,
+                    broadcastAudioReady = listening,
+                    broadcastMessages = broadcastMessages.toList(),
+                    broadcastStatus = broadcastStatus,
+                    broadcastError = broadcastError,
+                    onJoinBroadcast = {
+                        executor.execute {
+                            try {
+                                check(duplexSession?.isRunning == true) { "Start Full Duplex before joining Broadcast" }
+                                check(!directTransport.isActive) { "Disconnect Direct before joining Broadcast" }
+                                broadcastError = null
+                                broadcastTransport.join()
+                            } catch (failure: Exception) {
+                                AppEventLog.record("BROADCAST_JOIN_ERROR", failure.message ?: failure.javaClass.simpleName)
+                                runOnUiThread { broadcastError = failure.message ?: "Could not join Broadcast" }
+                            }
+                        }
+                    },
+                    onLeaveBroadcast = { executor.execute { broadcastTransport.leave() } },
+                    onSendBroadcast = { message ->
+                        executor.execute {
+                            try {
+                                broadcastTransport.sendText(message)
+                                runOnUiThread { addBroadcastMessage("Me: " + message) }
+                            } catch (failure: Exception) {
+                                AppEventLog.record("BROADCAST_TX_ERROR", failure.message ?: failure.javaClass.simpleName)
+                                runOnUiThread { broadcastError = failure.message ?: "Broadcast send failed" }
+                            }
+                        }
+                    },
+                    onOpenAudio = { /* navigate via the Audio tab */ }
                 )
             }
         }
+    }
+
+    private fun addBroadcastMessage(value: String) {
+        broadcastMessages.add(value)
+        while (broadcastMessages.size > 200) broadcastMessages.removeAt(0)
     }
 
     private fun addDirectMessage(value: String) {
@@ -373,7 +486,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        AppEventLog.record("APP_STOP")
         reliabilityHandler.removeCallbacks(reliabilityTicker)
+        if (::broadcastTransport.isInitialized) broadcastTransport.close()
         if (::directTransport.isInitialized) directTransport.disconnect()
         duplexSession?.release(); duplexSession = null
         engine.release()

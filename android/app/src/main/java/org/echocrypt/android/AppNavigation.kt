@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +36,7 @@ private enum class AppSection(val title: String, val caption: String) {
     OVERVIEW("Overview", "Device and session summary"),
     DIRECT("Direct", "Authenticated encrypted communication"),
     FILES("Files", "Encrypted file transfer and delivery"),
+    BROADCAST("Broadcast", "Open acoustic broadcast room"),
     IDENTITY("Identity", "Device keys and trusted contacts"),
     AUDIO("Audio", "Microphone, speaker and full-duplex"),
     DIAGNOSTICS("Diagnostics", "ECF3 receive and output tests"),
@@ -72,9 +74,23 @@ fun EchocryptAppShell(
     onDisconnect: () -> Unit,
     onSendText: (String) -> Unit,
     onPeersChanged: () -> Unit,
-    outputError: String?
+    outputError: String?,
+    settings: EchocryptSettings,
+    logDirectoryPath: String,
+    onSettingsChanged: (EchocryptSettings) -> Unit,
+    broadcastJoined: Boolean,
+    broadcastAudioReady: Boolean,
+    broadcastMessages: List<String>,
+    broadcastStatus: String,
+    broadcastError: String?,
+    onJoinBroadcast: () -> Unit,
+    onLeaveBroadcast: () -> Unit,
+    onSendBroadcast: (String) -> Unit,
+    onOpenAudio: () -> Unit
 ) {
     var selected by remember { mutableStateOf(AppSection.OVERVIEW) }
+    LaunchedEffect(directEstablished) { if (directEstablished) selected = AppSection.DIRECT }
+    LaunchedEffect(broadcastJoined) { if (broadcastJoined) selected = AppSection.BROADCAST }
 
     Scaffold(
         containerColor = ShellBackground,
@@ -87,6 +103,7 @@ fun EchocryptAppShell(
                 NavItem(AppSection.OVERVIEW, selected, { selected = it }, Icons.Default.Home)
                 NavItem(AppSection.DIRECT, selected, { selected = it }, Icons.Default.ChatBubbleOutline)
                 NavItem(AppSection.FILES, selected, { selected = it }, Icons.Default.FolderOpen)
+                NavItem(AppSection.BROADCAST, selected, { selected = it }, Icons.Default.Public)
                 NavItem(AppSection.IDENTITY, selected, { selected = it }, Icons.Default.Fingerprint)
                 NavItem(AppSection.AUDIO, selected, { selected = it }, Icons.Default.GraphicEq)
                 NavItem(AppSection.SETTINGS, selected, { selected = it }, Icons.Default.Settings)
@@ -133,6 +150,17 @@ fun EchocryptAppShell(
                         onDisconnect = onDisconnect,
                         onSend = onSendText
                     )
+                    AppSection.BROADCAST -> BroadcastRoomScreen(
+                        joined = broadcastJoined,
+                        audioReady = broadcastAudioReady,
+                        messages = broadcastMessages,
+                        status = broadcastStatus,
+                        error = broadcastError,
+                        onJoin = onJoinBroadcast,
+                        onLeave = onLeaveBroadcast,
+                        onSend = onSendBroadcast,
+                        onOpenAudio = onOpenAudio
+                    )
                     AppSection.FILES -> FilesScreen(
                         duplexRunning = duplexRunning,
                         directEstablished = directEstablished,
@@ -170,7 +198,11 @@ fun EchocryptAppShell(
                         onSendDiagnosticFrame = onSendDiagnosticFrame,
                         onOpenAudio = { selected = AppSection.AUDIO }
                     )
-                    AppSection.SETTINGS -> SettingsScreen()
+                    AppSection.SETTINGS -> EchocryptSettingsScreen(
+                        settings = settings,
+                        logDirectoryPath = logDirectoryPath,
+                        onChange = onSettingsChanged
+                    )
                 }
             }
         }
@@ -404,24 +436,38 @@ private fun DirectScreen(
     onDisconnect: () -> Unit,
     onSend: (String) -> Unit
 ) {
-    PageColumn {
-        PageTitle("Direct communication", "Connect to a trusted device and exchange encrypted messages.")
-        if (!duplexRunning) {
-            NoticeCard("Audio is stopped", "Open Audio and start Full Duplex before connecting or receiving acoustic packets.")
-        }
-        DirectCommunicationPanel(
-            peers = peers,
-            duplexRunning = duplexRunning,
+    if (status.startsWith("ESTABLISHED")) {
+        MessengerPanel(
+            title = status.substringAfter("·").trim().substringBefore("·").trim().ifBlank { "Secure session" },
             status = status,
             messages = messages,
             error = error,
-            onRefreshPeers = onRefreshPeers,
-            onStartInitiator = onStartInitiator,
-            onStartResponder = onStartResponder,
-            onRetry = onRetry,
-            onDisconnect = onDisconnect,
+            publicRoom = false,
+            inputEnabled = duplexRunning,
+            exitLabel = "Disconnect",
+            onExit = onDisconnect,
             onSend = onSend
         )
+    } else {
+        PageColumn {
+            PageTitle("Direct communication", "Connect to a trusted device. After authentication this page becomes the encrypted messenger.")
+            if (!duplexRunning) {
+                NoticeCard("Audio is stopped", "Open Audio and start Full Duplex before connecting or receiving acoustic packets.")
+            }
+            DirectCommunicationPanel(
+                peers = peers,
+                duplexRunning = duplexRunning,
+                status = status,
+                messages = messages,
+                error = error,
+                onRefreshPeers = onRefreshPeers,
+                onStartInitiator = onStartInitiator,
+                onStartResponder = onStartResponder,
+                onRetry = onRetry,
+                onDisconnect = onDisconnect,
+                onSend = onSend
+            )
+        }
     }
 }
 

@@ -46,6 +46,7 @@ class DuplexAudioSession(
     val isRunning: Boolean get() = running.get()
     val supportsEchoCancellation: Boolean get() = echoCanceler != null
     val supportsNoiseSuppression: Boolean get() = noiseSuppressor != null
+    val outputDescription: String get() = openedOutput?.description ?: "unavailable"
 
     @Synchronized
     fun start() {

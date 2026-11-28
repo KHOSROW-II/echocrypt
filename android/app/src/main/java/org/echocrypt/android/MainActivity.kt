@@ -36,6 +36,12 @@ private val Muted = Color(0xFF8995A7)
 class MainActivity : ComponentActivity() {
     private val engine = AndroidAudioEngine()
     private val executor = Executors.newSingleThreadExecutor()
+    private val receiveExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(64),
+        ThreadPoolExecutor.AbortPolicy()
+    )
+    private val streamReceiver = NativeStreamReceiver()
     private var permissionResult: ((Boolean) -> Unit)? = null
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         permissionResult?.invoke(it)
@@ -51,6 +57,9 @@ class MainActivity : ComponentActivity() {
             var error by remember { mutableStateOf<String?>(null) }
             var outputError by remember { mutableStateOf<String?>(null) }
             var modemStatus by remember { mutableStateOf("No frame transmitted") }
+            var receivedCount by remember { mutableIntStateOf(0) }
+            var lastReceived by remember { mutableStateOf("No ECF3 frame received") }
+            var receiveError by remember { mutableStateOf<String?>(null) }
 
             val hasPermission = {
                 ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -58,11 +67,37 @@ class MainActivity : ComponentActivity() {
             }
             val start = {
                 error = null
+                receiveError = null
+                streamReceiver.reset()
                 executor.execute {
                     try {
-                        engine.startCapture({ value -> runOnUiThread { level = value } }, { message ->
-                            runOnUiThread { listening = false; status = "AUDIO ERROR"; error = message }
-                        })
+                        engine.startCapture(
+                            onLevel = { value -> runOnUiThread { level = value } },
+                            onError = { message ->
+                                runOnUiThread { listening = false; status = "AUDIO ERROR"; error = message }
+                            },
+                            onPcm = { pcm ->
+                                try {
+                                    receiveExecutor.execute {
+                                        val frames = streamReceiver.push(pcm)
+                                        if (frames.isNotEmpty()) {
+                                            runOnUiThread {
+                                                receivedCount += frames.size
+                                                lastReceived = frames.joinToString(" · ") { frame ->
+                                                    frame.payload.toString(Charsets.UTF_8)
+                                                        .replace(Regex("[^\\x20-\\x7E]"), "�")
+                                                        .take(96)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (_: RejectedExecutionException) {
+                                    runOnUiThread {
+                                        receiveError = "Receive processing overloaded; audio chunks were dropped."
+                                    }
+                                }
+                            }
+                        )
                     } catch (e: Exception) {
                         runOnUiThread { listening = false; status = "AUDIO ERROR"; error = e.message }
                     }
@@ -174,6 +209,18 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        
+                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
+                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("ECF3 RECEIVE", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                                Text("$receivedCount frame(s) decoded", fontWeight = FontWeight.SemiBold)
+                                Text(lastReceived, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                                receiveError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 11.sp) }
+                                Text("Incoming microphone PCM is scanned for ECF3 frames. Payload display is diagnostic plaintext only.",
+                                    color = Color(0xFFFFC56A), fontSize = 10.sp, lineHeight = 15.sp)
+                            }
+                        }
                         Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF101722)),
                             shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
@@ -197,6 +244,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         engine.release()
         executor.shutdownNow()
+        receiveExecutor.shutdownNow()
         super.onDestroy()
     }
 }

@@ -422,10 +422,27 @@ jobs:
           }
           gh release upload "$TAG" "${RELEASE_ASSETS[@]}" --clobber
 
-          # Read the uploaded asset records back from GitHub. Draft releases can
-          # expose browser_download_url paths using GitHub's untagged slug rather
-          # than the requested tag, so never guess those download URLs.
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release-assets/GITHUB_RELEASE_ASSETS.json
+          # Resolve the created Draft through the releases collection, then
+          # fetch it by numeric release ID. GitHub's /releases/tags/{tag}
+          # endpoint can return 404 for a Draft that is already visible in the
+          # releases collection (the Draft page may use an untagged URL slug).
+          RELEASE_ID=""
+          for attempt in {1..10}; do
+            RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1 || true)"
+            if [[ -n "$RELEASE_ID" ]]; then
+              break
+            fi
+            echo "Draft $TAG is not visible in the release collection yet (attempt $attempt/10)."
+            sleep 3
+          done
+          [[ -n "$RELEASE_ID" ]] || {
+            echo "Could not resolve Draft release ID for tag $TAG after 10 attempts."
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+            exit 1
+          }
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release-assets/GITHUB_RELEASE_ASSETS.json
+
           python scripts/generate_changelog.py \
             --tag "$TAG" \
             --repository "$GITHUB_REPOSITORY" \

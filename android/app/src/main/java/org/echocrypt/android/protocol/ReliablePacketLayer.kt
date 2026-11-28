@@ -131,9 +131,11 @@ class ReliablePacketLayer(
     }
 
     private fun acceptData(id: Int, index: Int, count: Int, payload: ByteArray, now: Long) {
-        // Always ACK duplicates: the original ACK may have been lost.
-        transmit(encrypt(packet(TYPE_ACK, id, index, count, ByteArray(0))))
-        if (completed.containsKey(id)) return
+        // A completed duplicate is still ACKed because the original ACK may be lost.
+        if (completed.containsKey(id)) {
+            sendAck(id, index, count)
+            return
+        }
         var state = incoming[id]
         if (state == null) {
             require(incoming.size < MAX_INCOMING) { "Too many incomplete messages" }
@@ -141,11 +143,16 @@ class ReliablePacketLayer(
             incoming[id] = state
         }
         require(state.count == count) { "Conflicting fragment count" }
-        if (state.fragments[index] != null) return
+        if (state.fragments[index] != null) {
+            sendAck(id, index, count)
+            return
+        }
         require(state.bytes + payload.size <= MAX_MESSAGE_BYTES) { "Incoming message exceeds limit" }
         state.fragments[index] = payload.copyOf()
         state.bytes += payload.size
         state.received++
+        // ACK only after the fragment has been accepted into the reassembly buffer.
+        sendAck(id, index, count)
         if (state.received == state.count) {
             val message = ByteArray(state.bytes)
             var offset = 0

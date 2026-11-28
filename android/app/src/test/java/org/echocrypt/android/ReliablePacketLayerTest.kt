@@ -47,6 +47,9 @@ class ReliablePacketLayerTest {
         assertEquals(1,l.ba.size)
         a.receive(droppedAck,1_020)
         assertFalse(a.hasPendingMessage())
+        // Discard the ACK generated for the retransmission, then verify a late
+        // duplicate produces another ACK without a second application delivery.
+        l.ba.removeFirst()
         b.receive(first,1_030)
         assertEquals(1,l.received.size)
         assertEquals(1,l.ba.size)

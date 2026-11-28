@@ -11,7 +11,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: echocrypt-android-ci-${{ github.event.pull_request.number || github.ref }}
+  # v2 separates this fixed workflow generation from any stale in-progress
+  # runs left behind by the previous concurrency group.
+  group: echocrypt-android-ci-v2-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

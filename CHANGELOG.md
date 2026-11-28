@@ -1,3 +1,24 @@
+## Android Native integration — 2026-11-28
+
+- Added the standalone Kotlin/Jetpack Compose Android client on the independent
+  `android` development branch. Android is built as a separate source input;
+  this release does not merge the Android branch into `main`.
+- Android Direct uses the native ECF3 acoustic modem, ECH1 authenticated peer
+  handshake, ECP1 encrypted channel, and encrypted reliable packet transport.
+- Added persistent resumable file transfer with receiver-side chunk maps,
+  final SHA-256 verification, and authenticated application-level COMPLETE
+  confirmation. Maximum file size is 10 MiB.
+- Added a bounded FIFO message queue and a two-fragment sliding window for
+  reliable transport. The receiver reassembles out-of-order fragments; the
+  sender retransmits missing fragments within a bounded retry policy.
+- Android CI passed on commit
+  `ed110361a19338040ea1798687951cf2ef45b514`; native unit tests and the
+  unsigned Debug APK build completed successfully.
+- The APK is a development build, not a production-signed package. Real-device
+  two-phone acoustic transfer, resume-under-interruption, and throughput
+  measurements have not yet been validated. The Direct modem currently uses
+  the conservative 200-baud profile and a two-fragment window.
+
 ## Final — Broadcast voice receive synchronization fix
 
 - The acoustic modem now retains a bounded set of independently refined ECF3,

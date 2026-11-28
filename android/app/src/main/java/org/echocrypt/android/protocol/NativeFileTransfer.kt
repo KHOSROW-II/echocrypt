@@ -24,6 +24,7 @@ class NativeFileTransfer(
         val name: String,
         val digest: ByteArray,
         val chunkCount: Int,
+        val deleteSourceAfterSend: Boolean,
         var nextChunk: Int = 0
     )
     private data class Incoming(
@@ -137,6 +138,7 @@ class NativeFileTransfer(
         awaitingTransportAck = true
         try { sendPacket(packet) } catch (error: Exception) {
             awaitingTransportAck = false
+            outgoing?.let { if (it.deleteSourceAfterSend) it.source.delete() }
             outgoing = null
             throw error
         }

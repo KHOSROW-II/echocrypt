@@ -216,174 +216,147 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            MaterialTheme(colorScheme = darkColorScheme(primary = Gold, background = Background,
-                surface = Panel, onPrimary = Background, onBackground = Color.White, onSurface = Color.White)) {
-                Surface(Modifier.fillMaxSize(), color = Background) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Lock, null, tint = Gold, modifier = Modifier.size(34.dp))
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text("ECHOCRYPT", fontSize = 25.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-                                Text("NATIVE ACOUSTIC CLIENT", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
-                            }
-                        }
-
-                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
-                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("FULL DUPLEX AUDIO", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                                    Spacer(Modifier.weight(1f)); Text(status, color = Muted, fontSize = 11.sp)
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Mic, null, tint = Gold); Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text("Microphone")
-                                        Text(if (listening) "48 kHz · Mono PCM · Capture + playback ready" else "Stopped",
-                                            color = Muted, fontSize = 12.sp)
-                                    }
-                                    Text("${level.toInt()} dB", color = Gold, fontSize = 12.sp)
-                                }
-                                Box(Modifier.fillMaxWidth().height(6.dp).background(Color(0xFF293547), RoundedCornerShape(8.dp))) {
-                                    Box(Modifier.fillMaxWidth(((level + 90f) / 90f).coerceIn(0f, 1f)).height(6.dp)
-                                        .background(Gold, RoundedCornerShape(8.dp)))
-                                }
-                                Text(effectsStatus, color = Muted, fontSize = 11.sp)
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(onClick = {
-                                        if (hasPermission()) { listening = true; status = "LISTENING"; start() }
-                                        else {
-                                            permissionResult = { granted ->
-                                                if (granted) { listening = true; status = "LISTENING"; start() }
-                                                else error = "Microphone permission denied"
-                                            }
-                                            permissionRequest.launch(Manifest.permission.RECORD_AUDIO)
-                                        }
-                                    }, enabled = !listening, modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
-                                        Icon(Icons.Default.Mic, null); Spacer(Modifier.width(6.dp)); Text("Start Duplex")
-                                    }
-                                    Button(onClick = {
-                                        directTransport.disconnect()
-                                        executor.execute { duplexSession?.stop(); duplexSession = null }
-                                        listening = false; level = -90f; status = "READY"
-                                    }, enabled = listening, modifier = Modifier.weight(1f)) {
-                                        Icon(Icons.Default.Stop, null); Spacer(Modifier.width(6.dp)); Text("Stop")
-                                    }
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = Gold,
+                    background = Background,
+                    surface = Panel,
+                    onPrimary = Background,
+                    onBackground = Color.White,
+                    onSurface = Color.White
+                )
+            ) {
+                EchocryptAppShell(
+                    duplexRunning = listening,
+                    audioStatus = status,
+                    audioLevel = level,
+                    audioEffects = effectsStatus,
+                    audioError = error,
+                    directStatus = directStatus,
+                    directMessages = directMessages.toList(),
+                    directError = directError,
+                    peers = trustedPeers,
+                    latestReceivedFile = lastReceivedFile,
+                    pendingOutgoingFileName = directTransport.pendingOutgoingFileName(),
+                    directEstablished = directTransport.isEstablished,
+                    receivedFrameCount = receivedCount,
+                    lastReceivedFrame = lastReceived,
+                    receiveError = receiveError,
+                    modemStatus = modemStatus,
+                    onStartDuplex = {
+                        if (hasPermission()) {
+                            listening = true
+                            status = "STARTING"
+                            start()
+                        } else {
+                            permissionResult = { granted ->
+                                if (granted) {
+                                    listening = true
+                                    status = "STARTING"
+                                    start()
+                                } else {
+                                    error = "Microphone permission denied"
                                 }
                             }
+                            permissionRequest.launch(Manifest.permission.RECORD_AUDIO)
                         }
-
-                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
-                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.VolumeUp, null, tint = Gold); Spacer(Modifier.width(8.dp))
-                                    Text("OUTPUT TEST", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-                                }
-                                Text("Verify Android speaker or connected audio output.", color = Muted, fontSize = 12.sp)
-                                Button(onClick = {
-                                    outputError = null
-                                    executor.execute { try { engine.playTestTone() }
-                                        catch (e: Exception) { runOnUiThread { outputError = e.message } } }
-                                }, enabled = !listening, modifier = Modifier.fillMaxWidth()) { Text("Play 1,800 Hz test tone") }
-                                outputError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 12.sp) }
-                                Button(onClick = {
-                                    outputError = null; modemStatus = "Encoding ECF3 frame…"
-                                    executor.execute {
-                                        try {
-                                            val frame = NativeModem.encode("ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8))
-                                            val session = duplexSession ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
-                                            check(session.isRunning) { "Full Duplex audio is not running" }
-                                            check(!directTransport.isActive) { "Disconnect the Direct session before running diagnostics" }
-                                            check(session.enqueuePlayback(frame.samples)) { "Playback queue is full; wait for the current transmission" }
-                                            runOnUiThread { modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s" }
-                                        } catch (e: Exception) {
-                                            runOnUiThread { outputError = e.message ?: "Modem transmission failed"; modemStatus = "Transmission failed" }
-                                        }
-                                    }
-                                }, enabled = listening && !directTransport.isActive, modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
-                                    Text("Queue ECF3 test frame")
-                                }
-                                Text(modemStatus, color = Muted, fontSize = 11.sp)
-                                Text("Diagnostic payload is queued as unencrypted test data. Do not use during a Direct session.",
-                                    color = Color(0xFFFFC56A), fontSize = 10.sp)
+                    },
+                    onStopDuplex = {
+                        directTransport.disconnect()
+                        executor.execute { duplexSession?.stop(); duplexSession = null }
+                        listening = false
+                        level = -90f
+                        status = "READY"
+                    },
+                    onPlayTestTone = {
+                        outputError = null
+                        executor.execute {
+                            try { engine.playTestTone() }
+                            catch (e: Exception) {
+                                runOnUiThread { outputError = e.message ?: "Output test failed" }
                             }
                         }
-
-                        IdentityManagementPanel(onPeersChanged = { refreshTrustedPeers() })
-
-                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
-                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("ENCRYPTED FILE TRANSFER", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-                                Text("Files up to 10 MiB · SHA-256 verification · saved in app-private storage on receipt.",
-                                    color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
-                                Button(onClick = { filePicker.launch(arrayOf("*/*")) },
-                                    enabled = listening && directTransport.isEstablished,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
-                                    Text("Choose file and send")
+                    },
+                    onSendDiagnosticFrame = {
+                        outputError = null
+                        modemStatus = "Encoding ECF3 frame…"
+                        executor.execute {
+                            try {
+                                val frame = NativeModem.encode(
+                                    "ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8)
+                                )
+                                val session = duplexSession
+                                    ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
+                                check(session.isRunning) { "Full Duplex audio is not running" }
+                                check(!directTransport.isActive) {
+                                    "Disconnect the Direct session before running diagnostics"
                                 }
-                                Text("Received files stay in app-private storage until explicitly exported. No broad storage permission is requested.",
-                                    color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
-                                Button(onClick = { lastReceivedFile?.let { saveReceivedFile.launch(it.name) } },
-                                    enabled = lastReceivedFile?.exists() == true, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Save latest received file to device")
+                                check(session.enqueuePlayback(frame.samples)) {
+                                    "Playback queue is full; wait for the current transmission"
+                                }
+                                runOnUiThread {
+                                    modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    outputError = e.message ?: "Modem transmission failed"
+                                    modemStatus = "Transmission failed"
                                 }
                             }
                         }
-
-                        DirectCommunicationPanel(
-                            peers = trustedPeers, duplexRunning = duplexSession?.isRunning == true,
-                            status = directStatus, messages = directMessages, error = directError,
-                            onRefreshPeers = { refreshTrustedPeers() },
-                            onStartInitiator = { fingerprint ->
-                                directError = null
-                                executor.execute { try { directTransport.startInitiator(fingerprint) }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not connect" } } }
-                            },
-                            onStartResponder = { fingerprint ->
-                                directError = null
-                                executor.execute { try { directTransport.startResponder(fingerprint) }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not wait for peer" } } }
-                            },
-                            onRetry = {
-                                executor.execute { try { directTransport.retryHandshake() }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Retry failed" } } }
-                            },
-                            onDisconnect = {
-                                executor.execute {
-                                    directTransport.disconnect()
-                                    runOnUiThread { directMessages.clear(); directError = null }
-                                }
-                            },
-                            onSend = { message ->
-                                executor.execute { try { directTransport.sendText(message); runOnUiThread { addDirectMessage("Me: $message") } }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Message transmission failed" } } }
-                            }
-                        )
-
-                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
-                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("ECF3 RECEIVE", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-                                Text("$receivedCount frame(s) decoded", fontWeight = FontWeight.SemiBold)
-                                Text(lastReceived, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-                                receiveError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 11.sp) }
-                                Text("Decoded packet bytes are routed to the active Direct session and are not rendered as plaintext diagnostics.",
-                                    color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
+                    },
+                    onChooseFile = { filePicker.launch(arrayOf("*/*")) },
+                    onExportReceivedFile = {
+                        lastReceivedFile?.let { saveReceivedFile.launch(it.name) }
+                    },
+                    onRefreshPeers = { refreshTrustedPeers() },
+                    onStartInitiator = { fingerprint ->
+                        directError = null
+                        executor.execute {
+                            try { directTransport.startInitiator(fingerprint) }
+                            catch (e: Exception) {
+                                runOnUiThread { directError = e.message ?: "Could not connect" }
                             }
                         }
-                        Spacer(Modifier.weight(1f))
-                        Text("ANDROID NATIVE · 0.1.0 DEVELOPMENT", color = Muted, fontSize = 10.sp,
-                            modifier = Modifier.align(Alignment.CenterHorizontally))
-                        error?.let { Text(it, color = Color(0xFFFF7777), fontSize = 12.sp) }
-                    }
-                }
+                    },
+                    onStartResponder = { fingerprint ->
+                        directError = null
+                        executor.execute {
+                            try { directTransport.startResponder(fingerprint) }
+                            catch (e: Exception) {
+                                runOnUiThread { directError = e.message ?: "Could not wait for peer" }
+                            }
+                        }
+                    },
+                    onRetryHandshake = {
+                        executor.execute {
+                            try { directTransport.retryHandshake() }
+                            catch (e: Exception) {
+                                runOnUiThread { directError = e.message ?: "Retry failed" }
+                            }
+                        }
+                    },
+                    onDisconnect = {
+                        executor.execute {
+                            directTransport.disconnect()
+                            runOnUiThread { directMessages.clear(); directError = null }
+                        }
+                    },
+                    onSendText = { message ->
+                        executor.execute {
+                            try {
+                                directTransport.sendText(message)
+                                runOnUiThread { addDirectMessage("Me: $message") }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    directError = e.message ?: "Message transmission failed"
+                                }
+                            }
+                        }
+                    },
+                    onPeersChanged = { refreshTrustedPeers() },
+                    outputError = outputError
+                )
             }
         }
     }

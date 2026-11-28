@@ -262,6 +262,8 @@ class MainActivity : ComponentActivity() {
                         }
 
                         
+                        IdentityManagementPanel()
+
                         Card(colors = CardDefaults.cardColors(containerColor = Panel),
                             shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

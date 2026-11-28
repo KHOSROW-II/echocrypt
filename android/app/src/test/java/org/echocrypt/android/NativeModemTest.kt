@@ -93,4 +93,43 @@ class NativeModemTest {
     fun rejectsPayloadAboveProtocolLimit() {
         NativeModem.encode(ByteArray(1_025))
     }
-}
+
+    @Test
+    fun streamReceiverHandlesArbitraryChunkBoundariesAndConsecutiveFrames() {
+        val firstPayload = "STREAM ONE".toByteArray(Charsets.UTF_8)
+        val secondPayload = "STREAM TWO WITH MORE DATA".toByteArray(Charsets.UTF_8)
+        val first = NativeModem.encode(firstPayload)
+        val second = NativeModem.encode(secondPayload)
+        val stream = FloatArray(13) + first.samples + second.samples
+        val receiver = org.echocrypt.android.protocol.NativeStreamReceiver(candidateStride = 1)
+        val received = ArrayList<org.echocrypt.android.protocol.NativeStreamReceiver.ReceivedFrame>()
+
+        var cursor = 0
+        val chunks = intArrayOf(127, 4093, 8191, 2048, 7777, 16001)
+        var index = 0
+        while (cursor < stream.size) {
+            val end = minOf(stream.size, cursor + chunks[index++ % chunks.size])
+            received += receiver.push(stream.copyOfRange(cursor, end))
+            cursor = end
+        }
+
+        assertEquals(2, received.size)
+        assertTrue(received[0].payload.contentEquals(firstPayload))
+        assertTrue(received[1].payload.contentEquals(secondPayload))
+        assertEquals(13L, received[0].startOffsetSamples)
+        assertEquals(13L + first.samples.size, received[1].startOffsetSamples)
+    }
+
+    @Test
+    fun streamReceiverWaitsForIncompleteFrameInsteadOfDiscardingItsSync() {
+        val payload = "INCREMENTAL RECEIVE".toByteArray(Charsets.UTF_8)
+        val frame = NativeModem.encode(payload)
+        val receiver = org.echocrypt.android.protocol.NativeStreamReceiver(candidateStride = 1)
+        val split = frame.samples.size / 2
+
+        assertTrue(receiver.push(frame.samples.copyOfRange(0, split)).isEmpty())
+        val completed = receiver.push(frame.samples.copyOfRange(split, frame.samples.size))
+        assertEquals(1, completed.size)
+        assertTrue(completed.single().payload.contentEquals(payload))
+    }
+}\n

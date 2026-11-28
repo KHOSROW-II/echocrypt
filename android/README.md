@@ -15,6 +15,11 @@ Android CI installs an explicit SDK package set; the generated APK is a developm
 - Acquisition-time symbol-clock recovery scans candidate frames for modest sample-rate drift; continuous PLL tracking is not implemented.
 - Android unit tests for deterministic frame generation, Python-generated ECF3 symbol golden vectors, aligned native receive decoding, and ECF3 symbol/sample layout.
 
+## UI and audio lifecycle fixes
+
+- The output test now checks AudioTrack initialization before calling stop(), avoiding the uninitialized-track exception reported on-device.
+- The main screen uses vertical scrolling so lower feature/status panels remain reachable on shorter displays.
+
 ## Important limitations
 
 This is not yet a complete acoustic messenger. The live microphone path feeds an incremental ECF3 frame scanner, but continuous PLL/sample-clock tracking, robust frequency-offset tracking, ASRE recovery, authenticated frequency hopping, encrypted session/handshake, peer identity, Direct/Broadcast orchestration, file transfer, and voice messaging are not implemented. The diagnostic frame sent from the UI is explicitly **unencrypted** and is not a secure message. CI/unit tests do not replace real-device acoustic loopback and cross-platform interoperability testing.

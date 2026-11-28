@@ -95,6 +95,7 @@ fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
                         } finally {
                             privateIdentity.destroy()
                         }
+                        AppEventLog.record("IDENTITY_CREATED", "vault=android-keystore")
                         message = "Identity created and encrypted with Android Keystore."
                         localError = null
                     } catch (error: Exception) {
@@ -107,10 +108,12 @@ fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = {
                         clipboard.setText(AnnotatedString(fingerprint))
+                        AppEventLog.record("IDENTITY_FINGERPRINT_COPIED")
                         message = "Fingerprint copied"
                     }) { Text("Copy fingerprint") }
                     TextButton(onClick = {
                         clipboard.setText(AnnotatedString(identityJson))
+                        AppEventLog.record("IDENTITY_PUBLIC_EXPORT_COPIED")
                         message = "Public identity JSON copied"
                     }) { Text("Copy public identity") }
                 }
@@ -153,6 +156,7 @@ fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
                 onClick = {
                     try {
                         peersStore.import(peerJson, peerName, confirmedFingerprint)
+                        AppEventLog.record("PEER_TRUSTED", "name=" + peerName.take(80) + " fingerprintPrefix=" + confirmedFingerprint.take(12))
                         peerName = ""
                         peerJson = ""
                         confirmedFingerprint = ""
@@ -161,6 +165,7 @@ fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
                         message = "Peer added to trusted contacts."
                         localError = null
                     } catch (error: Exception) {
+                        AppEventLog.record("PEER_TRUST_ERROR", error.message ?: error.javaClass.simpleName)
                         localError = error.message ?: "Peer import failed"
                     }
                 },
@@ -179,11 +184,13 @@ fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
                         TextButton(onClick = {
                             try {
                                 peersStore.remove(peer.identity.fingerprint)
+                                AppEventLog.record("PEER_UNTRUSTED", "fingerprintPrefix=" + peer.identity.fingerprint.take(12))
                                 refresh()
                                 onPeersChanged()
                                 message = "Trusted peer removed."
                                 localError = null
                             } catch (error: Exception) {
+                                AppEventLog.record("PEER_REMOVE_ERROR", error.message ?: error.javaClass.simpleName)
                                 localError = error.message ?: "Could not remove peer"
                             }
                         }) { Text("Remove trust", color = Color(0xFFFF7777)) }

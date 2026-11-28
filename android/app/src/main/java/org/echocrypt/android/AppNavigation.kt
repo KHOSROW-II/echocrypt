@@ -219,7 +219,10 @@ private fun RowScope.NavItem(
 ) {
     NavigationBarItem(
         selected = selected == section,
-        onClick = { onSelect(section) },
+        onClick = {
+            AppEventLog.record("UI_NAVIGATION", section.title)
+            onSelect(section)
+        },
         icon = { Icon(icon, contentDescription = section.title) },
         label = { Text(section.title, maxLines = 1, fontSize = 9.sp) },
         alwaysShowLabel = false,

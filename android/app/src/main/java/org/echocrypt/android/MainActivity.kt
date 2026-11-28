@@ -214,7 +214,8 @@ class MainActivity : ComponentActivity() {
                     receiveExecutor.execute {
                         if (sequenceGuard.requiresReset(sequence)) {
                             streamReceiver.reset()
-                            runOnUiThread { receiveError = "Audio processing fell behind; decoder reacquired after dropped PCM." }
+                            AppEventLog.record("AUDIO_RX_OVERRUN", "pcmSequence=" + sequence)
+                        runOnUiThread { receiveError = "Audio processing fell behind; decoder reacquired after dropped PCM." }
                         }
                         val frames = streamReceiver.push(pcm)
                         if (frames.isNotEmpty()) {
@@ -229,6 +230,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } catch (_: RejectedExecutionException) {
+                    AppEventLog.record("AUDIO_RX_QUEUE_OVERFLOW")
                     AppEventLog.record("AUDIO_RX_QUEUE_OVERFLOW")
                     runOnUiThread { receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization." }
                 }
@@ -264,6 +266,7 @@ class MainActivity : ComponentActivity() {
                             AppEventLog.record("AUDIO_DUPLEX_STARTED", effectsStatus)
                         }
                     } catch (e: Exception) {
+                        AppEventLog.record("AUDIO_DUPLEX_START_ERROR", e.message ?: e.javaClass.simpleName)
                         duplexSession?.stop(); duplexSession = null
                         runOnUiThread { listening = false; status = "AUDIO ERROR"; error = e.message ?: "Could not start full-duplex audio" }
                     }
@@ -368,14 +371,20 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onChooseFile = { filePicker.launch(arrayOf("*/*")) },
+                    onChooseFile = {
+                        AppEventLog.record("FILE_PICKER_OPENED")
+                        filePicker.launch(arrayOf("*/*"))
+                    },
                     onExportReceivedFile = {
                         lastReceivedFile?.let {
                             AppEventLog.record("FILE_EXPORT_REQUESTED", "name=" + it.name + " bytes=" + it.length())
                             saveReceivedFile.launch(it.name)
                         }
                     },
-                    onRefreshPeers = { refreshTrustedPeers() },
+                    onRefreshPeers = {
+                        AppEventLog.record("PEER_LIST_REFRESHED")
+                        refreshTrustedPeers()
+                    },
                     onStartInitiator = { fingerprint ->
                         directError = null
                         executor.execute {
@@ -414,6 +423,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onDisconnect = {
+                        AppEventLog.record("DIRECT_DISCONNECT_REQUESTED")
                         executor.execute {
                             directTransport.disconnect()
                             runOnUiThread { directMessages.clear(); directError = null }

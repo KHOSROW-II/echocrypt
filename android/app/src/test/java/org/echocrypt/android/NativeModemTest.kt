@@ -100,8 +100,8 @@ class NativeModemTest {
         val secondPayload = "STREAM TWO WITH MORE DATA".toByteArray(Charsets.UTF_8)
         val first = NativeModem.encode(firstPayload)
         val second = NativeModem.encode(secondPayload)
-        val stream = FloatArray(13) + first.samples + second.samples
-        val receiver = org.echocrypt.android.protocol.NativeStreamReceiver(candidateStride = 1)
+        val stream = FloatArray(16) + first.samples + second.samples
+        val receiver = org.echocrypt.android.protocol.NativeStreamReceiver()
         val received = ArrayList<org.echocrypt.android.protocol.NativeStreamReceiver.ReceivedFrame>()
 
         var cursor = 0
@@ -116,8 +116,8 @@ class NativeModemTest {
         assertEquals(2, received.size)
         assertTrue(received[0].payload.contentEquals(firstPayload))
         assertTrue(received[1].payload.contentEquals(secondPayload))
-        assertEquals(13L, received[0].startOffsetSamples)
-        assertEquals(13L + first.samples.size, received[1].startOffsetSamples)
+        assertEquals(16L, received[0].startOffsetSamples)
+        assertEquals(16L + first.samples.size, received[1].startOffsetSamples)
     }
 
     @Test

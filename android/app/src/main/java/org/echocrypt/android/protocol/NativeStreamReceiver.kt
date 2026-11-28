@@ -46,14 +46,18 @@ class NativeStreamReceiver(
         val minimumFrame = (64 + 330) * 240
         val maximumFrame = (64 + 330 + (1_028 * 8 + 6) * 2) * 240 + 96
 
-        var waitingForPayload = false\n        while (buffer.size - nextCandidate >= minimumFrame) {
+        var waitingForPayload = false
+        while (buffer.size - nextCandidate >= minimumFrame) {
             var decoded: ByteArray? = null
             try {
                 decoded = NativeDemodulator.decodeAligned(buffer, nextCandidate)
             } catch (error: IllegalArgumentException) {
                 // A valid sync/header with an incomplete payload must remain
                 // buffered until the next audio chunk arrives.
-                if (error.message?.startsWith("Truncated ECF3 payload") == true) {\n                    waitingForPayload = true\n                    break\n                }
+                if (error.message?.startsWith("Truncated ECF3 payload") == true) {
+                    waitingForPayload = true
+                    break
+                }
             }
 
             if (decoded != null) {

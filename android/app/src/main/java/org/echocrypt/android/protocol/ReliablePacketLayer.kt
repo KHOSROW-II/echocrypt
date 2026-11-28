@@ -169,6 +169,10 @@ class ReliablePacketLayer(
         }
     }
 
+    private fun sendAck(id: Int, index: Int, count: Int) {
+        transmit(encrypt(packet(TYPE_ACK, id, index, count, ByteArray(0))))
+    }
+
     private fun packet(type: Int, id: Int, index: Int, count: Int, payload: ByteArray): ByteArray =
         ByteBuffer.allocate(HEADER_SIZE + payload.size).order(ByteOrder.BIG_ENDIAN)
             .put(MAGIC).put(type.toByte()).putInt(id).putShort(index.toShort())

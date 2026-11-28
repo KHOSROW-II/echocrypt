@@ -196,6 +196,7 @@ class MainActivity : ComponentActivity() {
                             directTransport.startFileTransfer(staged, displayName)
                             staged = null
                         } catch (e: Exception) {
+                            AppEventLog.record("FILE_PICKER_OR_TX_ERROR", e.message ?: e.javaClass.simpleName)
                             runOnUiThread { directError = e.message ?: "Could not start file transfer" }
                         } finally {
                             staged?.delete()
@@ -228,6 +229,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } catch (_: RejectedExecutionException) {
+                    AppEventLog.record("AUDIO_RX_QUEUE_OVERFLOW")
                     runOnUiThread { receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization." }
                 }
             }
@@ -307,6 +309,7 @@ class MainActivity : ComponentActivity() {
                                     status = "STARTING"
                                     start()
                                 } else {
+                                    AppEventLog.record("MICROPHONE_PERMISSION_DENIED")
                                     error = "Microphone permission denied"
                                 }
                             }
@@ -352,10 +355,12 @@ class MainActivity : ComponentActivity() {
                                 check(session.enqueuePlayback(frame.samples)) {
                                     "Playback queue is full; wait for the current transmission"
                                 }
+                                AppEventLog.record("DIAGNOSTIC_FRAME_TX", "bytes=" + frame.payloadBytes)
                                 runOnUiThread {
                                     modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
                                 }
                             } catch (e: Exception) {
+                                AppEventLog.record("DIAGNOSTIC_FRAME_ERROR", e.message ?: e.javaClass.simpleName)
                                 runOnUiThread {
                                     outputError = e.message ?: "Modem transmission failed"
                                     modemStatus = "Transmission failed"
@@ -365,7 +370,10 @@ class MainActivity : ComponentActivity() {
                     },
                     onChooseFile = { filePicker.launch(arrayOf("*/*")) },
                     onExportReceivedFile = {
-                        lastReceivedFile?.let { saveReceivedFile.launch(it.name) }
+                        lastReceivedFile?.let {
+                            AppEventLog.record("FILE_EXPORT_REQUESTED", "name=" + it.name + " bytes=" + it.length())
+                            saveReceivedFile.launch(it.name)
+                        }
                     },
                     onRefreshPeers = { refreshTrustedPeers() },
                     onStartInitiator = { fingerprint ->
@@ -376,6 +384,7 @@ class MainActivity : ComponentActivity() {
                                 directTransport.startInitiator(fingerprint)
                             }
                             catch (e: Exception) {
+                                AppEventLog.record("DIRECT_CONNECT_ERROR", e.message ?: e.javaClass.simpleName)
                                 runOnUiThread { directError = e.message ?: "Could not connect" }
                             }
                         }
@@ -388,14 +397,18 @@ class MainActivity : ComponentActivity() {
                                 directTransport.startResponder(fingerprint)
                             }
                             catch (e: Exception) {
+                                AppEventLog.record("DIRECT_LISTEN_ERROR", e.message ?: e.javaClass.simpleName)
                                 runOnUiThread { directError = e.message ?: "Could not wait for peer" }
                             }
                         }
                     },
                     onRetryHandshake = {
                         executor.execute {
-                            try { directTransport.retryHandshake() }
-                            catch (e: Exception) {
+                            try {
+                                AppEventLog.record("DIRECT_HANDSHAKE_RETRY")
+                                directTransport.retryHandshake()
+                            } catch (e: Exception) {
+                                AppEventLog.record("DIRECT_HANDSHAKE_RETRY_ERROR", e.message ?: e.javaClass.simpleName)
                                 runOnUiThread { directError = e.message ?: "Retry failed" }
                             }
                         }

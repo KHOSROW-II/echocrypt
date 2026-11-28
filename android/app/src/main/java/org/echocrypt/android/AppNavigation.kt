@@ -85,8 +85,7 @@ fun EchocryptAppShell(
     broadcastError: String?,
     onJoinBroadcast: () -> Unit,
     onLeaveBroadcast: () -> Unit,
-    onSendBroadcast: (String) -> Unit,
-    onOpenAudio: () -> Unit
+    onSendBroadcast: (String) -> Unit
 ) {
     var selected by remember { mutableStateOf(AppSection.OVERVIEW) }
     LaunchedEffect(directEstablished) { if (directEstablished) selected = AppSection.DIRECT }
@@ -140,6 +139,7 @@ fun EchocryptAppShell(
                     AppSection.DIRECT -> DirectScreen(
                         peers = peers,
                         duplexRunning = duplexRunning,
+                        directEstablished = directEstablished,
                         status = directStatus,
                         messages = directMessages,
                         error = directError,
@@ -159,7 +159,7 @@ fun EchocryptAppShell(
                         onJoin = onJoinBroadcast,
                         onLeave = onLeaveBroadcast,
                         onSend = onSendBroadcast,
-                        onOpenAudio = onOpenAudio
+                        onOpenAudio = { selected = AppSection.AUDIO }
                     )
                     AppSection.FILES -> FilesScreen(
                         duplexRunning = duplexRunning,
@@ -426,6 +426,7 @@ private fun QuickAction(title: String, description: String, onClick: () -> Unit)
 private fun DirectScreen(
     peers: List<TrustedPeersStore.TrustedPeer>,
     duplexRunning: Boolean,
+    directEstablished: Boolean,
     status: String,
     messages: List<String>,
     error: String?,
@@ -436,9 +437,9 @@ private fun DirectScreen(
     onDisconnect: () -> Unit,
     onSend: (String) -> Unit
 ) {
-    if (status.startsWith("ESTABLISHED")) {
+    if (directEstablished) {
         MessengerPanel(
-            title = status.substringAfter("·").trim().substringBefore("·").trim().ifBlank { "Secure session" },
+            title = "Secure Direct messenger",
             status = status,
             messages = messages,
             error = error,

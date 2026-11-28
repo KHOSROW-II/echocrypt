@@ -63,6 +63,32 @@ object NativeDemodulator {
         return score / SYNC_SYMBOLS
     }
 
+    /**
+     * Low-cost sync prefilter for stream scanning. It samples 48 evenly spaced
+     * points per symbol (every fifth PCM sample), reducing correlation work by
+     * 5x. This is only a candidate gate; decodeAligned performs the full check.
+     */
+    fun fastSyncConfidence(samples: FloatArray, startSample: Int): Double {
+        require(startSample >= 0)
+        require(samples.size - startSample >= SYNC_SYMBOLS * SAMPLES_PER_SYMBOL)
+        var score = 0.0
+        for (index in 0 until SYNC_SYMBOLS) {
+            val offset = startSample + index * SAMPLES_PER_SYMBOL
+            var markI = 0.0; var markQ = 0.0
+            var spaceI = 0.0; var spaceQ = 0.0
+            for (sample in 0 until SAMPLES_PER_SYMBOL step 5) {
+                val value = samples[offset + sample].toDouble()
+                markI += value * MARK_COS[sample]; markQ += value * MARK_SIN[sample]
+                spaceI += value * SPACE_COS[sample]; spaceQ += value * SPACE_SIN[sample]
+            }
+            val markEnergy = markI * markI + markQ * markQ
+            val spaceEnergy = spaceI * spaceI + spaceQ * spaceQ
+            val metric = (markEnergy - spaceEnergy) / (markEnergy + spaceEnergy + 1e-18)
+            score += if (SYNC_BITS[index] == 1) metric else -metric
+        }
+        return score / SYNC_SYMBOLS
+    }
+
     fun decodeAligned(samples: FloatArray, startSample: Int = 0): ByteArray {
         require(startSample >= 0) { "Frame start must not be negative" }
         require(samples.size - startSample >= (SYNC_SYMBOLS + HEADER_SYMBOLS) * SAMPLES_PER_SYMBOL) {

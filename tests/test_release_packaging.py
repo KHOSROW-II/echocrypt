@@ -185,3 +185,109 @@ def test_android_debug_apk_is_listed_in_release_download_table() -> None:
     assert "Android app is provided separately as an unsigned debug APK" in notes
     assert "Verify desktop packages, the Android APK, and browser extensions" in notes
     assert "not a production-signed build" in notes
+
+def test_release_downloads_use_actual_github_asset_urls(tmp_path: Path) -> None:
+    repository = "KHOSROW-II/echocrypt"
+    tag = "nightly-20261128-test1234"
+    apk_url = (
+        "https://github.com/KHOSROW-II/echocrypt/releases/download/"
+        "untagged-a1b2c3d4/echocrypt-android.apk"
+    )
+    assets = [
+        {"name": "echocrypt-android.apk", "browser_download_url": apk_url},
+        {
+            "name": "echocrypt-linux-x64.deb",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-x64.deb",
+        },
+        {
+            "name": "echocrypt-linux-x64.rpm",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-x64.rpm",
+        },
+        {
+            "name": "echocrypt-linux-x64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-x64.zip",
+        },
+        {
+            "name": "echocrypt-linux-arm64.deb",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-arm64.deb",
+        },
+        {
+            "name": "echocrypt-linux-arm64.rpm",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-arm64.rpm",
+        },
+        {
+            "name": "echocrypt-linux-arm64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-linux-arm64.zip",
+        },
+        {
+            "name": "echocrypt-windows-x64.msi",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-windows-x64.msi",
+        },
+        {
+            "name": "echocrypt-windows-x64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-windows-x64.zip",
+        },
+        {
+            "name": "echocrypt-windows-arm64.msi",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-windows-arm64.msi",
+        },
+        {
+            "name": "echocrypt-windows-arm64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-windows-arm64.zip",
+        },
+        {
+            "name": "echocrypt-macos-x64.pkg",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-macos-x64.pkg",
+        },
+        {
+            "name": "echocrypt-macos-x64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-macos-x64.zip",
+        },
+        {
+            "name": "echocrypt-macos-arm64.pkg",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-macos-arm64.pkg",
+        },
+        {
+            "name": "echocrypt-macos-arm64.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-macos-arm64.zip",
+        },
+        {
+            "name": "echocrypt-chrome.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-chrome.zip",
+        },
+        {
+            "name": "echocrypt-edge.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-edge.zip",
+        },
+        {
+            "name": "echocrypt-firefox.zip",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/echocrypt-firefox.zip",
+        },
+        {
+            "name": "SHA256SUMS",
+            "browser_download_url": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-a1b2c3d4/SHA256SUMS",
+        },
+    ]
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(__import__("json").dumps({"assets": assets}), encoding="utf-8")
+    from scripts.generate_changelog import load_release_asset_urls
+
+    urls = load_release_asset_urls(manifest)
+    table = render_download_table(repository, tag, urls)
+    assert f"[Debug APK (unsigned)]({apk_url})" in table
+    assert f"/download/{tag}/echocrypt-android.apk" not in table
+
+    notes = render_release_notes(tag, repository, "Generated notes", asset_urls=urls)
+    assert apk_url in notes
+
+
+def test_asset_manifest_rejects_missing_or_foreign_asset_url(tmp_path: Path) -> None:
+    repository = "KHOSROW-II/echocrypt"
+    with pytest.raises(ValueError, match="missing"):
+        render_download_table(repository, "nightly-test", {"echocrypt-android.apk": "https://github.com/KHOSROW-II/echocrypt/releases/download/untagged-x/echocrypt-android.apk"})
+
+    with pytest.raises(ValueError, match="Invalid GitHub browser_download_url"):
+        from scripts.generate_changelog import _download_url
+        _download_url(repository, "nightly-test", "echocrypt-android.apk", {
+            "echocrypt-android.apk": "https://evil.example/echocrypt-android.apk"
+        })

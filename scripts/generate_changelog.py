@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 DOWNLOAD_ROWS = (
     ("Linux", "x86-64", ("deb", "rpm"), "linux-x64"),
@@ -15,22 +17,62 @@ DOWNLOAD_ROWS = (
 )
 
 
-def _download_url(repository: str, tag: str, filename: str) -> str:
-    return f"https://github.com/{repository}/releases/download/{tag}/{filename}"
+def _download_url(
+    repository: str,
+    tag: str,
+    filename: str,
+    asset_urls: dict[str, str] | None = None,
+) -> str:
+    """Prefer GitHub's actual browser_download_url for an uploaded release asset."""
+    if asset_urls is None:
+        return f"https://github.com/{repository}/releases/download/{tag}/{filename}"
+
+    url = asset_urls.get(filename)
+    if not url:
+        raise ValueError(f"GitHub Release asset is missing: {filename}")
+    parsed = urlsplit(url)
+    expected_prefix = f"/{repository}/releases/download/"
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "github.com"
+        or not parsed.path.startswith(expected_prefix)
+        or unquote(parsed.path.rsplit("/", 1)[-1]) != filename
+    ):
+        raise ValueError(f"Invalid GitHub browser_download_url for {filename}: {url}")
+    return url
 
 
-def render_download_table(repository: str, tag: str) -> str:
-    """Render direct links for native installers and portable ZIP bundles."""
+def load_release_asset_urls(path: Path) -> dict[str, str]:
+    """Read GitHub Release API JSON and map exact asset names to browser_download_url."""
+    release = json.loads(path.read_text(encoding="utf-8"))
+    assets = release.get("assets") if isinstance(release, dict) else None
+    if not isinstance(assets, list):
+        raise ValueError("Asset manifest must be a GitHub Release API object with an assets array")
+    result: dict[str, str] = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError("Invalid asset entry in GitHub Release API response")
+        name, url = asset.get("name"), asset.get("browser_download_url")
+        if not isinstance(name, str) or not isinstance(url, str) or name in result:
+            raise ValueError("Release asset entry is missing a unique name or browser_download_url")
+        result[name] = url
+    return result
+
+
+def render_download_table(
+    repository: str, tag: str, asset_urls: dict[str, str] | None = None
+) -> str:
+    """Render native installers and portable ZIP links from real uploaded assets when available."""
     rows = [
         "| Operating system | Architecture | Installer | Portable |",
         "|---|---|---|---|",
     ]
     for operating_system, architecture, formats, target in DOWNLOAD_ROWS:
         installers = [
-            f"[.{extension}]({_download_url(repository, tag, f'echocrypt-{target}.{extension}')})"
+            f"[.{extension}]({_download_url(repository, tag, f'echocrypt-{target}.{extension}', asset_urls)})"
             for extension in formats
         ]
-        portable = f"[ZIP]({_download_url(repository, tag, f'echocrypt-{target}.zip')})"
+        portable = f"[ZIP]({_download_url(repository, tag, f'echocrypt-{target}.zip', asset_urls)})"
         rows.append(
             f"| {operating_system} | {architecture} | {' · '.join(installers)} | {portable} |"
         )
@@ -47,7 +89,9 @@ def render_download_table(repository: str, tag: str) -> str:
     return "\n".join(rows)
 
 
-def render_extension_downloads(repository: str, tag: str) -> str:
+def render_extension_downloads(
+    repository: str, tag: str, asset_urls: dict[str, str] | None = None
+) -> str:
     """Render direct links to the independently installable browser extension archives."""
     rows = [
         "| Browser | Extension package |",
@@ -60,7 +104,7 @@ def render_extension_downloads(repository: str, tag: str) -> str:
     ):
         filename = f"echocrypt-{browser}.zip"
         rows.append(
-            f"| {label} | [Download ZIP]({_download_url(repository, tag, filename)}) |"
+            f"| {label} | [Download ZIP]({_download_url(repository, tag, filename, asset_urls)}) |"
         )
     return "\n".join(rows)
 
@@ -70,6 +114,7 @@ def render_release_notes(
     repository: str,
     generated_notes: str,
     previous_tag: str | None = None,
+    asset_urls: dict[str, str] | None = None,
 ) -> str:
     """Create concise release notes; never dump raw repository commit history."""
     lines = [
@@ -82,15 +127,15 @@ def render_release_notes(
         "browser extensions, and documentation. The Android app is provided "
         "separately as an unsigned debug APK.",
         "",
-        render_download_table(repository, tag),
+        render_download_table(repository, tag, asset_urls),
         "",
         "## Browser extensions",
         "",
         "The browser add-ons are also available as separate ZIP downloads. Extract the selected archive, then load the included echocrypt/ directory using your browser's extension developer tools. Firefox temporary installation is available through about:debugging, This Firefox, Load Temporary Add-on.",
         "",
-        render_extension_downloads(repository, tag),
+        render_extension_downloads(repository, tag, asset_urls),
         "",
-        f"Verify desktop packages, the Android APK, and browser extensions with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) file.",
+        f"Verify desktop packages, the Android APK, and browser extensions with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS', asset_urls)}) file.",
         "",
         "## What's changed",
         "",
@@ -126,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--previous-tag")
     parser.add_argument("--generated-notes", type=Path, required=True)
+    parser.add_argument(
+        "--asset-manifest",
+        type=Path,
+        help="GitHub Release API JSON; use each asset's actual browser_download_url.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -133,9 +183,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--repository must be OWNER/REPOSITORY")
 
     generated = args.generated_notes.read_text(encoding="utf-8")
-    content = render_release_notes(
-        args.tag, args.repository, generated, args.previous_tag
-    )
+    try:
+        asset_urls = load_release_asset_urls(args.asset_manifest) if args.asset_manifest else None
+        content = render_release_notes(
+            args.tag, args.repository, generated, args.previous_tag, asset_urls
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        parser.error(str(exc))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(content, encoding="utf-8")
     print(f"Generated download table and GitHub release notes for {args.tag}.")

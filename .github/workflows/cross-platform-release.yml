@@ -421,6 +421,19 @@ jobs:
             exit 1
           }
           gh release upload "$TAG" "${RELEASE_ASSETS[@]}" --clobber
+
+          # Read the uploaded asset records back from GitHub. Draft releases can
+          # expose browser_download_url paths using GitHub's untagged slug rather
+          # than the requested tag, so never guess those download URLs.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release-assets/GITHUB_RELEASE_ASSETS.json
+          python scripts/generate_changelog.py \
+            --tag "$TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --previous-tag "${{ steps.previous.outputs.previous_tag }}" \
+            --generated-notes release-assets/GITHUB_GENERATED_NOTES.md \
+            --asset-manifest release-assets/GITHUB_RELEASE_ASSETS.json \
+            --output release-assets/RELEASE_NOTES.md
+          gh release upload "$TAG" release-assets/RELEASE_NOTES.md --clobber
           gh release edit "$TAG" --draft --notes-file release-assets/RELEASE_NOTES.md
 
           FINAL_STATE="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"

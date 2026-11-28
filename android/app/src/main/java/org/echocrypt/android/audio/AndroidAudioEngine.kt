@@ -22,7 +22,7 @@ class AndroidAudioEngine {
     @Volatile private var captureThread: Thread? = null
 
     @Synchronized
-    fun startCapture(onLevel: (Float) -> Unit, onError: (String) -> Unit) {
+    fun startCapture(\n        onLevel: (Float) -> Unit,\n        onError: (String) -> Unit,\n        onPcm: (FloatArray) -> Unit = {}\n    ) {
         check(recorder == null) { "Microphone capture is already running" }
         val minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
         check(minimum > 0) { "48 kHz mono PCM capture is not supported on this device" }
@@ -50,7 +50,7 @@ class AndroidAudioEngine {
                         }
                         val rms = kotlin.math.sqrt(energy / count)
                         val db = if (rms <= 0.0) -90f else (20.0 * log10(rms)).toFloat()
-                        onLevel(db.coerceIn(-90f, 0f))
+                        onLevel(db.coerceIn(-90f, 0f))\n                        // Deliver normalized PCM independently of the reusable ShortArray.\n                        onPcm(FloatArray(count) { buffer[it] / 32768f })
                     }
                 }
             } catch (e: Exception) {

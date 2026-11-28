@@ -49,7 +49,8 @@ class MainActivity : ComponentActivity() {
             var level by remember { mutableFloatStateOf(-90f) }
             var status by remember { mutableStateOf("READY") }
             var error by remember { mutableStateOf<String?>(null) }
-            var outputError by remember { mutableStateOf<String?>(null) }\n            var modemStatus by remember { mutableStateOf("No frame transmitted") }
+            var outputError by remember { mutableStateOf<String?>(null) }
+            var modemStatus by remember { mutableStateOf("No frame transmitted") }
 
             val hasPermission = {
                 ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -178,8 +179,8 @@ class MainActivity : ComponentActivity() {
                             Column(Modifier.padding(16.dp)) {
                                 Text("PROTOCOL INTEGRATION", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
                                 Spacer(Modifier.height(8.dp))
-                                Text("Not connected yet", fontWeight = FontWeight.SemiBold)
-                                Text("This milestone establishes native Android audio and the application shell. Modem, Direct/Broadcast sessions, cryptographic handshake and file transfer are not implemented in this APK foundation.",
+                                Text("ECF3 transmit encoder connected", fontWeight = FontWeight.SemiBold)
+                                Text("Native microphone capture, speaker output and diagnostic ECF3 transmission are available. Receive-side demodulation, ASRE recovery, Direct/Broadcast sessions, cryptographic handshake and file transfer are not implemented yet.",
                                     color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                             }
                         }

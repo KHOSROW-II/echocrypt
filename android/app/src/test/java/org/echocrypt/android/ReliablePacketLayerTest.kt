@@ -31,6 +31,9 @@ class ReliablePacketLayerTest {
         return Triple(a, b, link)
     }
 
+    private fun packetId(packet: ByteArray): Int =
+        ByteBuffer.wrap(packet, 5, 4).order(ByteOrder.BIG_ENDIAN).int
+
     @Test
     fun fragmentsAndWaitsForAckBeforeNextFragment() {
         val (a, b, link) = pair()
@@ -57,21 +60,29 @@ class ReliablePacketLayerTest {
         assertEquals(2, a.pendingMessageCount())
         assertEquals(1, link.ab.size)
         var now = 10L
+        var firstFragmentsAcknowledged = 0
+        var secondStarted = false
         while (a.pendingMessageCount() > 0) {
             val packet = link.ab.removeFirst()
-            val packetId = ByteBuffer.wrap(packet, 5, 4).order(ByteOrder.BIG_ENDIAN).int
-            if (packetId == firstId) {
-                b.receive(packet, now++)
-                a.receive(link.ba.removeFirst(), now++)
-            } else {
-                assertEquals("The second message must wait until every first-message fragment is ACKed",
-                    firstId, firstId)
-                assertEquals(secondId, packetId)
-                b.receive(packet, now++)
-                a.receive(link.ba.removeFirst(), now++)
+            val id = packetId(packet)
+            when (id) {
+                firstId -> {
+                    assertFalse("second message started before first completed", secondStarted)
+                    firstFragmentsAcknowledged++
+                    b.receive(packet, now++)
+                    a.receive(link.ba.removeFirst(), now++)
+                }
+                secondId -> {
+                    secondStarted = true
+                    assertEquals(3, firstFragmentsAcknowledged)
+                    b.receive(packet, now++)
+                    a.receive(link.ba.removeFirst(), now++)
+                }
+                else -> fail("unexpected reliable message ID: $id")
             }
         }
 
+        assertTrue(secondStarted)
         assertEquals(2, link.received.size)
         assertArrayEquals(first, link.received[0])
         assertArrayEquals(second, link.received[1])
@@ -140,8 +151,10 @@ class ReliablePacketLayerTest {
         a.tick(1_001) // second transmission
         a.tick(2_002) // fail first and start second
         assertEquals(listOf(failedId), failed)
-        assertEquals(1, link.ab.size)
-        assertEquals(nextId, ByteBuffer.wrap(link.ab.first(), 5, 4).order(ByteOrder.BIG_ENDIAN).int)
+        assertEquals(3, link.ab.size) // initial, retry, then the next queued message
+        link.ab.removeFirst()
+        link.ab.removeFirst()
+        assertEquals(nextId, packetId(link.ab.removeFirst()))
         a.close()
         assertTrue(delivered.isEmpty())
     }

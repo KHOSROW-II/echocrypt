@@ -115,7 +115,7 @@ class AndroidAudioEngine {
         }
     }
 
-    fun playTestTone(frequencyHz: Int = 1800, durationMs: Int = 700) {
+    fun playTestTone(frequencyHz: Int = 1800, durationMs: Int = 700, preferredSampleRate: Int = 0) {
         require(frequencyHz in 100..10_000)
         require(durationMs in 100..5_000)
         val frames = SAMPLE_RATE * durationMs / 1000
@@ -124,38 +124,36 @@ class AndroidAudioEngine {
             (sin(2.0 * Math.PI * frequencyHz * index / SAMPLE_RATE) * 0.18 * fade * Short.MAX_VALUE)
                 .toInt().toShort()
         }
-        val minimum = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
-        check(minimum > 0) { "PCM playback is not supported on this device" }
-        val output = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-            .setAudioFormat(AudioFormat.Builder().setSampleRate(SAMPLE_RATE)
-                .setEncoding(ENCODING).setChannelMask(CHANNEL_OUT).build())
-            .setBufferSizeInBytes(max(minimum, pcm.size * 2))
-            .setTransferMode(AudioTrack.MODE_STATIC).build()
+        val opened = AudioOutputFactory.open(
+            preferredSampleRate = preferredSampleRate,
+            requestedBufferFrames = max(frames, 4096),
+            usage = AudioAttributes.USAGE_MEDIA,
+            contentType = AudioAttributes.CONTENT_TYPE_SONIFICATION
+        )
+        val output = opened.track
         try {
-            check(output.state == AudioTrack.STATE_INITIALIZED) { "Android could not initialize audio output" }
-            val written = output.write(pcm, 0, pcm.size)
-            check(written == pcm.size) { "AudioTrack test-tone write was incomplete: $written/${pcm.size}" }
+            val converted = AudioOutputFactory.convertPcm16(pcm, opened.sampleRate, opened.channelCount)
             output.play()
-            val until = System.currentTimeMillis() + durationMs + 800
-            while (output.playState == AudioTrack.PLAYSTATE_PLAYING && System.currentTimeMillis() < until) {
-                Thread.sleep(20)
+            var offset = 0
+            while (offset < converted.size) {
+                val written = output.write(converted, offset, minOf(4096, converted.size - offset),
+                    AudioTrack.WRITE_BLOCKING)
+                check(written > 0) { "AudioTrack write failed: " + written }
+                offset += written
+            }
+            val totalFrames = converted.size / opened.channelCount
+            val deadline = System.currentTimeMillis() + durationMs + 2_500L
+            while (output.playbackHeadPosition.toLong() < totalFrames && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            check(output.playbackHeadPosition.toLong() >= totalFrames) {
+                "Speaker test timed out using " + opened.description
             }
         } finally {
-            // AudioTrack.Builder can return an uninitialized track on some devices.
-            // Calling stop() in that state throws and masks the original initialization error.
-            if (output.state == AudioTrack.STATE_INITIALIZED) {
-                try {
-                    if (output.playState == AudioTrack.PLAYSTATE_PLAYING) output.stop()
-                } catch (_: IllegalStateException) {
-                    // The track may have been stopped by the platform during teardown.
-                }
-            }
+            if (output.state == AudioTrack.STATE_INITIALIZED &&
+                output.playState == AudioTrack.PLAYSTATE_PLAYING) runCatching { output.stop() }
             output.release()
         }
     }
-
     fun release() = stopCapture()
 }

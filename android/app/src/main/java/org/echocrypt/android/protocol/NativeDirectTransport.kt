@@ -1,6 +1,8 @@
 package org.echocrypt.android.protocol
 
 import android.content.Context
+import org.echocrypt.android.AppEventLog
+import org.echocrypt.android.EchocryptSettings
 import java.io.File
 import java.security.MessageDigest
 
@@ -11,6 +13,7 @@ import java.security.MessageDigest
  */
 class NativeDirectTransport(
     context: Context,
+    private val settingsProvider: () -> EchocryptSettings = { EchocryptSettings() },
     private val enqueueAudio: (FloatArray) -> Boolean,
     private val onStateChanged: (String) -> Unit,
     private val onTextReceived: (String) -> Unit,
@@ -65,7 +68,8 @@ class NativeDirectTransport(
         val local = vault.load()
         try {
             val profile = NativeSecurityProfile.custom(
-                symbolRate = 200, paddingBlock = 0, frequencyHopping = false, retries = 1
+                symbolRate = 200, paddingBlock = settingsProvider().directPaddingBlock,
+                frequencyHopping = false, retries = 1
             )
             val direct = NativePeerHandshake(
                 role = role, identity = local, peerIdentity = peer.identity,
@@ -75,6 +79,7 @@ class NativeDirectTransport(
             handshake = direct
             this.peerFingerprint = peer.identity.fingerprint
             peerName = peer.name
+            AppEventLog.record(if (role == NativePeerHandshake.Role.INITIATOR) "DIRECT_CONNECT_STARTED" else "DIRECT_LISTEN_STARTED", "peer=" + peerName)
             onStateChanged(if (role == NativePeerHandshake.Role.INITIATOR)
                 "WAIT_REPLY · authenticating $peerName" else "WAIT_HELLO · listening for $peerName")
         } catch (error: Exception) {
@@ -101,6 +106,7 @@ class NativeDirectTransport(
                 ensureReliableLayer(active)
                 localIdentity?.destroy()
                 localIdentity = null
+                AppEventLog.record("DIRECT_ESTABLISHED", "peer=" + peerName + " padding=" + active.negotiatedProfile.paddingBlock)
                 onStateChanged("ESTABLISHED · $peerName · ECP1 encrypted")
                 // A fresh authenticated session always renegotiates the durable receiver bitmap.
                 fileTransfer?.resumePending()
@@ -127,6 +133,7 @@ class NativeDirectTransport(
         check(active.established) { "Direct handshake has not completed" }
         ensureReliableLayer(active)
         // The picker stages a short-lived cache file; the transfer manager takes its own durable copy.
+        AppEventLog.record("FILE_TX_STARTED", "name=" + displayName.take(160) + " bytes=" + file.length())
         checkNotNull(fileTransfer).start(file, displayName, deleteSourceAfterSend = true)
     }
 
@@ -164,6 +171,7 @@ class NativeDirectTransport(
     @Synchronized
     fun disconnect() {
         closeUnlocked()
+        AppEventLog.record("DIRECT_DISCONNECTED", "transfers-preserved=true")
         onStateChanged("IDLE · transfers saved; reconnect to resume")
     }
 
@@ -178,9 +186,15 @@ class NativeDirectTransport(
                 checkNotNull(reliable).send(packet, android.os.SystemClock.elapsedRealtime())
             },
             onProgress = { value -> onStateChanged("FILE · $value") },
-            onReceived = onFileReceived,
+            onReceived = { file ->
+                AppEventLog.record("FILE_RX_VERIFIED", "name=" + file.name + " bytes=" + file.length())
+                onFileReceived(file)
+            },
             onError = onError,
-            onSent = { name -> onStateChanged("FILE · delivery confirmed · $name") },
+            onSent = { name ->
+                AppEventLog.record("FILE_TX_COMPLETE", "name=" + name.take(160))
+                onStateChanged("FILE · delivery confirmed · $name")
+            },
             receivedDirectory = receivedFilesDirectory
         )
         reliable = ReliablePacketLayer(

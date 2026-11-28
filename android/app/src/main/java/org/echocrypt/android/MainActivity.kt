@@ -29,11 +29,13 @@ import androidx.core.content.ContextCompat
 import org.echocrypt.android.audio.AndroidAudioEngine
 import org.echocrypt.android.protocol.NativeModem
 import org.echocrypt.android.protocol.NativeStreamReceiver
+import org.echocrypt.android.protocol.PcmChunkSequenceGuard
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 private val Background = Color(0xFF090C12)
 private val Panel = Color(0xFF151D29)
@@ -49,6 +51,8 @@ class MainActivity : ComponentActivity() {
         ThreadPoolExecutor.AbortPolicy()
     )
     private val streamReceiver = NativeStreamReceiver()
+    private val chunkSequence = AtomicLong(0L)
+    private val sequenceGuard = PcmChunkSequenceGuard()
     private var permissionResult: ((Boolean) -> Unit)? = null
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         permissionResult?.invoke(it)
@@ -75,7 +79,12 @@ class MainActivity : ComponentActivity() {
             val start = {
                 error = null
                 receiveError = null
-                streamReceiver.reset()
+                // Reset the decoder on its single owner thread. This is queued before
+                // any PCM from the new capture session can be submitted.
+                receiveExecutor.execute {
+                    streamReceiver.reset()
+                    sequenceGuard.reset()
+                }
                 executor.execute {
                     try {
                         engine.startCapture(
@@ -84,8 +93,17 @@ class MainActivity : ComponentActivity() {
                                 runOnUiThread { listening = false; status = "AUDIO ERROR"; error = message }
                             },
                             onPcm = { pcm ->
+                                val sequence = chunkSequence.incrementAndGet()
                                 try {
                                     receiveExecutor.execute {
+                                        // A rejected queue submission creates a hole in the PCM timeline.
+                                        // Reset before decoding the first chunk after that hole.
+                                        if (sequenceGuard.requiresReset(sequence)) {
+                                            streamReceiver.reset()
+                                            runOnUiThread {
+                                                receiveError = "Audio processing fell behind; decoder resynchronized after dropped PCM."
+                                            }
+                                        }
                                         val frames = streamReceiver.push(pcm)
                                         if (frames.isNotEmpty()) {
                                             runOnUiThread {
@@ -100,7 +118,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 } catch (_: RejectedExecutionException) {
                                     runOnUiThread {
-                                        receiveError = "Receive processing overloaded; audio chunks were dropped."
+                                        receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization."
                                     }
                                 }
                             }

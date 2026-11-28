@@ -34,6 +34,12 @@ def render_download_table(repository: str, tag: str) -> str:
         rows.append(
             f"| {operating_system} | {architecture} | {' · '.join(installers)} | {portable} |"
         )
+    # Android is a separate native application, not one of the desktop
+    # portable bundles. Keep its explicit development-build status visible.
+    rows.append(
+        f"| Android | All supported | "
+        f"[Debug APK (unsigned)]({_download_url(repository, tag, 'echocrypt-android.apk')}) | — |"
+    )
     rows.append(
         f"| All platforms | Checksums | "
         f"[SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) | — |"
@@ -73,7 +79,8 @@ def render_release_notes(
         "",
         "Choose the installer for your operating system and CPU architecture. "
         "The portable ZIP contains the standalone CLI, Native Messaging host, "
-        "browser extensions, and documentation.",
+        "browser extensions, and documentation. The Android app is provided "
+        "separately as an unsigned debug APK.",
         "",
         render_download_table(repository, tag),
         "",
@@ -83,7 +90,7 @@ def render_release_notes(
         "",
         render_extension_downloads(repository, tag),
         "",
-        f"Verify desktop packages and extension archives with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) file.",
+        f"Verify desktop packages, the Android APK, and browser extensions with the [SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) file.",
         "",
         "## What's changed",
         "",
@@ -101,8 +108,9 @@ def render_release_notes(
         "- Linux installers: Debian/Ubuntu .deb and Fedora/RHEL-family .rpm packages.",
         "- Windows installer: .msi for the matching CPU architecture.",
         "- macOS installer: .pkg for Intel or Apple Silicon.",
-        "- Portable .zip packages are provided for every supported target.",
-        "- Installers are currently unsigned; macOS packages are not notarized.",
+        "- Portable .zip packages are provided for every supported desktop target.",
+        "- The Android download is an unsigned Debug APK for development/testing, not a production-signed build.",
+        "- Desktop installers are currently unsigned; macOS packages are not notarized.",
         "- This release remains a Draft until it is explicitly published.",
         "",
     ])

@@ -6,6 +6,7 @@ import zipfile
 
 import pytest
 
+from scripts.generate_changelog import render_download_table, render_release_notes
 from scripts.package_release import (
     EXPECTED_TARGETS,
     INSTALLER_MAGIC,
@@ -166,3 +167,21 @@ def test_release_validation_rejects_corrupt_installer_and_bad_checksum(tmp_path:
     )
     with pytest.raises(ReleasePackageError, match="SHA256SUMS mismatch"):
         validate_release_asset_set(tmp_path)
+
+def test_android_debug_apk_is_listed_in_release_download_table() -> None:
+    repository = "KHOSROW-II/echocrypt"
+    tag = "nightly-20261128-test1234"
+    table = render_download_table(repository, tag)
+
+    expected_link = (
+        "| Android | All supported | "
+        "[Debug APK (unsigned)]"
+        "(https://github.com/KHOSROW-II/echocrypt/releases/download/"
+        "nightly-20261128-test1234/echocrypt-android.apk) | — |"
+    )
+    assert expected_link in table
+
+    notes = render_release_notes(tag, repository, "Generated notes")
+    assert "Android app is provided separately as an unsigned debug APK" in notes
+    assert "Verify desktop packages, the Android APK, and browser extensions" in notes
+    assert "not a production-signed build" in notes

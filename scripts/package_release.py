@@ -21,7 +21,7 @@ TARGET_INSTALLERS = {
 EXPECTED_TARGETS = tuple(TARGET_INSTALLERS)
 BROWSER_EXTENSION_TARGETS = ("chrome", "edge", "firefox")
 RELEASE_FILES = {"SHA256SUMS", "RELEASE_NOTES.md"}
-ASSET_EXTENSIONS = {".zip", ".deb", ".rpm", ".msi", ".pkg"}
+ASSET_EXTENSIONS = {".zip", ".deb", ".rpm", ".msi", ".pkg", ".apk"}
 TARGET_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 INSTALLER_MAGIC = {
     ".deb": b"!<arch>\n",
@@ -43,6 +43,7 @@ def expected_release_asset_names() -> tuple[str, ...]:
         for extension in extensions
     )
     names.update(f"echocrypt-{browser}.zip" for browser in BROWSER_EXTENSION_TARGETS)
+    names.add("echocrypt-android.apk")
     names.update(RELEASE_FILES)
     return tuple(sorted(names))
 
@@ -127,7 +128,7 @@ def _sha256(path: Path) -> str:
 
 def _validate_asset_file(path: Path) -> None:
     extension = path.suffix.lower()
-    if extension == ".zip":
+    if extension in {".zip", ".apk"}:
         if not zipfile.is_zipfile(path):
             raise ReleasePackageError(f"Platform archive is not a valid ZIP file: {path}")
         with zipfile.ZipFile(path, "r") as bundle:
@@ -149,7 +150,7 @@ def _validate_asset_file(path: Path) -> None:
 def create_checksum_manifest(
     directory: str | Path, output: str | Path | None = None
 ) -> Path:
-    """Write SHA256SUMS for every desktop package and standalone browser extension."""
+    """Write SHA256SUMS for every desktop package, Android APK, and browser extension."""
     root = Path(directory).resolve()
     if not root.is_dir():
         raise ReleasePackageError(f"Release asset directory does not exist: {root}")
@@ -207,7 +208,7 @@ def _validate_checksum_manifest(root: Path, platform_names: set[str]) -> None:
 
 
 def validate_release_asset_set(directory: str | Path) -> list[Path]:
-    """Require all desktop packages, browser extensions, notes, and checksums."""
+    """Require all desktop packages, Android APK, browser extensions, notes, and checksums."""
     root = Path(directory).resolve()
     if not root.is_dir():
         raise ReleasePackageError(f"Release asset directory does not exist: {root}")

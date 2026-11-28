@@ -58,7 +58,7 @@ class ReliablePacketLayerTest {
         val secondId = a.send(second, 1)
 
         assertEquals(2, a.pendingMessageCount())
-        assertEquals(1, link.ab.size)
+        assertEquals(2, link.ab.size)
         var now = 10L
         var firstFragmentsAcknowledged = 0
         var secondStarted = false

@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
             onError = { value -> runOnUiThread { directError = value } },
             onFileReceived = { file -> runOnUiThread { lastReceivedFile = file; addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage") } }
         )
+        lastReceivedFile = directTransport.latestReceivedFile()
         refreshTrustedPeers()
         reliabilityHandler.postDelayed(reliabilityTicker, 1_000L)
 

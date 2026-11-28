@@ -143,6 +143,27 @@ class NativeModemTest {
         assertEquals(19L, received.single().startOffsetSamples)
     }
 
+
+    @Test
+    fun streamReceiverRecoversPositiveAndNegativeSampleClockDrift() {
+        val payload = "CLOCK DRIFT RECOVERY".toByteArray(Charsets.UTF_8)
+        val frame = NativeModem.encode(payload)
+        for (period in listOf(239.0, 241.0)) {
+            val driftedSize = (frame.samples.size * period / 240.0).toInt()
+            val drifted = FloatArray(driftedSize) { index ->
+                val source = index * 240.0 / period
+                val left = source.toInt()
+                val fraction = source - left
+                if (left + 1 >= frame.samples.size) frame.samples.last()
+                else (frame.samples[left] * (1.0 - fraction) + frame.samples[left + 1] * fraction).toFloat()
+            }
+            val receiver = org.echocrypt.android.protocol.NativeStreamReceiver(candidateStride = 1)
+            val received = receiver.push(drifted)
+            assertEquals("period=$period", 1, received.size)
+            assertTrue("period=$period", received.single().payload.contentEquals(payload))
+        }
+    }
+
     @Test
     fun streamReceiverWaitsForIncompleteFrameInsteadOfDiscardingItsSync() {
         val payload = "INCREMENTAL RECEIVE".toByteArray(Charsets.UTF_8)

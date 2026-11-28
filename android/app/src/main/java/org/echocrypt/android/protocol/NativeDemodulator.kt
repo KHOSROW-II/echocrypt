@@ -29,17 +29,46 @@ object NativeDemodulator {
     private const val CONV_K = 7
     private val POLYS = intArrayOf(0x79, 0x5B)
     private val MAGIC = byteArrayOf(0x45, 0x43, 0x46, 0x33)
+    private val SYNC_BITS: List<Int> by lazy {
+        val sync = MessageDigest.getInstance("SHA-256")
+            .digest("ECHOCRYPT/ECF3/SYNC/v1".toByteArray(Charsets.UTF_8))
+            .copyOfRange(0, 8)
+        bytesToBits(sync)
+    }
+    private val MARK_COS = DoubleArray(SAMPLES_PER_SYMBOL) { n ->
+        cos(2.0 * PI * MARK_HZ * n / SAMPLE_RATE)
+    }
+    private val MARK_SIN = DoubleArray(SAMPLES_PER_SYMBOL) { n ->
+        sin(2.0 * PI * MARK_HZ * n / SAMPLE_RATE)
+    }
+    private val SPACE_COS = DoubleArray(SAMPLES_PER_SYMBOL) { n ->
+        cos(2.0 * PI * SPACE_HZ * n / SAMPLE_RATE)
+    }
+    private val SPACE_SIN = DoubleArray(SAMPLES_PER_SYMBOL) { n ->
+        sin(2.0 * PI * SPACE_HZ * n / SAMPLE_RATE)
+    }
+
+    /**
+     * Scores the known 64-symbol ECF3 sync word at an exact sample offset.
+     * Positive scores favor the expected BFSK sequence; higher is better.
+     */
+    fun syncConfidence(samples: FloatArray, startSample: Int): Double {
+        require(startSample >= 0)
+        require(samples.size - startSample >= SYNC_SYMBOLS * SAMPLES_PER_SYMBOL)
+        var score = 0.0
+        for (index in 0 until SYNC_SYMBOLS) {
+            val metric = symbolMetric(samples, startSample + index * SAMPLES_PER_SYMBOL)
+            score += if (SYNC_BITS[index] == 1) metric else -metric
+        }
+        return score / SYNC_SYMBOLS
+    }
 
     fun decodeAligned(samples: FloatArray, startSample: Int = 0): ByteArray {
         require(startSample >= 0) { "Frame start must not be negative" }
         require(samples.size - startSample >= (SYNC_SYMBOLS + HEADER_SYMBOLS) * SAMPLES_PER_SYMBOL) {
             "Not enough samples for an ECF3 preamble and protected header"
         }
-        val sync = MessageDigest.getInstance("SHA-256")
-            .digest("ECHOCRYPT/ECF3/SYNC/v1".toByteArray(Charsets.UTF_8)).copyOfRange(0, 8)
-        val syncBits = bytesToBits(sync)
-        val syncLlrs = FloatArray(SYNC_SYMBOLS) { symbolMetric(samples, startSample + it * SAMPLES_PER_SYMBOL) }
-        val syncScore = syncBits.indices.map { if (syncBits[it] == 1) syncLlrs[it] else -syncLlrs[it] }.average()
+        val syncScore = syncConfidence(samples, startSample)
         require(syncScore > 0.12) { "ECF3 sync marker not detected (confidence=$syncScore)" }
 
         val headerStart = startSample + SYNC_SYMBOLS * SAMPLES_PER_SYMBOL
@@ -55,9 +84,9 @@ object NativeDemodulator {
         require(fecId == 3) { "Native receiver currently supports convolutional FEC only" }
         require(hopSeed == 0) { "Authenticated frequency hopping is not supported by this decoder yet" }
 
-        // The convolutional code protects the complete header + payload + CRC,
-        // not only the payload trailer. Keep this byte count wire-compatible
-        // with NativeModem.convolutionalEncode().
+        // ECF3 convolutional FEC covers payload + CRC32(header + payload).
+        // The fixed header is independently protected by duplicated Hamming
+        // coding and its own CRC32.
         val decodedBytes = payloadLength + 4
         val steps = decodedBytes * 8 + CONV_K - 1
         val payloadCodeBits = steps * 2
@@ -86,10 +115,8 @@ object NativeDemodulator {
         var spaceI = 0.0; var spaceQ = 0.0
         for (n in 0 until SAMPLES_PER_SYMBOL) {
             val value = samples[offset + n].toDouble()
-            val markPhase = 2.0 * PI * MARK_HZ * n / SAMPLE_RATE
-            val spacePhase = 2.0 * PI * SPACE_HZ * n / SAMPLE_RATE
-            markI += value * cos(markPhase); markQ += value * sin(markPhase)
-            spaceI += value * cos(spacePhase); spaceQ += value * sin(spacePhase)
+            markI += value * MARK_COS[n]; markQ += value * MARK_SIN[n]
+            spaceI += value * SPACE_COS[n]; spaceQ += value * SPACE_SIN[n]
         }
         val markEnergy = markI * markI + markQ * markQ
         val spaceEnergy = spaceI * spaceI + spaceQ * spaceQ

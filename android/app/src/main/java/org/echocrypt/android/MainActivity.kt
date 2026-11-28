@@ -286,7 +286,7 @@ class MainActivity : ComponentActivity() {
 
                         DirectCommunicationPanel(
                             peers = trustedPeers,
-                            duplexRunning = listening,
+                            duplexRunning = duplexSession?.isRunning == true,
                             status = directStatus,
                             messages = directMessages,
                             error = directError,

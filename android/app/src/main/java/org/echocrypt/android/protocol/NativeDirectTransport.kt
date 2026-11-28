@@ -42,6 +42,7 @@ class NativeDirectTransport(
         } catch (error: Exception) {
             onError(error.message ?: "Could not start Direct handshake")
             closeUnlocked()
+            onStateChanged("IDLE")
             throw error
         }
     }

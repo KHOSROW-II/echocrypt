@@ -132,4 +132,4 @@ class NativeModemTest {
         assertEquals(1, completed.size)
         assertTrue(completed.single().payload.contentEquals(payload))
     }
-}\n
+}

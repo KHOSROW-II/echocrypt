@@ -89,6 +89,80 @@ object NativeDemodulator {
         return score / SYNC_SYMBOLS
     }
 
+    data class TimedDecode(val payload: ByteArray, val symbolPeriod: Double, val startSample: Int)
+
+    /**
+     * Recovers small sample-clock errors by fitting the known sync word, then
+     * linearly resampling the candidate into the protocol's nominal 240-sample
+     * symbol clock. The ECF3 encoder and on-wire format remain unchanged.
+     *
+     * Search range is +/- 5,000 ppm around 48 kHz. This is a sync-acquisition
+     * estimator, not a continuous PLL; large clock errors and time-varying drift
+     * still require a streaming timing loop.
+     */
+    fun decodeWithTimingRecovery(
+        samples: FloatArray,
+        candidateStart: Int,
+        searchRadius: Int = 8
+    ): TimedDecode {
+        require(candidateStart >= 0 && candidateStart < samples.size)
+        val firstStart = maxOf(0, candidateStart - searchRadius)
+        val lastStart = minOf(candidateStart + searchRadius, samples.size - SYNC_SYMBOLS * SAMPLES_PER_SYMBOL)
+        require(lastStart >= firstStart) { "Not enough samples for timing acquisition" }
+
+        var bestStart = candidateStart
+        var bestPeriod = SAMPLES_PER_SYMBOL.toDouble()
+        var bestScore = Double.NEGATIVE_INFINITY
+        var period = SAMPLES_PER_SYMBOL - 1.2
+        while (period <= SAMPLES_PER_SYMBOL + 1.2001) {
+            for (start in firstStart..lastStart) {
+                val score = timedSyncConfidence(samples, start, period)
+                if (score > bestScore) {
+                    bestScore = score
+                    bestStart = start
+                    bestPeriod = period
+                }
+            }
+            period += 0.1
+        }
+        require(bestScore > 0.12) { "ECF3 sync marker not detected during timing recovery (confidence=$bestScore)" }
+
+        val available = samples.size - bestStart
+        val outputSize = ((available / bestPeriod) * SAMPLES_PER_SYMBOL).toInt()
+        require(outputSize >= (SYNC_SYMBOLS + HEADER_SYMBOLS) * SAMPLES_PER_SYMBOL)
+        val normalized = FloatArray(outputSize) { index ->
+            val sourcePosition = bestStart + index * bestPeriod / SAMPLES_PER_SYMBOL
+            val left = sourcePosition.toInt()
+            val fraction = sourcePosition - left
+            if (left + 1 >= samples.size) samples[samples.lastIndex]
+            else (samples[left] * (1.0 - fraction) + samples[left + 1] * fraction).toFloat()
+        }
+        return TimedDecode(decodeAligned(normalized), bestPeriod, bestStart)
+    }
+
+    private fun timedSyncConfidence(samples: FloatArray, start: Int, period: Double): Double {
+        var score = 0.0
+        for (symbol in 0 until SYNC_SYMBOLS) {
+            val base = start + symbol * period
+            var markI = 0.0; var markQ = 0.0
+            var spaceI = 0.0; var spaceQ = 0.0
+            for (n in 0 until SAMPLES_PER_SYMBOL) {
+                val position = base + n * period / SAMPLES_PER_SYMBOL
+                val left = position.toInt()
+                if (left + 1 >= samples.size) return Double.NEGATIVE_INFINITY
+                val fraction = position - left
+                val value = (samples[left] * (1.0 - fraction) + samples[left + 1] * fraction).toDouble()
+                markI += value * MARK_COS[n]; markQ += value * MARK_SIN[n]
+                spaceI += value * SPACE_COS[n]; spaceQ += value * SPACE_SIN[n]
+            }
+            val markEnergy = markI * markI + markQ * markQ
+            val spaceEnergy = spaceI * spaceI + spaceQ * spaceQ
+            val metric = (markEnergy - spaceEnergy) / (markEnergy + spaceEnergy + 1e-18)
+            score += if (SYNC_BITS[symbol] == 1) metric else -metric
+        }
+        return score / SYNC_SYMBOLS
+    }
+
     fun decodeAligned(samples: FloatArray, startSample: Int = 0): ByteArray {
         require(startSample >= 0) { "Frame start must not be negative" }
         require(samples.size - startSample >= (SYNC_SYMBOLS + HEADER_SYMBOLS) * SAMPLES_PER_SYMBOL) {

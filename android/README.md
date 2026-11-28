@@ -30,9 +30,9 @@ File-transfer application packets use the `ECT1` envelope inside the encrypted r
 5. `COMPLETE` is an application-level confirmation sent only after the committed file and completion record exist. The sender retains its staged source until this response is received. A lost final response is recovered by retrying the manifest/finish exchange.
 6. `REJECT` reports a final validation or storage failure. The sender keeps its staged source so the transfer can be retried.
 
-Outgoing source copies, incoming `.part` files, and chunk bitmaps are stored in app-private storage. Transfer state is separated by trusted peer fingerprint. A new authenticated Direct session with the same peer automatically exchanges the receiver bitmap and resumes from missing blocks. After a link timeout, further file traffic pauses rather than continuously transmitting; use the resume action or establish a fresh Direct session to continue.
+Outgoing source copies, incoming `.part` files, and chunk bitmaps are stored in app-private storage. Transfer state is separated by trusted peer fingerprint. A new authenticated Direct session with the same peer automatically exchanges the receiver bitmap and resumes from missing blocks. After a link timeout, further file traffic pauses rather than continuously transmitting. Establish a fresh authenticated Direct session with the same peer; resume negotiation then runs automatically.
 
-Limits: one pending outgoing transfer per trusted peer, up to two active incoming transfers, and a maximum file size of 10 MiB. Received files remain in app-private storage until exported through Android's Storage Access Framework. The app does not request broad storage permissions.
+Limits: one pending outgoing transfer per trusted peer, up to two active incoming transfers, and a maximum file size of 10 MiB. Received files remain in app-private storage until exported through Android's Storage Access Framework. The latest completed file remains selectable for export after an app restart. The app does not request broad storage permissions.
 
 ## Reliability and limits
 

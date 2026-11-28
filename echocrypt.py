@@ -499,6 +499,8 @@ def main():
             if needs_bootstrap:
                 _bootstrap(mode)
             try:
+                from interface.android import activate as activate_android_interface
+                activate_android_interface()
                 from interface.menu import main as app_main
             except ModuleNotFoundError as exc:
                 print(f"ECHO-CRYPT dependency/module error: {exc}", file=sys.stderr)
@@ -538,6 +540,9 @@ def main():
             raise RuntimeError("Core packages are missing from the active venv: " + ", ".join(missing))
 
         try:
+            if _is_android_runtime():
+                from interface.android import activate as activate_android_interface
+                activate_android_interface()
             from interface.menu import main as app_main
         except ModuleNotFoundError as exc:
             print(f"ECHO-CRYPT dependency/module error: {exc}", file=sys.stderr)

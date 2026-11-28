@@ -160,8 +160,8 @@ object NativeIdentity {
             require(wrapped.size >= 12 + 16 + 32) { "Encrypted identity file is truncated" }
             val iv = wrapped.copyOfRange(0, 12)
             val ciphertext = wrapped.copyOfRange(12, wrapped.size)
-            val seed = cipher(Cipher.DECRYPT_MODE, getOrCreateWrappingKey(), iv)
-                .doFinal(ciphertext)
+            val wrappingKey = getExistingWrappingKey()
+            val seed = cipher(Cipher.DECRYPT_MODE, wrappingKey, iv).doFinal(ciphertext)
             require(seed.size == 32) { "Invalid decrypted identity seed" }
             try {
                 PrivateIdentity(seed)
@@ -184,6 +184,12 @@ object NativeIdentity {
             check(temp.renameTo(identityFile)) { "Could not atomically store identity" }
             encoded.fill(0)
             ciphertext.fill(0)
+        }
+
+        private fun getExistingWrappingKey(): SecretKey {
+            val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            return (store.getKey(keyAlias, null) as? SecretKey)
+                ?: throw IllegalStateException("Identity wrapping key is missing; refusing to replace it")
         }
 
         private fun getOrCreateWrappingKey(): SecretKey {

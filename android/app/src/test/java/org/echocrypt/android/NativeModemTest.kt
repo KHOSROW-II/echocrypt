@@ -48,7 +48,7 @@ class NativeModemTest {
             val frame = NativeModem.encode(payload)
             val digest = MessageDigest.getInstance("SHA-256")
                 .digest(frame.symbols.map { it.toByte() }.toByteArray())
-                .joinToString("") { "%02x".format(it) }
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
             assertEquals(expected.first, frame.symbolCount)
             assertEquals(expected.second, digest)
         }

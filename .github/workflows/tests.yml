@@ -93,9 +93,8 @@ jobs:
     name: Android native app validation
     timeout-minutes: 30
     runs-on: ubuntu-latest
-    # Only this job needs release-write access. PR runs never publish releases.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -119,7 +118,7 @@ jobs:
       - name: Run Android unit tests and assemble debug APK
         run: gradle -p android testDebugUnitTest assembleDebug
 
-      - name: Prepare Android release assets
+      - name: Prepare Android CI artifact
         if: github.event_name == 'push'
         run: |
           mkdir -p dist
@@ -151,48 +150,3 @@ jobs:
             dist/RELEASE_NOTES.md
           if-no-files-found: error
           retention-days: 14
-
-      - name: Convert existing Android nightlies to drafts
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Android builds are experimental until protocol and device-level tests pass.
-          # Keep all Android nightly releases private as drafts, including older published ones.
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
-            --json tagName,isDraft \
-            --jq '.[] | select(.tagName | startswith("android-nightly-")) | select(.isDraft == false) | .tagName' |
-          while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            echo "Converting $tag to draft"
-            gh release edit "$tag" --draft --repo "$GITHUB_REPOSITORY"
-          done
-
-      - name: Create Android nightly GitHub Release as draft
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="android-nightly-$(date -u +'%Y%m%d')-${GITHUB_SHA::7}"
-          title="ECHOCRYPT ${tag}"
-
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" \
-              dist/echocrypt-android-debug.apk \
-              dist/SHA256SUMS \
-              dist/RELEASE_NOTES.md \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-            gh release edit "$tag" --draft --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$tag" \
-              dist/echocrypt-android-debug.apk \
-              dist/SHA256SUMS \
-              dist/RELEASE_NOTES.md \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "$title" \
-              --notes-file dist/RELEASE_NOTES.md \
-              --draft \
-              --prerelease
-          fi

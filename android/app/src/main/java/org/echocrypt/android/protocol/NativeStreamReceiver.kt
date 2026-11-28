@@ -48,6 +48,13 @@ class NativeStreamReceiver(
 
         var waitingForPayload = false
         while (buffer.size - nextCandidate >= minimumFrame) {
+            // Reject obvious non-sync windows before invoking header/Hamming,
+            // Viterbi and CRC decoding. Full-rate validation remains authoritative.
+            if (NativeDemodulator.fastSyncConfidence(buffer, nextCandidate) < 0.08) {
+                nextCandidate += candidateStride
+                continue
+            }
+
             var decoded: ByteArray? = null
             try {
                 decoded = NativeDemodulator.decodeAligned(buffer, nextCandidate)

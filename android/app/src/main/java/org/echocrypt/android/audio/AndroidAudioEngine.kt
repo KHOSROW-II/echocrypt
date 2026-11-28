@@ -132,14 +132,23 @@ class AndroidAudioEngine {
             .setTransferMode(AudioTrack.MODE_STATIC).build()
         try {
             check(output.state == AudioTrack.STATE_INITIALIZED) { "Android could not initialize audio output" }
-            output.write(pcm, 0, pcm.size)
+            val written = output.write(pcm, 0, pcm.size)
+            check(written == pcm.size) { "AudioTrack test-tone write was incomplete: $written/${pcm.size}" }
             output.play()
             val until = System.currentTimeMillis() + durationMs + 800
             while (output.playState == AudioTrack.PLAYSTATE_PLAYING && System.currentTimeMillis() < until) {
                 Thread.sleep(20)
             }
         } finally {
-            output.stop()
+            // AudioTrack.Builder can return an uninitialized track on some devices.
+            // Calling stop() in that state throws and masks the original initialization error.
+            if (output.state == AudioTrack.STATE_INITIALIZED) {
+                try {
+                    if (output.playState == AudioTrack.PLAYSTATE_PLAYING) output.stop()
+                } catch (_: IllegalStateException) {
+                    // The track may have been stopped by the platform during teardown.
+                }
+            }
             output.release()
         }
     }

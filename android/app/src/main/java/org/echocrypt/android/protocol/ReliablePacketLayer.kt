@@ -21,15 +21,17 @@ class ReliablePacketLayer(
     private val fragmentPayloadBytes: Int = DEFAULT_FRAGMENT_BYTES,
     private val retryTimeoutMillis: Long = DEFAULT_RETRY_TIMEOUT_MS,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
-    private val reassemblyTimeoutMillis: Long = DEFAULT_REASSEMBLY_TIMEOUT_MS
+    private val reassemblyTimeoutMillis: Long = DEFAULT_REASSEMBLY_TIMEOUT_MS,
+    private val maxInFlightFragments: Int = DEFAULT_WINDOW_SIZE
 ) {
+    private data class Flight(var attempts: Int = 0, var sentAt: Long = 0)
     private data class Outgoing(
         val id: Int,
         val fragments: List<ByteArray>,
         val messageBytes: Int,
-        var index: Int = 0,
-        var attempts: Int = 0,
-        var sentAt: Long = 0
+        val flights: MutableMap<Int, Flight> = LinkedHashMap(),
+        var nextIndex: Int = 0,
+        var acknowledged: Int = 0
     )
     private data class Incoming(
         val count: Int,
@@ -51,6 +53,7 @@ class ReliablePacketLayer(
         require(fragmentPayloadBytes in 16..900)
         require(retryTimeoutMillis >= 1_000 && reassemblyTimeoutMillis >= retryTimeoutMillis)
         require(maxAttempts in 1..10)
+        require(maxInFlightFragments in 1..MAX_WINDOW_SIZE)
     }
 
     /**
@@ -140,30 +143,21 @@ class ReliablePacketLayer(
         }
         pruneCompleted(now)
 
-        if (outgoing == null) {
+        val active = outgoing
+        if (active == null) {
             startNext(now)
             return
         }
-        val active = checkNotNull(outgoing)
-        if (active.attempts == 0 || now - active.sentAt >= retryTimeoutMillis) {
-            if (active.attempts >= maxAttempts) {
-                outgoing = null
-                release(active)
-                try {
-                    onFailure(active.id, "No ACK received after $maxAttempts transmissions")
-                } finally {
-                    startNext(now)
-                }
-            } else {
-                try {
-                    sendCurrent(now)
-                } catch (error: Exception) {
-                    // A failed enqueue counts as an attempt too. Leave the item active
-                    // until the retry budget is exhausted, then fail it deterministically.
-                    active.sentAt = now
-                }
+        val expiredFlights = active.flights.entries.filter { now - it.value.sentAt >= retryTimeoutMillis }
+        for ((index, flight) in expiredFlights) {
+            if (flight.attempts >= maxAttempts) {
+                failActive(active, "Fragment $index received no ACK after $maxAttempts transmissions", now)
+                return
             }
+            try { transmitFragment(active, index, flight, now) }
+            catch (_: Exception) { /* bounded retry on a later tick */ }
         }
+        pumpWindow(active, now)
     }
 
     @Synchronized
@@ -171,6 +165,9 @@ class ReliablePacketLayer(
 
     @Synchronized
     fun pendingMessageCount(): Int = outgoingQueue.size + if (outgoing != null) 1 else 0
+
+    @Synchronized
+    fun inFlightFragmentCount(): Int = outgoing?.flights?.size ?: 0
 
     @Synchronized
     fun close() {
@@ -184,39 +181,52 @@ class ReliablePacketLayer(
         completed.clear()
     }
 
-    private fun sendCurrent(now: Long) {
-        val active = checkNotNull(outgoing)
-        val payload = active.fragments[active.index]
-        active.attempts++
-        active.sentAt = now
-        val clearPacket = packet(TYPE_DATA, active.id, active.index, active.fragments.size, payload)
-        val encrypted = try {
-            encrypt(clearPacket)
-        } finally {
-            clearPacket.fill(0)
+    private fun pumpWindow(active: Outgoing, now: Long) {
+        while (outgoing === active && active.flights.size < maxInFlightFragments &&
+            active.nextIndex < active.fragments.size) {
+            val index = active.nextIndex++
+            val flight = Flight()
+            active.flights[index] = flight
+            try { transmitFragment(active, index, flight, now) }
+            catch (error: Exception) {
+                if (flight.attempts == 0) {
+                    flight.attempts = 1
+                    flight.sentAt = now
+                }
+                if (index == 0 && active.acknowledged == 0) throw error
+                return
+            }
         }
+    }
+
+    private fun transmitFragment(active: Outgoing, index: Int, flight: Flight, now: Long) {
+        val clearPacket = packet(TYPE_DATA, active.id, index, active.fragments.size, active.fragments[index])
+        val encrypted = try { encrypt(clearPacket) } finally { clearPacket.fill(0) }
+        flight.attempts++
+        flight.sentAt = now
         transmit(encrypted)
     }
 
     private fun acceptAck(id: Int, index: Int, count: Int, now: Long) {
         val active = outgoing ?: return
-        if (active.id != id || active.fragments.size != count || active.index != index) return
+        if (active.id != id || active.fragments.size != count) return
+        if (active.flights.remove(index) == null) return
         active.fragments[index].fill(0)
-        active.index++
-        active.attempts = 0
-        active.sentAt = 0
-        if (active.index == active.fragments.size) {
+        active.acknowledged++
+        if (active.acknowledged == active.fragments.size) {
             outgoing = null
             release(active)
-            try {
-                // Callbacks may enqueue another message; startNext will honor FIFO.
-                onDelivered(id)
-            } finally {
-                startNext(now)
-            }
+            try { onDelivered(id) } finally { startNext(now) }
         } else {
-            sendCurrent(now)
+            pumpWindow(active, now)
         }
+    }
+
+    private fun failActive(active: Outgoing, reason: String, now: Long) {
+        if (outgoing !== active) return
+        outgoing = null
+        release(active)
+        try { onFailure(active.id, reason) } finally { startNext(now) }
     }
 
     private fun startNext(now: Long, propagateFailureForId: Int? = null) {
@@ -225,7 +235,7 @@ class ReliablePacketLayer(
             val next = outgoingQueue.removeFirst()
             outgoing = next
             try {
-                sendCurrent(now)
+                pumpWindow(next, now)
                 return
             } catch (error: Exception) {
                 outgoing = null
@@ -242,6 +252,7 @@ class ReliablePacketLayer(
 
     private fun release(message: Outgoing) {
         message.fragments.forEach { it.fill(0) }
+        message.flights.clear()
         pendingOutgoingBytes = (pendingOutgoingBytes - message.messageBytes).coerceAtLeast(0)
     }
 
@@ -324,5 +335,7 @@ class ReliablePacketLayer(
         const val DEFAULT_RETRY_TIMEOUT_MS = 30_000L
         const val DEFAULT_MAX_ATTEMPTS = 5
         const val DEFAULT_REASSEMBLY_TIMEOUT_MS = 120_000L
+        const val DEFAULT_WINDOW_SIZE = 2
+        const val MAX_WINDOW_SIZE = 4
     }
 }

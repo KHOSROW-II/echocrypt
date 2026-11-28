@@ -175,4 +175,42 @@ class ReliablePacketLayerTest {
             // Expected.
         }
     }
+    @Test
+    fun slidingWindowKeepsTwoFragmentsInFlightAndAcceptsOutOfOrderAcks() {
+        val (a, b, link) = pair()
+        val message = ByteArray(80) { (it * 3).toByte() }
+        val id = a.send(message, 0)
+        assertEquals(2, a.inFlightFragmentCount())
+        assertEquals(2, link.ab.size)
+
+        val first = link.ab.removeFirst()
+        val second = link.ab.removeFirst()
+        b.receive(second, 10)
+        b.receive(first, 11)
+        val ack0 = link.ba.removeLast()
+        val ack1 = link.ba.removeFirst()
+        a.receive(ack1, 12)
+        assertEquals(2, a.inFlightFragmentCount())
+        a.receive(ack0, 13)
+        assertEquals(2, a.inFlightFragmentCount())
+
+        var now = 20L
+        while (a.hasPendingMessage()) {
+            while (link.ab.isNotEmpty()) b.receive(link.ab.removeFirst(), now++)
+            while (link.ba.isNotEmpty()) a.receive(link.ba.removeFirst(), now++)
+        }
+        assertArrayEquals(message, link.received.single())
+        assertEquals(listOf(id), link.delivered)
+        assertEquals(0, a.inFlightFragmentCount())
+    }
+
+    @Test
+    fun windowNeverExceedsConfiguredBound() {
+        val (a, _, link) = pair()
+        a.send(ByteArray(160) { it.toByte() }, 0)
+        assertEquals(2, a.inFlightFragmentCount())
+        assertEquals(2, link.ab.size)
+        a.close()
+    }
+
 }

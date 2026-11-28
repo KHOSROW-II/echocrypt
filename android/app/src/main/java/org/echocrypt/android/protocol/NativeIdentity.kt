@@ -32,7 +32,7 @@ object NativeIdentity {
 
         fun toJson(): String = JSONObject()
             .put("format", IDENTITY_FORMAT)
-            .put("public_key", publicKey.toHex())
+            .put("public_key", NativeIdentity.run { publicKey.toHex() })
             .put("fingerprint", fingerprint)
             .toString(2)
 
@@ -53,17 +53,18 @@ object NativeIdentity {
 
     class PrivateIdentity internal constructor(seed: ByteArray) {
         private val seedBytes = seed.copyOf()
-        private val privateKey = Ed25519PrivateKeyParameters(seedBytes, 0)
         val publicIdentity: PublicIdentity by lazy {
-            val public = privateKey.generatePublicKey().encoded
+            check(seedBytes.any { it.toInt() != 0 }) { "Identity has been destroyed" }
+            val public = Ed25519PrivateKeyParameters(seedBytes, 0).generatePublicKey().encoded
             PublicIdentity(public, sha256(public))
         }
 
         @Synchronized
         fun sign(message: ByteArray): ByteArray {
             check(seedBytes.any { it.toInt() != 0 }) { "Identity has been destroyed" }
+            val signingKey = Ed25519PrivateKeyParameters(seedBytes, 0)
             return Ed25519Signer().run {
-                init(true, privateKey)
+                init(true, signingKey)
                 update(message, 0, message.size)
                 generateSignature()
             }

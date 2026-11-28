@@ -54,7 +54,9 @@ object NativeModem {
         val encodedHeaderCopy = hamming1511(headerBits)
         val encodedHeader = encodedHeaderCopy + encodedHeaderCopy
 
-        val protectedPayload = header + payload + crc32(header + payload)
+        // ECF3 protects payload + frame CRC in the convolutional codeword.
+        // The fixed header has its own duplicated Hamming(15,11) + CRC protection.
+        val protectedPayload = payload + crc32(header + payload)
         val tailBits = interleave(convolutionalEncode(protectedPayload), PAYLOAD_INTERLEAVER_DEPTH)
 
         val sync = MessageDigest.getInstance("SHA-256")

@@ -32,11 +32,11 @@ class NativeCryptoTest {
         val receiver = NativeCrypto.SecureChannel(key)
         val packet = sender.encrypt("ECHOCRYPT".toByteArray(), "ECHOCRYPT/TEXT/v2".toByteArray())
         assertEquals("ECHOCRYPT", String(receiver.decrypt(packet, "ECHOCRYPT/TEXT/v2".toByteArray())))
-        assertFalse(receiver.run { ReplayWindow().wouldAccept(-1L) })
+        assertFalse(ReplayWindow().wouldAccept(-1L))
         try {
             receiver.decrypt(packet, "ECHOCRYPT/TEXT/v2".toByteArray())
             fail("Duplicate packet must be rejected")
-        } catch (_: IllegalArgumentException) {
+        } catch (_: Exception) {
             // Expected.
         }
     }

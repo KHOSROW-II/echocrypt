@@ -56,15 +56,19 @@ class DuplexAudioSession(
             check(inputMin > 0 && outputMin > 0) { "48 kHz mono full-duplex audio is unsupported" }
 
             val inputBuffer = max(inputMin * 2, CHUNK_SAMPLES * 4)
-            var input = createRecorder(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputBuffer)
-            if (input.state != AudioRecord.STATE_INITIALIZED) {
-                input.release()
+            var input = runCatching {
+                createRecorder(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputBuffer)
+            }.getOrNull()
+            if (input == null || input.state != AudioRecord.STATE_INITIALIZED) {
+                input?.release()
                 input = createRecorder(MediaRecorder.AudioSource.MIC, inputBuffer)
             }
             check(input.state == AudioRecord.STATE_INITIALIZED) {
                 input.release()
                 "Could not initialize microphone for duplex audio"
             }
+            // Publish input immediately so any later setup failure is cleaned up by stop().
+            recorder = input
 
             val output = AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder()
@@ -75,13 +79,10 @@ class DuplexAudioSession(
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
                 .setBufferSizeInBytes(max(outputMin * 2, CHUNK_SAMPLES * 4))
                 .setTransferMode(AudioTrack.MODE_STREAM).build()
-            check(output.state == AudioTrack.STATE_INITIALIZED) {
-                input.release()
+            if (output.state != AudioTrack.STATE_INITIALIZED) {
                 output.release()
-                "Could not initialize speaker for duplex audio"
+                error("Could not initialize speaker for duplex audio")
             }
-
-            recorder = input
             track = output
             if (AcousticEchoCanceler.isAvailable()) {
                 echoCanceler = runCatching {
@@ -169,19 +170,33 @@ class DuplexAudioSession(
     fun stop() {
         if (!running.getAndSet(false) && recorder == null && track == null) return
         playbackQueue.clear()
-        captureThread?.interrupt()
-        playbackThread?.interrupt()
+
+        val capture = captureThread
+        val playback = playbackThread
+        capture?.interrupt()
+        playback?.interrupt()
+
+        // Stop the devices before joining so blocking read/write calls are released.
         recorder?.let { input ->
             try { input.stop() } catch (_: IllegalStateException) { }
-            input.release()
         }
         track?.let { output ->
-            if (output.state == AudioTrack.STATE_INITIALIZED &&
-                output.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                try { output.stop() } catch (_: IllegalStateException) { }
+            if (output.state == AudioTrack.STATE_INITIALIZED) {
+                try {
+                    if (output.playState == AudioTrack.PLAYSTATE_PLAYING) output.pause()
+                    output.flush()
+                    if (output.playState != AudioTrack.PLAYSTATE_STOPPED) output.stop()
+                } catch (_: IllegalStateException) {
+                    // Device teardown may race with a platform audio-service reset.
+                }
             }
-            output.release()
         }
+
+        if (capture !== Thread.currentThread()) runCatching { capture?.join(1_000) }
+        if (playback !== Thread.currentThread()) runCatching { playback?.join(1_000) }
+
+        recorder?.release()
+        track?.release()
         echoCanceler?.release()
         noiseSuppressor?.release()
         recorder = null

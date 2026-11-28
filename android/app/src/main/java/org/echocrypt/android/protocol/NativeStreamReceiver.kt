@@ -21,6 +21,8 @@ class NativeStreamReceiver(
     private var buffer = FloatArray(0)
     private var absoluteBase = 0L
     private var nextCandidate = 0
+    private var lastDecodedPeriod = 240.0
+    private var lastDecodedStart = 0
 
     init {
         require(candidateStride in 1..240)
@@ -32,6 +34,8 @@ class NativeStreamReceiver(
         buffer = FloatArray(0)
         absoluteBase = 0L
         nextCandidate = 0
+        lastDecodedPeriod = 240.0
+        lastDecodedStart = 0
     }
 
     /**
@@ -57,7 +61,10 @@ class NativeStreamReceiver(
 
             var decoded: ByteArray? = null
             try {
-                decoded = NativeDemodulator.decodeAligned(buffer, nextCandidate)
+                val timed = NativeDemodulator.decodeWithTimingRecovery(buffer, nextCandidate, candidateStride * 3)
+                lastDecodedPeriod = timed.symbolPeriod
+                lastDecodedStart = timed.startSample
+                decoded = timed.payload
             } catch (error: IllegalArgumentException) {
                 // A valid sync/header with an incomplete payload must remain
                 // buffered until the next audio chunk arrives.
@@ -68,8 +75,10 @@ class NativeStreamReceiver(
             }
 
             if (decoded != null) {
-                val frameSamples = (64 + 330 + ((decoded.size + 4) * 8 + 6) * 2) * 240 + 96
-                val refinedStart = refineStart(nextCandidate)
+                val nominalFrameSamples = (64 + 330 + ((decoded.size + 4) * 8 + 6) * 2) * 240 + 96
+                val period = lastDecodedPeriod
+                val frameSamples = (nominalFrameSamples * period / 240.0).toInt()
+                val refinedStart = lastDecodedStart
                 output += ReceivedFrame(
                     payload = decoded,
                     startOffsetSamples = absoluteBase + refinedStart,

@@ -194,7 +194,7 @@ class NativePeerHandshake(
         val ephemeral = checkNotNull(localEphemeral).publicKey
         val nonce = ByteArray(16).also(random::nextBytes)
         val fields = profile.wireFields()
-        val flags = fields[3] or if (ultrasonicEnabled) 0x02 else 0
+        val flags = fields[3] or (if (ultrasonicEnabled) 0x02 else 0)
         val retries = fields[4] or ((maxWorkers - 1) shl 4)
         val header = ByteBuffer.allocate(HELLO_HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
             .put(HELLO_MAGIC)
@@ -219,10 +219,10 @@ class NativePeerHandshake(
             "HELLO signature verification failed"
         }
         val buffer = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN)
-        val magic = ByteArray(4).also(buffer::get)
+        val magic = ByteArray(4).also { buffer.get(it) }
         val version = buffer.get().toInt() and 0xff
         val roleCode = buffer.get().toInt() and 0xff
-        val ephemeral = ByteArray(32).also(buffer::get)
+        val ephemeral = ByteArray(32).also { buffer.get(it) }
         buffer.position(buffer.position() + 16) // random nonce; transcript-bound by signature
         val profileId = buffer.get().toInt() and 0xff
         val symbolRate = buffer.short.toInt() and 0xffff
@@ -233,13 +233,13 @@ class NativePeerHandshake(
             "Unsupported HELLO format; update both ECHOCRYPT devices"
         }
         require(roleCode == expectedRole.code) { "Unexpected peer role" }
-        require(flags and 0xfc == 0) { "HELLO contains unsupported capability flags" }
+        require((flags and 0xfc) == 0) { "HELLO contains unsupported capability flags" }
         val workers = ((retries ushr 4) and 0x0f) + 1
         require(workers <= 8) { "HELLO advertises unsupported worker count" }
         val profile = NativeSecurityProfile.fromWire(
-            profileId, symbolRate, paddingBlock, flags and 1, retries and 0x0f
+            profileId, symbolRate, paddingBlock, (flags and 1), (retries and 0x0f)
         )
-        return PeerHello(ephemeral, profile, flags and 2 != 0, workers)
+        return PeerHello(ephemeral, profile, (flags and 2) != 0, workers)
     }
 
     private fun negotiate(peer: PeerHello) {

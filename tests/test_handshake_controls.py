@@ -68,7 +68,8 @@ class HandshakeControlTests(unittest.TestCase):
             communication._send_handshake_packet(b"FINISH-R", "FINISH-R", cfg)
 
         self.assertEqual(observed["label"], "FINISH-R")
-        self.assertGreaterEqual(observed["elapsed"], 5.0)
+        # Allow only sub-nanosecond float representation error at the 5s boundary.
+        self.assertGreaterEqual(observed["elapsed"] + 1e-9, 5.0)
         self.assertLess(observed["elapsed"], 6.5)
 
     def test_initiator_waits_before_hello_i_finish_i_and_both_retries(self):

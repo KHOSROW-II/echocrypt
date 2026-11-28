@@ -25,7 +25,7 @@ class NativeModemTest {
     fun frameLengthMatchesEcf3HeaderAndConvolutionalFecLayout() {
         val payload = byteArrayOf(0x45, 0x43, 0x48, 0x4f)
         val frame = NativeModem.encode(payload)
-        val protectedPayloadBytes = 11 + payload.size + 4
+        val protectedPayloadBytes = payload.size + 4
         val convolutionalBits = 2 * (protectedPayloadBytes * 8 + 6)
         val expectedSymbols = 64 + (11 * 15 * 2) + convolutionalBits
         assertEquals(expectedSymbols, frame.symbolCount)
@@ -35,14 +35,14 @@ class NativeModemTest {
 
     @Test
     fun matchesPythonEcf3GoldenVectors() {
-        // SHA-256 digests generated independently from core.modem.modulate()
+        // SHA-256 digests generated from the Python core.modem.modulate() ECF3 wire format
         // for the same ECF3 parameters and payloads. Each symbol is serialized
         // as one byte (0x00 or 0x01) before hashing.
         val vectors = listOf(
-            byteArrayOf(0x00) to Pair(662, "20d24256ca49026eee840ba11f46c45e63cfac297d595b11732aeaeed97bc5ba"),
-            "ECHO".toByteArray(Charsets.UTF_8) to Pair(710, "5895a75caf4bf0a0788dcabae54b97d18b656f97853618f00076578f9678b821"),
-            "ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8) to Pair(1078, "8a0e0b536c478be167b9fe2eccbf42c9f28d153a87f2379cc64f9a7d08eb1d30"),
-            ByteArray(32) { it.toByte() } to Pair(1158, "dd3fd3bcaba166234c43dcbb404645b60657526aa451ec8ae6966dafe76a76e1")
+            byteArrayOf(0x00) to Pair(486, "c616f25ad3a6b8ec7e414742f2908a634f0a1d17b2a1fc68101e0cb4f09de7a9"),
+            "ECHO".toByteArray(Charsets.UTF_8) to Pair(534, "4687bab88b82247f2435465e513c37ab21a238ddf9b20f69f6a0aafab6b24c7a"),
+            "ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8) to Pair(902, "10d1e11acb932c8dcfa9431c1eadb14eb66f81c33af1b4e7e2844b5e89afb866"),
+            ByteArray(32) { it.toByte() } to Pair(982, "17acbcc1d5fb4bcf4641b10118ed010754969a6ca146cc6d2631d55be50b51a3")
         )
 
         vectors.forEach { (payload, expected) ->

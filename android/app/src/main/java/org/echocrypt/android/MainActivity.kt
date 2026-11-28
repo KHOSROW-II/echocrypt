@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import org.echocrypt.android.audio.AndroidAudioEngine
+import org.echocrypt.android.protocol.NativeModem
 import java.util.concurrent.Executors
 
 private val Background = Color(0xFF090C12)
@@ -48,7 +49,7 @@ class MainActivity : ComponentActivity() {
             var level by remember { mutableFloatStateOf(-90f) }
             var status by remember { mutableStateOf("READY") }
             var error by remember { mutableStateOf<String?>(null) }
-            var outputError by remember { mutableStateOf<String?>(null) }
+            var outputError by remember { mutableStateOf<String?>(null) }\n            var modemStatus by remember { mutableStateOf("No frame transmitted") }
 
             val hasPermission = {
                 ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -145,6 +146,30 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }, modifier = Modifier.fillMaxWidth()) { Text("Play 1,800 Hz test tone") }
                                 outputError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 12.sp) }
+                                Button(onClick = {
+                                    outputError = null
+                                    modemStatus = "Encoding ECF3 frame…"
+                                    executor.execute {
+                                        try {
+                                            val frame = NativeModem.encode("ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8))
+                                            engine.transmitPcm(frame.samples)
+                                            runOnUiThread {
+                                                modemStatus = "Sent ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
+                                            }
+                                        } catch (e: Exception) {
+                                            runOnUiThread {
+                                                outputError = e.message ?: "Modem transmission failed"
+                                                modemStatus = "Transmission failed"
+                                            }
+                                        }
+                                    }
+                                }, modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
+                                    Text("Transmit ECF3 protocol test")
+                                }
+                                Text(modemStatus, color = Muted, fontSize = 11.sp)
+                                Text("Diagnostic payload is sent without encryption or handshake.",
+                                    color = Color(0xFFFFC56A), fontSize = 10.sp)
                             }
                         }
 

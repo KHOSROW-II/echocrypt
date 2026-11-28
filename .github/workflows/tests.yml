@@ -1,8 +1,9 @@
 name: Tests
 
 on:
-  # Cross-platform validation already runs the full test matrix on pushes to main.
-  # Keep this lightweight status check on PRs in case branch protection requires it.
+  # Android development branch: run tests on every push and on PRs to main.
+  push:
+    branches: [android]
   pull_request:
     branches: [main]
 

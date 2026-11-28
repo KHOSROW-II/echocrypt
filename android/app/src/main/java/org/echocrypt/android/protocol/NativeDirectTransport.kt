@@ -1,44 +1,41 @@
 package org.echocrypt.android.protocol
 
 import android.content.Context
+import java.io.File
 
 /**
  * Connects the authenticated ECH1 handshake and ECP1 secure channel to the
  * native ECF3 acoustic encoder. Incoming ECF3 payloads must be passed here in
  * order; outgoing payloads are modulated and queued on the DuplexAudioSession.
- *
- * The currently implemented modem is fixed at 200 baud without hopping, so
- * the negotiated custom profile is deliberately pinned to those capabilities.
  */
 class NativeDirectTransport(
     context: Context,
     private val enqueueAudio: (FloatArray) -> Boolean,
     private val onStateChanged: (String) -> Unit,
     private val onTextReceived: (String) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onFileReceived: (File) -> Unit = {}
 ) {
     private val vault = NativeIdentity.Vault(context.applicationContext)
     private val peers = TrustedPeersStore(context.applicationContext)
+    private val receivedFilesDirectory = File(context.applicationContext.filesDir, "received")
     private var localIdentity: NativeIdentity.PrivateIdentity? = null
     private var handshake: NativePeerHandshake? = null
     private var reliable: ReliablePacketLayer? = null
+    private var fileTransfer: NativeFileTransfer? = null
     private var peerName: String = ""
 
-    @Synchronized
-    fun trustedPeers(): List<TrustedPeersStore.TrustedPeer> = peers.list()
+    @Synchronized fun trustedPeers(): List<TrustedPeersStore.TrustedPeer> = peers.list()
 
     val isActive: Boolean
         @Synchronized get() = handshake?.state?.let { it != NativePeerHandshake.State.CLOSED } == true
-
     val isEstablished: Boolean
         @Synchronized get() = handshake?.established == true
 
-    @Synchronized
-    fun startInitiator(peerFingerprint: String) {
+    @Synchronized fun startInitiator(peerFingerprint: String) {
         start(peerFingerprint, NativePeerHandshake.Role.INITIATOR)
         try {
-            val hello = checkNotNull(handshake).start()
-            transmit(hello)
+            transmit(checkNotNull(handshake).start())
             publishState()
         } catch (error: Exception) {
             onError(error.message ?: "Could not start Direct handshake")
@@ -48,8 +45,7 @@ class NativeDirectTransport(
         }
     }
 
-    @Synchronized
-    fun startResponder(peerFingerprint: String) {
+    @Synchronized fun startResponder(peerFingerprint: String) {
         start(peerFingerprint, NativePeerHandshake.Role.RESPONDER)
         publishState()
     }
@@ -61,41 +57,25 @@ class NativeDirectTransport(
         check(vault.exists()) { "Create the local device identity first" }
         val local = vault.load()
         try {
-            // The Android modem currently supports 200 baud, no hopping and one
-            // worker. Advertise only what the actual transport implements.
             val profile = NativeSecurityProfile.custom(
-                symbolRate = 200,
-                paddingBlock = 0,
-                frequencyHopping = false,
-                retries = 1
+                symbolRate = 200, paddingBlock = 0, frequencyHopping = false, retries = 1
             )
             val direct = NativePeerHandshake(
-                role = role,
-                identity = local,
-                peerIdentity = peer.identity,
-                securityProfile = profile,
-                ultrasonicEnabled = false,
-                maxWorkers = 1
+                role = role, identity = local, peerIdentity = peer.identity,
+                securityProfile = profile, ultrasonicEnabled = false, maxWorkers = 1
             )
             localIdentity = local
             handshake = direct
             peerName = peer.name
-            onStateChanged(
-                if (role == NativePeerHandshake.Role.INITIATOR) {
-                    "WAIT_REPLY · authenticating $peerName"
-                } else {
-                    "WAIT_HELLO · listening for $peerName"
-                }
-            )
+            onStateChanged(if (role == NativePeerHandshake.Role.INITIATOR)
+                "WAIT_REPLY · authenticating $peerName" else "WAIT_HELLO · listening for $peerName")
         } catch (error: Exception) {
             local.destroy()
             throw error
         }
     }
 
-    /** Pass each decoded ECF3 frame payload here from the serial receive worker. */
-    @Synchronized
-    fun onIncomingPayload(payload: ByteArray) {
+    @Synchronized fun onIncomingPayload(payload: ByteArray) {
         val active = handshake ?: return
         try {
             if (active.established) {
@@ -103,14 +83,11 @@ class NativeDirectTransport(
                 checkNotNull(reliable).receive(payload, android.os.SystemClock.elapsedRealtime())
                 return
             }
-
             val response = active.receive(payload)
             if (response != null) transmit(response)
             publishState()
             if (active.established) {
                 ensureReliableLayer(active)
-                // The signing key is no longer needed once mutual authentication
-                // and key confirmation have completed.
                 localIdentity?.destroy()
                 localIdentity = null
                 onStateChanged("ESTABLISHED · $peerName · ECP1 encrypted")
@@ -120,8 +97,7 @@ class NativeDirectTransport(
         }
     }
 
-    @Synchronized
-    fun sendText(text: String) {
+    @Synchronized fun sendText(text: String) {
         require(text.isNotBlank()) { "Message cannot be empty" }
         val bytes = text.toByteArray(Charsets.UTF_8)
         require(bytes.size <= ReliablePacketLayer.MAX_MESSAGE_BYTES) { "Message exceeds reliable transport limit" }
@@ -131,55 +107,64 @@ class NativeDirectTransport(
         checkNotNull(reliable).send(bytes, android.os.SystemClock.elapsedRealtime())
     }
 
-    @Synchronized
-    fun tick() {
-        reliable?.tick(android.os.SystemClock.elapsedRealtime())
+    @Synchronized fun startFileTransfer(file: File, displayName: String = file.name) {
+        val active = checkNotNull(handshake) { "No Direct session is active" }
+        check(active.established) { "Direct handshake has not completed" }
+        ensureReliableLayer(active)
+        checkNotNull(fileTransfer).start(file, displayName)
     }
 
-    @Synchronized
-    fun retryHandshake() {
+    @Synchronized fun tick() { reliable?.tick(android.os.SystemClock.elapsedRealtime()) }
+
+    @Synchronized fun retryHandshake() {
         val retry = checkNotNull(handshake) { "No Direct handshake is active" }.retryPacket
             ?: throw IllegalStateException("There is no handshake flight waiting for retry")
         transmit(retry)
         publishState()
     }
 
-    @Synchronized
-    fun disconnect() {
+    @Synchronized fun disconnect() {
         closeUnlocked()
         onStateChanged("IDLE")
     }
 
     private fun ensureReliableLayer(active: NativePeerHandshake) {
         if (reliable != null) return
+        fileTransfer = NativeFileTransfer(
+            storageDirectory = receivedFilesDirectory,
+            sendPacket = { packet -> checkNotNull(reliable).send(packet, android.os.SystemClock.elapsedRealtime()) },
+            onProgress = { value -> onStateChanged("FILE · $value") },
+            onReceived = onFileReceived,
+            onError = onError
+        )
         reliable = ReliablePacketLayer(
             encrypt = { plain -> active.sendPayload(plain, maxPacketSize = 1024) },
             decrypt = { encrypted -> active.receivePayload(encrypted) },
             transmit = { encrypted -> transmit(encrypted) },
             onMessage = { bytes ->
                 try {
-                    val decoded = Charsets.UTF_8.newDecoder()
-                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
-                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
-                    onTextReceived(decoded)
-                } catch (_: Exception) {
-                    onError("Received message is not valid UTF-8")
+                    if (NativeFileTransfer.isTransferPacket(bytes)) {
+                        checkNotNull(fileTransfer).receive(bytes)
+                    } else {
+                        val decoded = Charsets.UTF_8.newDecoder()
+                            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                            .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+                        onTextReceived(decoded)
+                    }
+                } catch (error: Exception) {
+                    onError(error.message ?: "Received application packet is invalid")
                 }
             },
-            onDelivered = { id -> onStateChanged("ESTABLISHED · $peerName · message #$id acknowledged") },
+            onDelivered = { _ -> fileTransfer?.onReliablePacketDelivered() },
             onFailure = { id, reason -> onError("Message #$id failed: $reason") }
         )
     }
 
     private fun transmit(packet: ByteArray) {
-        require(packet.isNotEmpty() && packet.size <= 1024) {
-            "Direct protocol packet exceeds the current ECF3 payload limit"
-        }
+        require(packet.isNotEmpty() && packet.size <= 1024) { "Direct protocol packet exceeds the current ECF3 payload limit" }
         val frame = NativeModem.encode(packet)
-        check(enqueueAudio(frame.samples)) {
-            "Audio playback queue is full or duplex audio is not running"
-        }
+        check(enqueueAudio(frame.samples)) { "Audio playback queue is full or duplex audio is not running" }
     }
 
     private fun publishState() {
@@ -188,6 +173,8 @@ class NativeDirectTransport(
     }
 
     private fun closeUnlocked() {
+        fileTransfer?.close()
+        fileTransfer = null
         reliable?.close()
         reliable = null
         handshake?.close()

@@ -2,6 +2,7 @@ package org.echocrypt.android
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -34,7 +35,10 @@ import org.echocrypt.android.protocol.NativeDirectTransport
 import org.echocrypt.android.protocol.NativeModem
 import org.echocrypt.android.protocol.NativeStreamReceiver
 import org.echocrypt.android.protocol.PcmChunkSequenceGuard
+import org.echocrypt.android.protocol.ReliablePacketLayer
 import org.echocrypt.android.protocol.TrustedPeersStore
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -51,11 +55,8 @@ class MainActivity : ComponentActivity() {
     private val engine = AndroidAudioEngine()
     @Volatile private var duplexSession: DuplexAudioSession? = null
     private val executor = Executors.newSingleThreadExecutor()
-    private val receiveExecutor = ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue(64),
-        ThreadPoolExecutor.AbortPolicy()
-    )
+    private val receiveExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(64), ThreadPoolExecutor.AbortPolicy())
     private val streamReceiver = NativeStreamReceiver()
     private val chunkSequence = AtomicLong(0L)
     private val sequenceGuard = PcmChunkSequenceGuard()
@@ -74,11 +75,9 @@ class MainActivity : ComponentActivity() {
     private var directError by mutableStateOf<String?>(null)
     private val directMessages = mutableStateListOf<String>()
     private var trustedPeers by mutableStateOf<List<TrustedPeersStore.TrustedPeer>>(emptyList())
-
     private var permissionResult: ((Boolean) -> Unit)? = null
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        permissionResult?.invoke(it)
-        permissionResult = null
+        permissionResult?.invoke(it); permissionResult = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,10 +86,9 @@ class MainActivity : ComponentActivity() {
             context = applicationContext,
             enqueueAudio = { samples -> duplexSession?.enqueuePlayback(samples) == true },
             onStateChanged = { value -> runOnUiThread { directStatus = value } },
-            onTextReceived = { value ->
-                runOnUiThread { addDirectMessage("Peer: $value") }
-            },
-            onError = { value -> runOnUiThread { directError = value } }
+            onTextReceived = { value -> runOnUiThread { addDirectMessage("Peer: $value") } },
+            onError = { value -> runOnUiThread { directError = value } },
+            onFileReceived = { file -> runOnUiThread { addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage") } }
         )
         refreshTrustedPeers()
         reliabilityHandler.postDelayed(reliabilityTicker, 1_000L)
@@ -107,9 +105,45 @@ class MainActivity : ComponentActivity() {
             var receiveError by remember { mutableStateOf<String?>(null) }
             var effectsStatus by remember { mutableStateOf("AEC: unknown · Noise suppression: unknown") }
 
+            val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+                if (uri != null) {
+                    directError = null
+                    executor.execute {
+                        var staged: File? = null
+                        try {
+                            val displayName = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                                ?: "received-file"
+                            staged = File(cacheDir, "outgoing-${System.nanoTime()}.bin")
+                            contentResolver.openInputStream(uri).use { input ->
+                                requireNotNull(input) { "Cannot open selected file" }
+                                FileOutputStream(staged).use { output ->
+                                    val buffer = ByteArray(32 * 1024)
+                                    var total = 0L
+                                    while (true) {
+                                        val read = input.read(buffer)
+                                        if (read < 0) break
+                                        total += read
+                                        require(total <= org.echocrypt.android.protocol.NativeFileTransfer.MAX_FILE_BYTES) {
+                                            "File exceeds the 10 MiB Android transfer limit"
+                                        }
+                                        output.write(buffer, 0, read)
+                                    }
+                                }
+                            }
+                            directTransport.startFileTransfer(staged, displayName)
+                            staged = null
+                        } catch (e: Exception) {
+                            runOnUiThread { directError = e.message ?: "Could not start file transfer" }
+                        } finally {
+                            staged?.delete()
+                        }
+                    }
+                }
+            }
+
             val hasPermission = {
-                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-                    PackageManager.PERMISSION_GRANTED
+                ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             }
             val onCapturedPcm: (FloatArray) -> Unit = { pcm ->
                 val sequence = chunkSequence.incrementAndGet()
@@ -117,50 +151,36 @@ class MainActivity : ComponentActivity() {
                     receiveExecutor.execute {
                         if (sequenceGuard.requiresReset(sequence)) {
                             streamReceiver.reset()
-                            runOnUiThread {
-                                receiveError = "Audio processing fell behind; decoder reacquired after dropped PCM."
-                            }
+                            runOnUiThread { receiveError = "Audio processing fell behind; decoder reacquired after dropped PCM." }
                         }
                         val frames = streamReceiver.push(pcm)
                         if (frames.isNotEmpty()) {
                             frames.forEach { frame -> directTransport.onIncomingPayload(frame.payload) }
                             runOnUiThread {
                                 receivedCount += frames.size
-                                lastReceived = frames.joinToString(" · ") { frame ->
-                                    "ECF3 payload · ${frame.payload.size} bytes"
-                                }
+                                lastReceived = frames.joinToString(" · ") { frame -> "ECF3 payload · ${frame.payload.size} bytes" }
                             }
                         }
                     }
                 } catch (_: RejectedExecutionException) {
-                    runOnUiThread {
-                        receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization."
-                    }
+                    runOnUiThread { receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization." }
                 }
             }
             val start = {
                 error = null
                 receiveError = null
                 chunkSequence.set(0L)
-                receiveExecutor.execute {
-                    streamReceiver.reset()
-                    sequenceGuard.reset()
-                }
+                receiveExecutor.execute { streamReceiver.reset(); sequenceGuard.reset() }
                 executor.execute {
                     try {
                         val session = DuplexAudioSession(
                             onPcm = onCapturedPcm,
                             onError = { message ->
                                 runOnUiThread {
-                                    listening = false
-                                    status = "AUDIO ERROR"
-                                    error = message
+                                    listening = false; status = "AUDIO ERROR"; error = message
                                     directTransport.disconnect()
                                 }
-                                executor.execute {
-                                    duplexSession?.stop()
-                                    duplexSession = null
-                                }
+                                executor.execute { duplexSession?.stop(); duplexSession = null }
                             },
                             onInputLevel = { value -> runOnUiThread { level = value } }
                         )
@@ -172,13 +192,8 @@ class MainActivity : ComponentActivity() {
                                 " · Noise suppression: " + (if (session.supportsNoiseSuppression) "ON" else "unavailable")
                         }
                     } catch (e: Exception) {
-                        duplexSession?.stop()
-                        duplexSession = null
-                        runOnUiThread {
-                            listening = false
-                            status = "AUDIO ERROR"
-                            error = e.message ?: "Could not start full-duplex audio"
-                        }
+                        duplexSession?.stop(); duplexSession = null
+                        runOnUiThread { listening = false; status = "AUDIO ERROR"; error = e.message ?: "Could not start full-duplex audio" }
                     }
                 }
             }
@@ -186,7 +201,8 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Gold, background = Background,
                 surface = Panel, onPrimary = Background, onBackground = Color.White, onSurface = Color.White)) {
                 Surface(Modifier.fillMaxSize(), color = Background) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Lock, null, tint = Gold, modifier = Modifier.size(34.dp))
                             Spacer(Modifier.width(12.dp))
@@ -201,12 +217,10 @@ class MainActivity : ComponentActivity() {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("FULL DUPLEX AUDIO", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                                    Spacer(Modifier.weight(1f))
-                                    Text(status, color = Muted, fontSize = 11.sp)
+                                    Spacer(Modifier.weight(1f)); Text(status, color = Muted, fontSize = 11.sp)
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Mic, null, tint = Gold)
-                                    Spacer(Modifier.width(10.dp))
+                                    Icon(Icons.Default.Mic, null, tint = Gold); Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text("Microphone")
                                         Text(if (listening) "48 kHz · Mono PCM · Capture + playback ready" else "Stopped",
@@ -214,17 +228,15 @@ class MainActivity : ComponentActivity() {
                                     }
                                     Text("${level.toInt()} dB", color = Gold, fontSize = 12.sp)
                                 }
-                                Box(Modifier.fillMaxWidth().height(6.dp)
-                                    .background(Color(0xFF293547), RoundedCornerShape(8.dp))) {
-                                    Box(Modifier.fillMaxWidth(((level + 90f) / 90f).coerceIn(0f, 1f))
-                                        .height(6.dp).background(Gold, RoundedCornerShape(8.dp)))
+                                Box(Modifier.fillMaxWidth().height(6.dp).background(Color(0xFF293547), RoundedCornerShape(8.dp))) {
+                                    Box(Modifier.fillMaxWidth(((level + 90f) / 90f).coerceIn(0f, 1f)).height(6.dp)
+                                        .background(Gold, RoundedCornerShape(8.dp)))
                                 }
                                 Text(effectsStatus, color = Muted, fontSize = 11.sp)
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Button(onClick = {
-                                        if (hasPermission()) {
-                                            listening = true; status = "LISTENING"; start()
-                                        } else {
+                                        if (hasPermission()) { listening = true; status = "LISTENING"; start() }
+                                        else {
                                             permissionResult = { granted ->
                                                 if (granted) { listening = true; status = "LISTENING"; start() }
                                                 else error = "Microphone permission denied"
@@ -250,38 +262,28 @@ class MainActivity : ComponentActivity() {
                             shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.VolumeUp, null, tint = Gold)
-                                    Spacer(Modifier.width(8.dp))
+                                    Icon(Icons.Default.VolumeUp, null, tint = Gold); Spacer(Modifier.width(8.dp))
                                     Text("OUTPUT TEST", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
                                 }
                                 Text("Verify Android speaker or connected audio output.", color = Muted, fontSize = 12.sp)
                                 Button(onClick = {
                                     outputError = null
-                                    executor.execute {
-                                        try { engine.playTestTone() }
-                                        catch (e: Exception) { runOnUiThread { outputError = e.message } }
-                                    }
+                                    executor.execute { try { engine.playTestTone() }
+                                        catch (e: Exception) { runOnUiThread { outputError = e.message } } }
                                 }, enabled = !listening, modifier = Modifier.fillMaxWidth()) { Text("Play 1,800 Hz test tone") }
                                 outputError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 12.sp) }
                                 Button(onClick = {
-                                    outputError = null
-                                    modemStatus = "Encoding ECF3 frame…"
+                                    outputError = null; modemStatus = "Encoding ECF3 frame…"
                                     executor.execute {
                                         try {
                                             val frame = NativeModem.encode("ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8))
-                                            val session = duplexSession
-                                                ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
+                                            val session = duplexSession ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
                                             check(session.isRunning) { "Full Duplex audio is not running" }
                                             check(!directTransport.isActive) { "Disconnect the Direct session before running diagnostics" }
                                             check(session.enqueuePlayback(frame.samples)) { "Playback queue is full; wait for the current transmission" }
-                                            runOnUiThread {
-                                                modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
-                                            }
+                                            runOnUiThread { modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s" }
                                         } catch (e: Exception) {
-                                            runOnUiThread {
-                                                outputError = e.message ?: "Modem transmission failed"
-                                                modemStatus = "Transmission failed"
-                                            }
+                                            runOnUiThread { outputError = e.message ?: "Modem transmission failed"; modemStatus = "Transmission failed" }
                                         }
                                     }
                                 }, enabled = listening && !directTransport.isActive, modifier = Modifier.fillMaxWidth(),
@@ -296,32 +298,40 @@ class MainActivity : ComponentActivity() {
 
                         IdentityManagementPanel(onPeersChanged = { refreshTrustedPeers() })
 
+                        Card(colors = CardDefaults.cardColors(containerColor = Panel),
+                            shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("ENCRYPTED FILE TRANSFER", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                                Text("Files up to 10 MiB · SHA-256 verification · saved in app-private storage on receipt.",
+                                    color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                                Button(onClick = { filePicker.launch(arrayOf("*/*")) },
+                                    enabled = listening && directTransport.isEstablished,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
+                                    Text("Choose file and send")
+                                }
+                                Text("Received files are stored in the app's private files/received directory. No broad storage permission is requested.",
+                                    color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
+                            }
+                        }
+
                         DirectCommunicationPanel(
-                            peers = trustedPeers,
-                            duplexRunning = duplexSession?.isRunning == true,
-                            status = directStatus,
-                            messages = directMessages,
-                            error = directError,
+                            peers = trustedPeers, duplexRunning = duplexSession?.isRunning == true,
+                            status = directStatus, messages = directMessages, error = directError,
                             onRefreshPeers = { refreshTrustedPeers() },
                             onStartInitiator = { fingerprint ->
                                 directError = null
-                                executor.execute {
-                                    try { directTransport.startInitiator(fingerprint) }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not connect" } }
-                                }
+                                executor.execute { try { directTransport.startInitiator(fingerprint) }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not connect" } } }
                             },
                             onStartResponder = { fingerprint ->
                                 directError = null
-                                executor.execute {
-                                    try { directTransport.startResponder(fingerprint) }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not wait for peer" } }
-                                }
+                                executor.execute { try { directTransport.startResponder(fingerprint) }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not wait for peer" } } }
                             },
                             onRetry = {
-                                executor.execute {
-                                    try { directTransport.retryHandshake() }
-                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Retry failed" } }
-                                }
+                                executor.execute { try { directTransport.retryHandshake() }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Retry failed" } } }
                             },
                             onDisconnect = {
                                 executor.execute {
@@ -329,15 +339,9 @@ class MainActivity : ComponentActivity() {
                                     runOnUiThread { directMessages.clear(); directError = null }
                                 }
                             },
-                            onSend = { text ->
-                                executor.execute {
-                                    try {
-                                        directTransport.sendText(text)
-                                        runOnUiThread { addDirectMessage("Me: $text") }
-                                    } catch (e: Exception) {
-                                        runOnUiThread { directError = e.message ?: "Message transmission failed" }
-                                    }
-                                }
+                            onSend = { message ->
+                                executor.execute { try { directTransport.sendText(message); runOnUiThread { addDirectMessage("Me: $message") } }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Message transmission failed" } } }
                             }
                         )
 
@@ -376,11 +380,9 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         reliabilityHandler.removeCallbacks(reliabilityTicker)
         if (::directTransport.isInitialized) directTransport.disconnect()
-        duplexSession?.release()
-        duplexSession = null
+        duplexSession?.release(); duplexSession = null
         engine.release()
-        executor.shutdownNow()
-        receiveExecutor.shutdownNow()
+        executor.shutdownNow(); receiveExecutor.shutdownNow()
         super.onDestroy()
     }
 }

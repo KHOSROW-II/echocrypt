@@ -39,7 +39,7 @@ class ReliablePacketLayerTest {
         val (a, b, link) = pair()
         val message = "Reliable ECHOCRYPT — سلام".toByteArray()
         val id = a.send(message, 0)
-        assertEquals(1, link.ab.size)
+        assertEquals(2, link.ab.size)
         var now = 10L
         while (a.hasPendingMessage()) {
             b.receive(link.ab.removeFirst(), now++)

@@ -36,7 +36,7 @@ data class NativeSecurityProfile(
             NativeSecurityProfile("custom", 4, symbolRate, paddingBlock, frequencyHopping, retries)
 
         fun fromWire(id: Int, symbolRate: Int, paddingBlock: Int, flags: Int, retries: Int): NativeSecurityProfile {
-            require(flags and 0xfe == 0) { "Unsupported profile flags" }
+            require((flags and 0xfe) == 0) { "Unsupported profile flags" }
             val hopping = flags and 1 != 0
             if (id == 4) return custom(symbolRate, paddingBlock, hopping, retries)
             val expected = when (id) {

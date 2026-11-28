@@ -58,7 +58,7 @@ object NativeDemodulator {
         // The convolutional code protects the complete header + payload + CRC,
         // not only the payload trailer. Keep this byte count wire-compatible
         // with NativeModem.convolutionalEncode().
-        val decodedBytes = HEADER_BYTES + payloadLength + 4
+        val decodedBytes = payloadLength + 4
         val steps = decodedBytes * 8 + CONV_K - 1
         val payloadCodeBits = steps * 2
         val payloadStart = headerStart + HEADER_SYMBOLS * SAMPLES_PER_SYMBOL
@@ -71,8 +71,8 @@ object NativeDemodulator {
         }
         val convolutionalLlrs = deinterleave(deinterleave(payloadLlrs, PAYLOAD_DEPTH), CONV_DEPTH)
         val decoded = viterbiDecode(convolutionalLlrs, decodedBytes)
-        val payload = decoded.copyOfRange(HEADER_BYTES, HEADER_BYTES + payloadLength)
-        val receivedCrc = ByteBuffer.wrap(decoded, HEADER_BYTES + payloadLength, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
+        val payload = decoded.copyOfRange(0, payloadLength)
+        val receivedCrc = ByteBuffer.wrap(decoded, payloadLength, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffffffffL
         val expectedCrc = crc32(header + payload)
         require(receivedCrc == expectedCrc) {
             "ECF3 payload CRC mismatch (expected=${expectedCrc.toString(16)} received=${receivedCrc.toString(16)})"

@@ -275,7 +275,18 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Test Android app and build APK from android branch
-        run: gradle -p android-source/android testDebugUnitTest assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            APP_VERSION="$GITHUB_REF_NAME"
+          else
+            APP_VERSION="nightly-$(date -u +'%Y%m%d')-${GITHUB_SHA::7}"
+          fi
+          gradle -p android-source/android \
+            "-PandroidVersionCode=$GITHUB_RUN_NUMBER" \
+            "-PandroidVersionName=$APP_VERSION" \
+            testDebugUnitTest assembleDebug
       - name: Stage unified Android release asset
         run: |
           mkdir -p release/echocrypt-android

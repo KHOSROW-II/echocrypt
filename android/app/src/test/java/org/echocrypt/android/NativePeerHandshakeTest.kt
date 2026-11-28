@@ -150,13 +150,13 @@ class NativePeerHandshakeTest {
     fun oversizedTextDoesNotConsumeTrafficSequence() {
         val (alice, bob) = peers()
         establish(alice, bob)
-        val before = alice.session!!.tx.encryptedSize(1)
+        
         try {
             alice.sendText("A".repeat(300), maxPacketSize = 64)
             fail("Oversized text must be rejected")
         } catch (_: IllegalArgumentException) {
             // Expected.
         }
-        assertEquals(before, alice.session!!.tx.encryptedSize(1))
+        assertEquals("ok", bob.receiveText(alice.sendText("ok")))
     }
 }

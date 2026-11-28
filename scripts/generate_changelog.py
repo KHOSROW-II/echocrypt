@@ -80,11 +80,11 @@ def render_download_table(
     # portable bundles. Keep its explicit development-build status visible.
     rows.append(
         f"| Android | All supported | "
-        f"[Debug APK (unsigned)]({_download_url(repository, tag, 'echocrypt-android.apk')}) | — |"
+        f"[Debug APK (unsigned)]({_download_url(repository, tag, 'echocrypt-android.apk', asset_urls)}) | — |"
     )
     rows.append(
         f"| All platforms | Checksums | "
-        f"[SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS')}) | — |"
+        f"[SHA256SUMS]({_download_url(repository, tag, 'SHA256SUMS', asset_urls)}) | — |"
     )
     return "\n".join(rows)
 

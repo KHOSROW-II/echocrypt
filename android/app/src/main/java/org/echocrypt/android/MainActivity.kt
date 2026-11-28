@@ -71,6 +71,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var lastReceivedFile by mutableStateOf<File?>(null)
     private var directStatus by mutableStateOf("IDLE")
     private var directError by mutableStateOf<String?>(null)
     private val directMessages = mutableStateListOf<String>()
@@ -88,7 +89,7 @@ class MainActivity : ComponentActivity() {
             onStateChanged = { value -> runOnUiThread { directStatus = value } },
             onTextReceived = { value -> runOnUiThread { addDirectMessage("Peer: $value") } },
             onError = { value -> runOnUiThread { directError = value } },
-            onFileReceived = { file -> runOnUiThread { addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage") } }
+            onFileReceived = { file -> runOnUiThread { lastReceivedFile = file; addDirectMessage("File received: ${file.name} · ${file.length()} bytes · app storage") } }
         )
         refreshTrustedPeers()
         reliabilityHandler.postDelayed(reliabilityTicker, 1_000L)
@@ -104,6 +105,22 @@ class MainActivity : ComponentActivity() {
             var lastReceived by remember { mutableStateOf("No ECF3 frame received") }
             var receiveError by remember { mutableStateOf<String?>(null) }
             var effectsStatus by remember { mutableStateOf("AEC: unknown · Noise suppression: unknown") }
+
+            val saveReceivedFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri: Uri? ->
+                val source = lastReceivedFile
+                if (uri != null && source != null) {
+                    executor.execute {
+                        try {
+                            val output = contentResolver.openOutputStream(uri)
+                                ?: throw IllegalStateException("Cannot open destination")
+                            output.use { stream -> source.inputStream().use { input -> input.copyTo(stream) } }
+                            runOnUiThread { directError = null }
+                        } catch (e: Exception) {
+                            runOnUiThread { directError = e.message ?: "Could not export received file" }
+                        }
+                    }
+                }
+            }
 
             val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
                 if (uri != null) {
@@ -310,8 +327,12 @@ class MainActivity : ComponentActivity() {
                                     colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
                                     Text("Choose file and send")
                                 }
-                                Text("Received files are stored in the app's private files/received directory. No broad storage permission is requested.",
+                                Text("Received files stay in app-private storage until explicitly exported. No broad storage permission is requested.",
                                     color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
+                                Button(onClick = { lastReceivedFile?.let { saveReceivedFile.launch(it.name) } },
+                                    enabled = lastReceivedFile?.exists() == true, modifier = Modifier.fillMaxWidth()) {
+                                    Text("Save latest received file to device")
+                                }
                             }
                         }
 

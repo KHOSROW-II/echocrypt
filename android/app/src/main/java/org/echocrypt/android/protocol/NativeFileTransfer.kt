@@ -244,10 +244,8 @@ class NativeFileTransfer(
             packet.isNotEmpty() && (packet[0].toInt() and 0xff) in TYPE_MANIFEST..TYPE_CHUNK
 
         fun sanitizeName(input: String): String {
-            val cleaned = input.trim()
-                .replace('/', '_').replace('\\', '_')
-                .filter { it >= ' ' && it != '\u007f' }
-                .trim('.', ' ')
+            require('/' !in input && '\\' !in input) { "Path separators are not allowed in file names" }
+            val cleaned = input.trim().filter { it >= ' ' && it != '\u007f' }.trim('.', ' ')
             require(cleaned.isNotBlank() && cleaned != "." && cleaned != "..") { "Invalid file name" }
             val bytes = cleaned.toByteArray(Charsets.UTF_8)
             require(bytes.size <= MAX_NAME_BYTES) { "File name is too long" }

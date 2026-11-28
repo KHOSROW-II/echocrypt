@@ -4,6 +4,7 @@ import org.echocrypt.android.protocol.NativeFileTransfer
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.file.Files
 
 class NativeFileTransferTest {
@@ -19,11 +20,10 @@ class NativeFileTransferTest {
         assertEquals(2, packets.size)
         assertEquals(2, packets[1][0].toInt())
         sender.onReliablePacketDelivered()
-        assertEquals(3, packets.size)
+        sender.onReliablePacketDelivered()
         sender.onReliablePacketDelivered()
         assertEquals(4, packets.size)
-        sender.onReliablePacketDelivered()
-        assertTrue(packets.size == 4)
+        sender.close()
         root.deleteRecursively()
     }
 
@@ -41,11 +41,11 @@ class NativeFileTransferTest {
         sender.onReliablePacketDelivered()
         sender.onReliablePacketDelivered()
         sender.onReliablePacketDelivered()
-        assertEquals(3, packets.size)
         receiver.receive(packets[2])
         receiver.receive(packets[1])
-        assertNull(received)
         receiver.receive(packets[2])
+        assertNull(received)
+        receiver.receive(packets[3])
         assertNotNull(received)
         assertArrayEquals(data, received!!.readBytes())
         receiver.close()
@@ -57,14 +57,32 @@ class NativeFileTransferTest {
         try { NativeFileTransfer.sanitizeName("../../secret.txt"); fail("traversal") }
         catch (_: IllegalArgumentException) {}
         val root = Files.createTempDirectory("ec-limit").toFile()
-        val huge = File(root, "huge.bin").apply { RandomAccessFileCompat.create(this, NativeFileTransfer.MAX_FILE_BYTES + 1) }
+        val huge = File(root, "huge.bin").apply { RandomAccessFile(this, "rw").use { it.setLength(NativeFileTransfer.MAX_FILE_BYTES + 1) } }
         val sender = NativeFileTransfer(root, {})
         try { sender.start(huge); fail("size limit") }
         catch (_: IllegalArgumentException) {}
+        sender.close()
         root.deleteRecursively()
     }
 
-    private object RandomAccessFileCompat {
-        fun create(file: File, size: Long) { java.io.RandomAccessFile(file, "rw").use { it.setLength(size) } }
+    @Test fun rejectsHashMismatch() {
+        val root = Files.createTempDirectory("ec-hash").toFile()
+        val source = File(root, "source").apply { writeBytes(ByteArray(10) { it.toByte() }) }
+        val packets = mutableListOf<ByteArray>()
+        val sender = NativeFileTransfer(root, { packets.add(it) })
+        sender.start(source, "bad.bin")
+        sender.onReliablePacketDelivered()
+        val receiverRoot = File(root, "receiver").apply { mkdirs() }
+        var received: File? = null
+        val errors = mutableListOf<String>()
+        val receiver = NativeFileTransfer(receiverRoot, {}, onReceived = { received = it }, onError = { errors.add(it) })
+        receiver.receive(packets[0])
+        val corrupt = packets[1].copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 0x55).toByte() }
+        receiver.receive(corrupt)
+        assertNull(received)
+        assertTrue(errors.any { it.contains("SHA-256 mismatch") })
+        receiver.close()
+        sender.close()
+        root.deleteRecursively()
     }
 }

@@ -34,3 +34,8 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`.
 - Protocol components must remain independent of Compose. The desktop Python implementation remains untouched; cross-platform compatibility must be demonstrated with shared test vectors and real-device loopback/interoperability tests before calling the Android client compatible.
 
 All Android implementation work in this milestone is under `android/`.
+
+
+### ECF3 wire-format interoperability correction
+
+The native modem now follows the Python ECF3 framing exactly: the fixed 11-byte header is protected separately by its duplicated Hamming(15,11) code and header CRC; the convolutional payload codeword contains only the application payload plus the frame CRC over `header || payload`. ECF3 then applies the depth-16 burst interleaver outside the depth-8 convolutional interleaver. The Android golden vectors were recalculated from this wire layout. Do not interpret the earlier, longer Android-only codeword layout as interoperable with desktop ECF3.

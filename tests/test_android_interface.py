@@ -12,7 +12,7 @@ class AndroidMenuTests(unittest.TestCase):
             [("one", "First action"), ("back", "Back")],
         )
         self.assertTrue(menu.app.full_screen)
-        self.assertTrue(menu.app.mouse_support)
+        self.assertTrue(menu.app.mouse_support())
         self.assertEqual(menu.app.ttimeoutlen, 0.06)
         self.assertEqual(menu.app.timeoutlen, 0.12)
 

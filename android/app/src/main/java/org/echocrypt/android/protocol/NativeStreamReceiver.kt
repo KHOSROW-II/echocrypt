@@ -4,9 +4,9 @@ package org.echocrypt.android.protocol
  * Incremental ECF3 receiver for chunked PCM input.
  *
  * It tolerates arbitrary AudioRecord chunk boundaries and concatenated frames.
- * Detection currently performs a coarse 8-sample start search and then delegates
- * to the fixed-clock aligned decoder. Clock drift / resampling recovery is not
- * implemented here; callers should feed native 48 kHz PCM.
+ * Detection uses a coarse candidate scan, followed by local sample-level
+ * refinement against the known sync word. Symbol-clock drift / resampling
+ * recovery is not implemented here; callers should feed native 48 kHz PCM.
  */
 class NativeStreamReceiver(
     private val candidateStride: Int = 8,
@@ -62,12 +62,13 @@ class NativeStreamReceiver(
 
             if (decoded != null) {
                 val frameSamples = (64 + 330 + ((decoded.size + 4) * 8 + 6) * 2) * 240 + 96
+                val refinedStart = refineStart(nextCandidate)
                 output += ReceivedFrame(
                     payload = decoded,
-                    startOffsetSamples = absoluteBase + nextCandidate,
+                    startOffsetSamples = absoluteBase + refinedStart,
                     frameSamples = frameSamples
                 )
-                val consumed = nextCandidate + frameSamples
+                val consumed = refinedStart + frameSamples
                 buffer = buffer.copyOfRange(minOf(consumed, buffer.size), buffer.size)
                 absoluteBase += consumed
                 nextCandidate = 0
@@ -96,6 +97,32 @@ class NativeStreamReceiver(
             absoluteBase += discard
         }
         return output
+    }
+
+    /**
+     * The decoder may tolerate a few samples of phase error. Once CRC has
+     * authenticated the frame, use the known sync word to recover its precise
+     * start within the nearby coarse-search window.
+     */
+    private fun refineStart(candidate: Int): Int {
+        val syncSamples = 64 * 240
+        val first = maxOf(0, candidate - candidateStride)
+        val last = minOf(
+            buffer.size - syncSamples,
+            candidate + candidateStride * 2
+        )
+        if (last < first) return candidate
+
+        var bestOffset = candidate
+        var bestScore = Double.NEGATIVE_INFINITY
+        for (offset in first..last) {
+            val score = NativeDemodulator.syncConfidence(buffer, offset)
+            if (score > bestScore) {
+                bestScore = score
+                bestOffset = offset
+            }
+        }
+        return bestOffset
     }
 
     private fun append(chunk: FloatArray) {

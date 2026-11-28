@@ -1,6 +1,7 @@
 package org.echocrypt.android
 
 import org.echocrypt.android.protocol.NativeModem
+import org.echocrypt.android.protocol.NativeDemodulator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import java.security.MessageDigest
@@ -52,6 +53,35 @@ class NativeModemTest {
             assertEquals(expected.first, frame.symbolCount)
             assertEquals(expected.second, digest)
         }
+    }
+
+
+    @Test
+    fun nativeDemodulatorDecodesAlignedEcf3Waveform() {
+        val payloads = listOf(
+            "E".toByteArray(Charsets.UTF_8),
+            "ECHO".toByteArray(Charsets.UTF_8),
+            "ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8),
+            ByteArray(32) { it.toByte() }
+        )
+        payloads.forEach { payload ->
+            val frame = NativeModem.encode(payload)
+            assertTrue(NativeDemodulator.decodeAligned(frame.samples).contentEquals(payload))
+        }
+    }
+
+    @Test
+    fun nativeDemodulatorAcceptsExplicitAlignedStartOffset() {
+        val payload = "OFFSET TEST".toByteArray(Charsets.UTF_8)
+        val frame = NativeModem.encode(payload)
+        val prefix = FloatArray(37) { 0f }
+        val combined = prefix + frame.samples
+        assertTrue(NativeDemodulator.decodeAligned(combined, prefix.size).contentEquals(payload))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun nativeDemodulatorRejectsNonEcf3Audio() {
+        NativeDemodulator.decodeAligned(FloatArray(20_000))
     }
 
     @Test(expected = IllegalArgumentException::class)

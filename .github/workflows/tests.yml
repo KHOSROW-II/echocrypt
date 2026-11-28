@@ -1,19 +1,17 @@
 name: Tests
 
 on:
-  # Android development branch: run tests on every push and on PRs to main.
+  # Android is developed and tested independently. The main-branch release
+  # workflow checks out android as a separate source; no PR/merge is required.
   push:
     branches: [android]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # v2 separates this fixed workflow generation from any stale in-progress
-  # runs left behind by the previous concurrency group.
-  group: echocrypt-android-ci-v2-${{ github.event.pull_request.number || github.ref }}
+  group: echocrypt-android-ci-v3-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,8 +91,6 @@ jobs:
     name: Android native app validation
     timeout-minutes: 30
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -119,7 +115,7 @@ jobs:
         run: gradle -p android testDebugUnitTest assembleDebug
 
       - name: Prepare Android CI artifact
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/debug/app-debug.apk dist/echocrypt-android-debug.apk
@@ -141,6 +137,7 @@ jobs:
           EOF
 
       - name: Upload development APK artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: echocrypt-android-debug-apk

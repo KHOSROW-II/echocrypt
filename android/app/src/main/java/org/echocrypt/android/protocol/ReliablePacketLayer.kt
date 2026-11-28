@@ -3,9 +3,14 @@ package org.echocrypt.android.protocol
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.SecureRandom
+import java.util.ArrayDeque
 import java.util.LinkedHashMap
 
-/** Encrypted stop-and-wait ARQ. One fragment is in flight to bound audio queue use. */
+/**
+ * Encrypted stop-and-wait ARQ. One fragment is in flight to bound audio queue use.
+ * Complete application messages wait in a bounded FIFO so chat and file traffic
+ * can share one reliable channel without rejecting each other.
+ */
 class ReliablePacketLayer(
     private val encrypt: (ByteArray) -> ByteArray,
     private val decrypt: (ByteArray) -> ByteArray,
@@ -18,11 +23,26 @@ class ReliablePacketLayer(
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val reassemblyTimeoutMillis: Long = DEFAULT_REASSEMBLY_TIMEOUT_MS
 ) {
-    private data class Outgoing(val id: Int, val fragments: List<ByteArray>, var index: Int = 0, var attempts: Int = 0, var sentAt: Long = 0)
-    private data class Incoming(val count: Int, val fragments: Array<ByteArray?>, val createdAt: Long, var received: Int = 0, var bytes: Int = 0)
+    private data class Outgoing(
+        val id: Int,
+        val fragments: List<ByteArray>,
+        val messageBytes: Int,
+        var index: Int = 0,
+        var attempts: Int = 0,
+        var sentAt: Long = 0
+    )
+    private data class Incoming(
+        val count: Int,
+        val fragments: Array<ByteArray?>,
+        val createdAt: Long,
+        var received: Int = 0,
+        var bytes: Int = 0
+    )
 
     private val random = SecureRandom()
     private var outgoing: Outgoing? = null
+    private val outgoingQueue = ArrayDeque<Outgoing>()
+    private var pendingOutgoingBytes = 0
     private val incoming = LinkedHashMap<Int, Incoming>()
     private val completed = LinkedHashMap<Int, Long>()
     private var closed = false
@@ -33,21 +53,40 @@ class ReliablePacketLayer(
         require(maxAttempts in 1..10)
     }
 
+    /**
+     * Queues one complete application message and returns its stable message ID.
+     * The active message and queue are bounded by both count and byte size.
+     */
     @Synchronized
     fun send(message: ByteArray, now: Long): Int {
         check(!closed) { "Reliable transport is closed" }
-        require(message.isNotEmpty() && message.size <= MAX_MESSAGE_BYTES) { "Message must be 1..$MAX_MESSAGE_BYTES bytes" }
-        check(outgoing == null) { "Another message is awaiting acknowledgement" }
+        require(message.isNotEmpty() && message.size <= MAX_MESSAGE_BYTES) {
+            "Message must be 1..$MAX_MESSAGE_BYTES bytes"
+        }
+        val pendingCount = outgoingQueue.size + if (outgoing != null) 1 else 0
+        require(pendingCount < MAX_PENDING_MESSAGES) {
+            "Reliable outgoing queue is full ($MAX_PENDING_MESSAGES messages)"
+        }
+        require(pendingOutgoingBytes + message.size <= MAX_PENDING_BYTES) {
+            "Reliable outgoing queue byte limit exceeded"
+        }
+
         val count = (message.size + fragmentPayloadBytes - 1) / fragmentPayloadBytes
         require(count <= MAX_FRAGMENTS)
         var id: Int
-        do { id = random.nextInt() and 0x7fffffff } while (id == 0)
-        val parts = (0 until count).map { i ->
-            val start = i * fragmentPayloadBytes
+        do {
+            id = random.nextInt() and 0x7fffffff
+        } while (id == 0)
+
+        val parts = (0 until count).map { index ->
+            val start = index * fragmentPayloadBytes
             message.copyOfRange(start, minOf(start + fragmentPayloadBytes, message.size))
         }
-        outgoing = Outgoing(id, parts)
-        try { sendCurrent(now) } catch (e: Exception) { outgoing = null; throw e }
+        outgoingQueue.addLast(Outgoing(id, parts, message.size))
+        pendingOutgoingBytes += message.size
+
+        // startNext preserves FIFO when a previous queued item is still waiting.
+        if (outgoing == null) startNext(now, propagateFailureForId = id)
         return id
     }
 
@@ -55,55 +94,91 @@ class ReliablePacketLayer(
     fun receive(encrypted: ByteArray, now: Long) {
         check(!closed) { "Reliable transport is closed" }
         val plain = decrypt(encrypted)
-        require(plain.size >= HEADER_SIZE) { "Truncated reliable packet" }
-        val b = ByteBuffer.wrap(plain).order(ByteOrder.BIG_ENDIAN)
-        val magic = ByteArray(4).also { b.get(it) }
-        require(magic.contentEquals(MAGIC)) { "Invalid reliable packet magic" }
-        val type = b.get().toInt() and 0xff
-        val id = b.int
-        val index = b.short.toInt() and 0xffff
-        val count = b.short.toInt() and 0xffff
-        require(id > 0 && count in 1..MAX_FRAGMENTS && index < count) { "Invalid reliable fragment header" }
-        when (type) {
-            TYPE_ACK -> {
-                require(plain.size == HEADER_SIZE) { "Malformed ACK" }
-                acceptAck(id, index, count, now)
+        try {
+            require(plain.size >= HEADER_SIZE) { "Truncated reliable packet" }
+            val b = ByteBuffer.wrap(plain).order(ByteOrder.BIG_ENDIAN)
+            val magic = ByteArray(4).also { b.get(it) }
+            require(magic.contentEquals(MAGIC)) { "Invalid reliable packet magic" }
+            val type = b.get().toInt() and 0xff
+            val id = b.int
+            val index = b.short.toInt() and 0xffff
+            val count = b.short.toInt() and 0xffff
+            require(id > 0 && count in 1..MAX_FRAGMENTS && index < count) {
+                "Invalid reliable fragment header"
             }
-            TYPE_DATA -> {
-                val payload = plain.copyOfRange(HEADER_SIZE, plain.size)
-                require(payload.isNotEmpty() && payload.size <= fragmentPayloadBytes) { "Invalid fragment size" }
-                acceptData(id, index, count, payload, now)
+            when (type) {
+                TYPE_ACK -> {
+                    require(plain.size == HEADER_SIZE) { "Malformed ACK" }
+                    acceptAck(id, index, count, now)
+                }
+                TYPE_DATA -> {
+                    val payload = plain.copyOfRange(HEADER_SIZE, plain.size)
+                    try {
+                        require(payload.isNotEmpty() && payload.size <= fragmentPayloadBytes) {
+                            "Invalid fragment size"
+                        }
+                        acceptData(id, index, count, payload, now)
+                    } finally {
+                        payload.fill(0)
+                    }
+                }
+                else -> throw IllegalArgumentException("Unknown reliable packet type")
             }
-            else -> throw IllegalArgumentException("Unknown reliable packet type")
+        } finally {
+            plain.fill(0)
         }
     }
 
     @Synchronized
     fun tick(now: Long) {
         if (closed) return
-        incoming.entries.removeAll { now - it.value.createdAt > reassemblyTimeoutMillis }
+        val expired = incoming.filterValues {
+            now - it.createdAt > reassemblyTimeoutMillis
+        }.keys.toList()
+        expired.forEach { id ->
+            incoming.remove(id)?.fragments?.forEach { it?.fill(0) }
+        }
         pruneCompleted(now)
-        val active = outgoing ?: return
+
+        if (outgoing == null) {
+            startNext(now)
+            return
+        }
+        val active = checkNotNull(outgoing)
         if (active.attempts == 0 || now - active.sentAt >= retryTimeoutMillis) {
             if (active.attempts >= maxAttempts) {
                 outgoing = null
-                active.fragments.forEach { it.fill(0) }
-                onFailure(active.id, "No ACK received after $maxAttempts transmissions")
+                release(active)
+                try {
+                    onFailure(active.id, "No ACK received after $maxAttempts transmissions")
+                } finally {
+                    startNext(now)
+                }
             } else {
-                try { sendCurrent(now) } catch (e: Exception) {
-                    onFailure(active.id, e.message ?: "Retransmission failed")
+                try {
+                    sendCurrent(now)
+                } catch (error: Exception) {
+                    // A failed enqueue counts as an attempt too. Leave the item active
+                    // until the retry budget is exhausted, then fail it deterministically.
+                    active.sentAt = now
                 }
             }
         }
     }
 
-    @Synchronized fun hasPendingMessage(): Boolean = outgoing != null
+    @Synchronized
+    fun hasPendingMessage(): Boolean = outgoing != null || outgoingQueue.isNotEmpty()
+
+    @Synchronized
+    fun pendingMessageCount(): Int = outgoingQueue.size + if (outgoing != null) 1 else 0
 
     @Synchronized
     fun close() {
         closed = true
-        outgoing?.fragments?.forEach { it.fill(0) }
+        outgoing?.let(::release)
         outgoing = null
+        while (outgoingQueue.isNotEmpty()) release(outgoingQueue.removeFirst())
+        pendingOutgoingBytes = 0
         incoming.values.forEach { it.fragments.forEach { part -> part?.fill(0) } }
         incoming.clear()
         completed.clear()
@@ -112,9 +187,15 @@ class ReliablePacketLayer(
     private fun sendCurrent(now: Long) {
         val active = checkNotNull(outgoing)
         val payload = active.fragments[active.index]
-        transmit(encrypt(packet(TYPE_DATA, active.id, active.index, active.fragments.size, payload)))
         active.attempts++
         active.sentAt = now
+        val clearPacket = packet(TYPE_DATA, active.id, active.index, active.fragments.size, payload)
+        val encrypted = try {
+            encrypt(clearPacket)
+        } finally {
+            clearPacket.fill(0)
+        }
+        transmit(encrypted)
     }
 
     private fun acceptAck(id: Int, index: Int, count: Int, now: Long) {
@@ -126,8 +207,42 @@ class ReliablePacketLayer(
         active.sentAt = 0
         if (active.index == active.fragments.size) {
             outgoing = null
-            onDelivered(id)
-        } else sendCurrent(now)
+            release(active)
+            try {
+                // Callbacks may enqueue another message; startNext will honor FIFO.
+                onDelivered(id)
+            } finally {
+                startNext(now)
+            }
+        } else {
+            sendCurrent(now)
+        }
+    }
+
+    private fun startNext(now: Long, propagateFailureForId: Int? = null) {
+        if (closed || outgoing != null) return
+        while (outgoingQueue.isNotEmpty()) {
+            val next = outgoingQueue.removeFirst()
+            outgoing = next
+            try {
+                sendCurrent(now)
+                return
+            } catch (error: Exception) {
+                outgoing = null
+                release(next)
+                if (next.id == propagateFailureForId) throw error
+                try {
+                    onFailure(next.id, error.message ?: "Could not start queued reliable message")
+                } catch (_: Exception) {
+                    // A callback failure must not strand later queued messages.
+                }
+            }
+        }
+    }
+
+    private fun release(message: Outgoing) {
+        message.fragments.forEach { it.fill(0) }
+        pendingOutgoingBytes = (pendingOutgoingBytes - message.messageBytes).coerceAtLeast(0)
     }
 
     private fun acceptData(id: Int, index: Int, count: Int, payload: ByteArray, now: Long) {
@@ -151,7 +266,7 @@ class ReliablePacketLayer(
         state.fragments[index] = payload.copyOf()
         state.bytes += payload.size
         state.received++
-        // ACK only after the fragment has been accepted into the reassembly buffer.
+        // The fragment is copied into the bounded reassembly buffer before ACK.
         sendAck(id, index, count)
         if (state.received == state.count) {
             val message = ByteArray(state.bytes)
@@ -165,12 +280,22 @@ class ReliablePacketLayer(
             incoming.remove(id)
             completed[id] = now
             pruneCompleted(now)
-            try { onMessage(message) } finally { message.fill(0) }
+            try {
+                onMessage(message)
+            } finally {
+                message.fill(0)
+            }
         }
     }
 
     private fun sendAck(id: Int, index: Int, count: Int) {
-        transmit(encrypt(packet(TYPE_ACK, id, index, count, ByteArray(0))))
+        val clearPacket = packet(TYPE_ACK, id, index, count, ByteArray(0))
+        val encrypted = try {
+            encrypt(clearPacket)
+        } finally {
+            clearPacket.fill(0)
+        }
+        transmit(encrypted)
     }
 
     private fun packet(type: Int, id: Int, index: Int, count: Int, payload: ByteArray): ByteArray =
@@ -193,6 +318,8 @@ class ReliablePacketLayer(
         private const val MAX_INCOMING = 4
         private const val MAX_COMPLETED = 256
         private const val COMPLETED_TTL = 120_000L
+        const val MAX_PENDING_MESSAGES = 32
+        const val MAX_PENDING_BYTES = 64 * 1024
         const val DEFAULT_FRAGMENT_BYTES = 96
         const val DEFAULT_RETRY_TIMEOUT_MS = 30_000L
         const val DEFAULT_MAX_ATTEMPTS = 5

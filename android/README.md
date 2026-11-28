@@ -73,3 +73,9 @@ The desktop Python implementation is not modified by Android development. Cross-
 ## ECF3 wire-format interoperability note
 
 The native modem follows the Python ECF3 framing: the fixed 11-byte header is protected separately by its duplicated Hamming(15,11) code and header CRC; the convolutional payload codeword contains only the application payload plus the frame CRC over `header || payload`. ECF3 applies the depth-16 burst interleaver outside the depth-8 convolutional interleaver. Frequency hopping is not emitted by this encoder until the authenticated hop-key lifecycle is integrated; a requested hopped mode must never silently fall back to an unhopped mode.
+
+## Branch isolation
+
+The `android` branch is an intentionally independent development line because the native Android application has a different build system, source layout, dependencies, and release lifecycle from the desktop client on `main`. Do not merge or rebase `android` into `main) merely to clear GitHub's ahead/behind counter. That counter reports commit ancestry, not a requirement to synchronize branches.
+
+The desktop release workflow on `main` checks out the current `android` branch as a separate build input when it assembles the unified release assets. Android commits therefore do not need to be merged into `main` for the APK to be included. Android CI runs on pushes to `android` and by manual workflow dispatch; it does not propose or validate pull requests into `main`.

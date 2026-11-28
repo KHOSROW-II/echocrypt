@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import org.echocrypt.android.audio.AndroidAudioEngine
+import org.echocrypt.android.audio.DuplexAudioSession
 import org.echocrypt.android.protocol.NativeModem
 import org.echocrypt.android.protocol.NativeStreamReceiver
 import org.echocrypt.android.protocol.PcmChunkSequenceGuard
@@ -44,6 +45,7 @@ private val Muted = Color(0xFF8995A7)
 
 class MainActivity : ComponentActivity() {
     private val engine = AndroidAudioEngine()
+    @Volatile private var duplexSession: DuplexAudioSession? = null
     private val executor = Executors.newSingleThreadExecutor()
     private val receiveExecutor = ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS,
@@ -71,60 +73,82 @@ class MainActivity : ComponentActivity() {
             var receivedCount by remember { mutableIntStateOf(0) }
             var lastReceived by remember { mutableStateOf("No ECF3 frame received") }
             var receiveError by remember { mutableStateOf<String?>(null) }
+            var effectsStatus by remember { mutableStateOf("AEC: unknown · Noise suppression: unknown") }
 
             val hasPermission = {
                 ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
                     PackageManager.PERMISSION_GRANTED
             }
+            val onCapturedPcm: (FloatArray) -> Unit = { pcm ->
+                val sequence = chunkSequence.incrementAndGet()
+                try {
+                    receiveExecutor.execute {
+                        // Any rejected submission creates a discontinuity in the PCM timeline.
+                        if (sequenceGuard.requiresReset(sequence)) {
+                            streamReceiver.reset()
+                            runOnUiThread {
+                                receiveError = "Audio processing fell behind; decoder reacquired after dropped PCM."
+                            }
+                        }
+                        val frames = streamReceiver.push(pcm)
+                        if (frames.isNotEmpty()) {
+                            runOnUiThread {
+                                receivedCount += frames.size
+                                lastReceived = frames.joinToString(" · ") { frame ->
+                                    frame.payload.toString(Charsets.UTF_8)
+                                        .replace(Regex("[^\\x20-\\x7E]"), "�")
+                                        .take(96)
+                                }
+                            }
+                        }
+                    }
+                } catch (_: RejectedExecutionException) {
+                    runOnUiThread {
+                        receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization."
+                    }
+                }
+            }
             val start = {
                 error = null
                 receiveError = null
-                // Reset the decoder on its single owner thread. This is queued before
-                // any PCM from the new capture session can be submitted.
+                chunkSequence.set(0L)
+                // Reset decoder before the first PCM chunk of the new session.
                 receiveExecutor.execute {
                     streamReceiver.reset()
                     sequenceGuard.reset()
                 }
                 executor.execute {
                     try {
-                        engine.startCapture(
-                            onLevel = { value -> runOnUiThread { level = value } },
+                        val session = DuplexAudioSession(
+                            onPcm = onCapturedPcm,
                             onError = { message ->
-                                runOnUiThread { listening = false; status = "AUDIO ERROR"; error = message }
-                            },
-                            onPcm = { pcm ->
-                                val sequence = chunkSequence.incrementAndGet()
-                                try {
-                                    receiveExecutor.execute {
-                                        // A rejected queue submission creates a hole in the PCM timeline.
-                                        // Reset before decoding the first chunk after that hole.
-                                        if (sequenceGuard.requiresReset(sequence)) {
-                                            streamReceiver.reset()
-                                            runOnUiThread {
-                                                receiveError = "Audio processing fell behind; decoder resynchronized after dropped PCM."
-                                            }
-                                        }
-                                        val frames = streamReceiver.push(pcm)
-                                        if (frames.isNotEmpty()) {
-                                            runOnUiThread {
-                                                receivedCount += frames.size
-                                                lastReceived = frames.joinToString(" · ") { frame ->
-                                                    frame.payload.toString(Charsets.UTF_8)
-                                                        .replace(Regex("[^\\x20-\\x7E]"), "�")
-                                                        .take(96)
-                                                }
-                                            }
-                                        }
-                                    }
-                                } catch (_: RejectedExecutionException) {
-                                    runOnUiThread {
-                                        receiveError = "Receive processing overloaded; audio chunks were dropped. Waiting for resynchronization."
-                                    }
+                                runOnUiThread {
+                                    listening = false
+                                    status = "AUDIO ERROR"
+                                    error = message
                                 }
-                            }
+                                executor.execute {
+                                    duplexSession?.stop()
+                                    duplexSession = null
+                                }
+                            },
+                            onInputLevel = { value -> runOnUiThread { level = value } }
                         )
+                        duplexSession = session
+                        session.start()
+                        runOnUiThread {
+                            status = "FULL DUPLEX"
+                            effectsStatus = "AEC: " + (if (session.supportsEchoCancellation) "ON" else "unavailable") +
+                                " · Noise suppression: " + (if (session.supportsNoiseSuppression) "ON" else "unavailable")
+                        }
                     } catch (e: Exception) {
-                        runOnUiThread { listening = false; status = "AUDIO ERROR"; error = e.message }
+                        duplexSession?.stop()
+                        duplexSession = null
+                        runOnUiThread {
+                            listening = false
+                            status = "AUDIO ERROR"
+                            error = e.message ?: "Could not start full-duplex audio"
+                        }
                     }
                 }
             }
@@ -146,7 +170,7 @@ class MainActivity : ComponentActivity() {
                             shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("AUDIO INPUT", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                                    Text("FULL DUPLEX AUDIO", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
                                                 Text(status, color = Muted, fontSize = 11.sp)
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -154,7 +178,7 @@ class MainActivity : ComponentActivity() {
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text("Microphone")
-                                        Text(if (listening) "48 kHz · Mono PCM · Active" else "Stopped",
+                                        Text(if (listening) "48 kHz · Mono PCM · Capture + playback ready" else "Stopped",
                                             color = Muted, fontSize = 12.sp)
                                     }
                                     Text("${level.toInt()} dB", color = Gold, fontSize = 12.sp)
@@ -164,6 +188,7 @@ class MainActivity : ComponentActivity() {
                                     Box(Modifier.fillMaxWidth(((level + 90f) / 90f).coerceIn(0f, 1f))
                                         .height(6.dp).background(Gold, RoundedCornerShape(8.dp)))
                                 }
+                                Text(effectsStatus, color = Muted, fontSize = 11.sp)
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Button(onClick = {
                                         if (hasPermission()) {
@@ -177,10 +202,10 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }, enabled = !listening, modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
-                                        Icon(Icons.Default.Mic, null); Spacer(Modifier.width(6.dp)); Text("Start")
+                                        Icon(Icons.Default.Mic, null); Spacer(Modifier.width(6.dp)); Text("Start Duplex")
                                     }
                                     Button(onClick = {
-                                        executor.execute { engine.stopCapture() }
+                                        executor.execute { duplexSession?.stop(); duplexSession = null }
                                         listening = false; level = -90f; status = "READY"
                                     }, enabled = listening, modifier = Modifier.weight(1f)) {
                                         Icon(Icons.Default.Stop, null); Spacer(Modifier.width(6.dp)); Text("Stop")
@@ -204,7 +229,7 @@ class MainActivity : ComponentActivity() {
                                         try { engine.playTestTone() }
                                         catch (e: Exception) { runOnUiThread { outputError = e.message } }
                                     }
-                                }, modifier = Modifier.fillMaxWidth()) { Text("Play 1,800 Hz test tone") }
+                                }, enabled = !listening, modifier = Modifier.fillMaxWidth()) { Text("Play 1,800 Hz test tone") }
                                 outputError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 12.sp) }
                                 Button(onClick = {
                                     outputError = null
@@ -212,9 +237,12 @@ class MainActivity : ComponentActivity() {
                                     executor.execute {
                                         try {
                                             val frame = NativeModem.encode("ECHOCRYPT ANDROID LINK TEST".toByteArray(Charsets.UTF_8))
-                                            engine.transmitPcm(frame.samples)
+                                            val session = duplexSession
+                                                ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
+                                            check(session.isRunning) { "Full Duplex audio is not running" }
+                                            check(session.enqueuePlayback(frame.samples)) { "Playback queue is full; wait for the current transmission" }
                                             runOnUiThread {
-                                                modemStatus = "Sent ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
+                                                modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
                                             }
                                         } catch (e: Exception) {
                                             runOnUiThread {
@@ -225,10 +253,10 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }, modifier = Modifier.fillMaxWidth(),
                                     colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
-                                    Text("Transmit ECF3 protocol test")
+                                    Text("Queue ECF3 test frame")
                                 }
                                 Text(modemStatus, color = Muted, fontSize = 11.sp)
-                                Text("Diagnostic payload is sent without encryption or handshake.",
+                                Text("Diagnostic payload is queued for acoustic playback without encryption or handshake.",
                                     color = Color(0xFFFFC56A), fontSize = 10.sp)
                             }
                         }
@@ -266,6 +294,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        duplexSession?.release()
+        duplexSession = null
         engine.release()
         executor.shutdownNow()
         receiveExecutor.shutdownNow()

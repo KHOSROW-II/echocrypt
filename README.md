@@ -254,6 +254,8 @@ For Termux:
 python echocrypt.py --bootstrap rootless
 ```
 
+On native Termux launches, ECHOCRYPT loads the Android-specific full-screen CLI menu. Menu entries are presented as large rows; tap a row when the terminal emulator forwards touch as a mouse event, or use the arrow keys and Enter. Esc goes back. This is still a terminal interface, not an Android APK or native Android GUI. Termux's own display/immersive settings control whether Android system bars are hidden.
+
 The bootstrap installs the Termux-side `termux-api` command package. Also install the **Termux:API Android companion app** from the same trusted distribution/signing source as Termux. Then open **Configuration → Audio settings → Request Android microphone permission** and allow the request. Termux:API is used to request the permission and make a short temporary test recording; EchoCrypt's continuous receiver still uses a live PortAudio microphone stream.
 
 The launcher handles dependency checks and environment setup according to the detected platform.
@@ -291,7 +293,7 @@ For Broadcast, select **Join open Broadcast room**. No identity setup or handsha
 
 ## Interface and Controls
 
-The terminal interface adapts to narrow terminal widths, including mobile Termux layouts. On compact screens it replaces the wide ASCII banner with a single-line wordmark and wraps chat content within the available columns.
+The desktop terminal interface adapts to narrow terminal widths. Android/Termux uses a separate full-screen menu layer with large tap targets, touch selection where the terminal emulator forwards mouse events, and arrow/Enter/Esc keyboard navigation. The Android menu layer does not fork the communication, cryptography, audio, or protocol implementation. The chat view remains the shared full-screen chat interface.
 
 The chat interface supports:
 

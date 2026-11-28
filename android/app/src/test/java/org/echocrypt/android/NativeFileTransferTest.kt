@@ -42,10 +42,9 @@ class NativeFileTransferTest {
         sender.onReliablePacketDelivered()
         sender.onReliablePacketDelivered()
         receiver.receive(packets[2])
-        receiver.receive(packets[1])
-        receiver.receive(packets[2])
+        receiver.receive(packets[2]) // duplicate chunk is ignored
         assertNull(received)
-        receiver.receive(packets[3])
+        receiver.receive(packets[1])
         assertNotNull(received)
         assertArrayEquals(data, received!!.readBytes())
         receiver.close()

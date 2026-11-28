@@ -10,8 +10,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: echocrypt-android-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -84,6 +89,7 @@ jobs:
 
   android-validation:
     name: Android native app validation
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

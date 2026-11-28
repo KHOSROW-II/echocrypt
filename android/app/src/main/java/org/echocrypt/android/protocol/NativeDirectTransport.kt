@@ -21,6 +21,7 @@ class NativeDirectTransport(
     private val peers = TrustedPeersStore(context.applicationContext)
     private var localIdentity: NativeIdentity.PrivateIdentity? = null
     private var handshake: NativePeerHandshake? = null
+    private var reliable: ReliablePacketLayer? = null
     private var peerName: String = ""
 
     @Synchronized
@@ -98,8 +99,8 @@ class NativeDirectTransport(
         val active = handshake ?: return
         try {
             if (active.established) {
-                val text = active.receiveText(payload)
-                onTextReceived(text)
+                ensureReliableLayer(active)
+                checkNotNull(reliable).receive(payload, android.os.SystemClock.elapsedRealtime())
                 return
             }
 
@@ -107,6 +108,7 @@ class NativeDirectTransport(
             if (response != null) transmit(response)
             publishState()
             if (active.established) {
+                ensureReliableLayer(active)
                 // The signing key is no longer needed once mutual authentication
                 // and key confirmation have completed.
                 localIdentity?.destroy()
@@ -121,11 +123,17 @@ class NativeDirectTransport(
     @Synchronized
     fun sendText(text: String) {
         require(text.isNotBlank()) { "Message cannot be empty" }
-        require(text.length <= 700) { "Message is too long for one acoustic frame" }
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        require(bytes.size <= ReliablePacketLayer.MAX_MESSAGE_BYTES) { "Message exceeds reliable transport limit" }
         val active = checkNotNull(handshake) { "No Direct session is active" }
         check(active.established) { "Direct handshake has not completed" }
-        val encrypted = active.sendText(text, maxPacketSize = 1024)
-        transmit(encrypted)
+        ensureReliableLayer(active)
+        checkNotNull(reliable).send(bytes, android.os.SystemClock.elapsedRealtime())
+    }
+
+    @Synchronized
+    fun tick() {
+        reliable?.tick(android.os.SystemClock.elapsedRealtime())
     }
 
     @Synchronized
@@ -140,6 +148,28 @@ class NativeDirectTransport(
     fun disconnect() {
         closeUnlocked()
         onStateChanged("IDLE")
+    }
+
+    private fun ensureReliableLayer(active: NativePeerHandshake) {
+        if (reliable != null) return
+        reliable = ReliablePacketLayer(
+            encrypt = { plain -> active.sendPayload(plain, maxPacketSize = 1024) },
+            decrypt = { encrypted -> active.receivePayload(encrypted) },
+            transmit = { encrypted -> transmit(encrypted) },
+            onMessage = { bytes ->
+                try {
+                    val decoded = Charsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+                    onTextReceived(decoded)
+                } catch (_: Exception) {
+                    onError("Received message is not valid UTF-8")
+                }
+            },
+            onDelivered = { id -> onStateChanged("ESTABLISHED · $peerName · message #$id acknowledged") },
+            onFailure = { id, reason -> onError("Message #$id failed: $reason") }
+        )
     }
 
     private fun transmit(packet: ByteArray) {
@@ -158,6 +188,8 @@ class NativeDirectTransport(
     }
 
     private fun closeUnlocked() {
+        reliable?.close()
+        reliable = null
         handshake?.close()
         handshake = null
         localIdentity?.destroy()

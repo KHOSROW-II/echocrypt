@@ -3,6 +3,8 @@ package org.echocrypt.android
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -58,6 +60,15 @@ class MainActivity : ComponentActivity() {
     private val chunkSequence = AtomicLong(0L)
     private val sequenceGuard = PcmChunkSequenceGuard()
     private lateinit var directTransport: NativeDirectTransport
+    private val reliabilityHandler = Handler(Looper.getMainLooper())
+    private val reliabilityTicker = object : Runnable {
+        override fun run() {
+            if (::directTransport.isInitialized && directTransport.isActive) {
+                executor.execute { runCatching { directTransport.tick() } }
+            }
+            reliabilityHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     private var directStatus by mutableStateOf("IDLE")
     private var directError by mutableStateOf<String?>(null)
@@ -82,6 +93,7 @@ class MainActivity : ComponentActivity() {
             onError = { value -> runOnUiThread { directError = value } }
         )
         refreshTrustedPeers()
+        reliabilityHandler.postDelayed(reliabilityTicker, 1_000L)
 
         setContent {
             var listening by remember { mutableStateOf(false) }
@@ -362,6 +374,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        reliabilityHandler.removeCallbacks(reliabilityTicker)
         if (::directTransport.isInitialized) directTransport.disconnect()
         duplexSession?.release()
         duplexSession = null

@@ -34,6 +34,9 @@ class NativePeerHandshake(
         fun decryptText(packet: ByteArray): String =
             rx.decrypt(packet, TEXT_AAD).toString(Charsets.UTF_8)
 
+        fun encryptPayload(payload: ByteArray): ByteArray = tx.encrypt(payload, DATA_AAD)
+        fun decryptPayload(packet: ByteArray): ByteArray = rx.decrypt(packet, DATA_AAD)
+
         fun close() { tx.destroy(); rx.destroy(); hoppingKey?.fill(0) }
     }
 
@@ -165,6 +168,21 @@ class NativePeerHandshake(
     fun receiveText(packet: ByteArray): String {
         check(established) { "Peer session is not established" }
         return checkNotNull(session).decryptText(packet)
+    }
+
+    @Synchronized
+    fun sendPayload(payload: ByteArray, maxPacketSize: Int = 1024): ByteArray {
+        check(established) { "Peer session is not established" }
+        require(checkNotNull(session).tx.encryptedSize(payload.size) <= maxPacketSize) {
+            "Reliable packet exceeds configured modem packet limit"
+        }
+        return checkNotNull(session).encryptPayload(payload)
+    }
+
+    @Synchronized
+    fun receivePayload(packet: ByteArray): ByteArray {
+        check(established) { "Peer session is not established" }
+        return checkNotNull(session).decryptPayload(packet)
     }
 
     @Synchronized
@@ -304,5 +322,6 @@ class NativePeerHandshake(
             "ECHOCRYPT/v2 directional traffic, padding and acoustic hopping keys".toByteArray(Charsets.UTF_8)
         private val CONTROL_AAD = "ECHOCRYPT/CONTROL/v2".toByteArray(Charsets.UTF_8)
         private val TEXT_AAD = "ECHOCRYPT/TEXT/v2".toByteArray(Charsets.UTF_8)
+        private val DATA_AAD = "ECHOCRYPT/RELIABLE-DATA/v1".toByteArray(Charsets.UTF_8)
     }
 }

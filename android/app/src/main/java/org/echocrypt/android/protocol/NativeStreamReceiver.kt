@@ -4,9 +4,9 @@ package org.echocrypt.android.protocol
  * Incremental ECF3 receiver for chunked PCM input.
  *
  * It tolerates arbitrary AudioRecord chunk boundaries and concatenated frames.
- * Detection uses a coarse candidate scan, followed by local sample-level
- * refinement against the known sync word. Symbol-clock drift / resampling
- * recovery is not implemented here; callers should feed native 48 kHz PCM.
+ * Detection uses a coarse candidate scan and sync-based symbol-period
+ * estimation. A candidate is resampled to the nominal 240-sample symbol clock
+ * before full ECF3 validation. Input is expected to be nominal 48 kHz PCM.
  */
 class NativeStreamReceiver(
     private val candidateStride: Int = 8,

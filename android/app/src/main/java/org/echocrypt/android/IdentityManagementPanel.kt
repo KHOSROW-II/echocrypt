@@ -40,7 +40,7 @@ private val IdentityPanel = Color(0xFF151D29)
 
 /** Local identity and explicit out-of-band peer trust management. */
 @Composable
-fun IdentityManagementPanel() {
+fun IdentityManagementPanel(onPeersChanged: () -> Unit = {}) {
     val context = LocalContext.current.applicationContext
     val vault = remember(context) { NativeIdentity.Vault(context) }
     val peersStore = remember(context) { TrustedPeersStore(context) }
@@ -157,6 +157,7 @@ fun IdentityManagementPanel() {
                         peerJson = ""
                         confirmedFingerprint = ""
                         refresh()
+                        onPeersChanged()
                         message = "Peer added to trusted contacts."
                         localError = null
                     } catch (error: Exception) {
@@ -179,6 +180,7 @@ fun IdentityManagementPanel() {
                             try {
                                 peersStore.remove(peer.identity.fingerprint)
                                 refresh()
+                                onPeersChanged()
                                 message = "Trusted peer removed."
                                 localError = null
                             } catch (error: Exception) {

@@ -28,9 +28,11 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import org.echocrypt.android.audio.AndroidAudioEngine
 import org.echocrypt.android.audio.DuplexAudioSession
+import org.echocrypt.android.protocol.NativeDirectTransport
 import org.echocrypt.android.protocol.NativeModem
 import org.echocrypt.android.protocol.NativeStreamReceiver
 import org.echocrypt.android.protocol.PcmChunkSequenceGuard
+import org.echocrypt.android.protocol.TrustedPeersStore
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -55,6 +57,13 @@ class MainActivity : ComponentActivity() {
     private val streamReceiver = NativeStreamReceiver()
     private val chunkSequence = AtomicLong(0L)
     private val sequenceGuard = PcmChunkSequenceGuard()
+    private lateinit var directTransport: NativeDirectTransport
+
+    private var directStatus by mutableStateOf("IDLE")
+    private var directError by mutableStateOf<String?>(null)
+    private val directMessages = mutableStateListOf<String>()
+    private var trustedPeers by mutableStateOf<List<TrustedPeersStore.TrustedPeer>>(emptyList())
+
     private var permissionResult: ((Boolean) -> Unit)? = null
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         permissionResult?.invoke(it)
@@ -63,6 +72,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        directTransport = NativeDirectTransport(
+            context = applicationContext,
+            enqueueAudio = { samples -> duplexSession?.enqueuePlayback(samples) == true },
+            onStateChanged = { value -> runOnUiThread { directStatus = value } },
+            onTextReceived = { value ->
+                runOnUiThread { addDirectMessage("Peer: $value") }
+            },
+            onError = { value -> runOnUiThread { directError = value } }
+        )
+        refreshTrustedPeers()
+
         setContent {
             var listening by remember { mutableStateOf(false) }
             var level by remember { mutableFloatStateOf(-90f) }
@@ -83,7 +103,6 @@ class MainActivity : ComponentActivity() {
                 val sequence = chunkSequence.incrementAndGet()
                 try {
                     receiveExecutor.execute {
-                        // Any rejected submission creates a discontinuity in the PCM timeline.
                         if (sequenceGuard.requiresReset(sequence)) {
                             streamReceiver.reset()
                             runOnUiThread {
@@ -92,12 +111,11 @@ class MainActivity : ComponentActivity() {
                         }
                         val frames = streamReceiver.push(pcm)
                         if (frames.isNotEmpty()) {
+                            frames.forEach { frame -> directTransport.onIncomingPayload(frame.payload) }
                             runOnUiThread {
                                 receivedCount += frames.size
                                 lastReceived = frames.joinToString(" · ") { frame ->
-                                    frame.payload.toString(Charsets.UTF_8)
-                                        .replace(Regex("[^\\x20-\\x7E]"), "�")
-                                        .take(96)
+                                    "ECF3 payload · ${frame.payload.size} bytes"
                                 }
                             }
                         }
@@ -112,7 +130,6 @@ class MainActivity : ComponentActivity() {
                 error = null
                 receiveError = null
                 chunkSequence.set(0L)
-                // Reset decoder before the first PCM chunk of the new session.
                 receiveExecutor.execute {
                     streamReceiver.reset()
                     sequenceGuard.reset()
@@ -126,6 +143,7 @@ class MainActivity : ComponentActivity() {
                                     listening = false
                                     status = "AUDIO ERROR"
                                     error = message
+                                    directTransport.disconnect()
                                 }
                                 executor.execute {
                                     duplexSession?.stop()
@@ -171,7 +189,8 @@ class MainActivity : ComponentActivity() {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("FULL DUPLEX AUDIO", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                                                Text(status, color = Muted, fontSize = 11.sp)
+                                    Spacer(Modifier.weight(1f))
+                                    Text(status, color = Muted, fontSize = 11.sp)
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Mic, null, tint = Gold)
@@ -205,6 +224,7 @@ class MainActivity : ComponentActivity() {
                                         Icon(Icons.Default.Mic, null); Spacer(Modifier.width(6.dp)); Text("Start Duplex")
                                     }
                                     Button(onClick = {
+                                        directTransport.disconnect()
                                         executor.execute { duplexSession?.stop(); duplexSession = null }
                                         listening = false; level = -90f; status = "READY"
                                     }, enabled = listening, modifier = Modifier.weight(1f)) {
@@ -240,6 +260,7 @@ class MainActivity : ComponentActivity() {
                                             val session = duplexSession
                                                 ?: throw IllegalStateException("Start Full Duplex before queuing a frame")
                                             check(session.isRunning) { "Full Duplex audio is not running" }
+                                            check(!directTransport.isActive) { "Disconnect the Direct session before running diagnostics" }
                                             check(session.enqueuePlayback(frame.samples)) { "Playback queue is full; wait for the current transmission" }
                                             runOnUiThread {
                                                 modemStatus = "Queued ${frame.payloadBytes} bytes · ${"%.2f".format(frame.durationSeconds)} s"
@@ -251,18 +272,62 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                }, modifier = Modifier.fillMaxWidth(),
+                                }, enabled = listening && !directTransport.isActive, modifier = Modifier.fillMaxWidth(),
                                     colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Background)) {
                                     Text("Queue ECF3 test frame")
                                 }
                                 Text(modemStatus, color = Muted, fontSize = 11.sp)
-                                Text("Diagnostic payload is queued for acoustic playback without encryption or handshake.",
+                                Text("Diagnostic payload is queued as unencrypted test data. Do not use during a Direct session.",
                                     color = Color(0xFFFFC56A), fontSize = 10.sp)
                             }
                         }
 
-                        
-                        IdentityManagementPanel()
+                        IdentityManagementPanel(onPeersChanged = { refreshTrustedPeers() })
+
+                        DirectCommunicationPanel(
+                            peers = trustedPeers,
+                            duplexRunning = listening,
+                            status = directStatus,
+                            messages = directMessages,
+                            error = directError,
+                            onRefreshPeers = { refreshTrustedPeers() },
+                            onStartInitiator = { fingerprint ->
+                                directError = null
+                                executor.execute {
+                                    try { directTransport.startInitiator(fingerprint) }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not connect" } }
+                                }
+                            },
+                            onStartResponder = { fingerprint ->
+                                directError = null
+                                executor.execute {
+                                    try { directTransport.startResponder(fingerprint) }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Could not wait for peer" } }
+                                }
+                            },
+                            onRetry = {
+                                executor.execute {
+                                    try { directTransport.retryHandshake() }
+                                    catch (e: Exception) { runOnUiThread { directError = e.message ?: "Retry failed" } }
+                                }
+                            },
+                            onDisconnect = {
+                                executor.execute {
+                                    directTransport.disconnect()
+                                    runOnUiThread { directMessages.clear(); directError = null }
+                                }
+                            },
+                            onSend = { text ->
+                                executor.execute {
+                                    try {
+                                        directTransport.sendText(text)
+                                        runOnUiThread { addDirectMessage("Me: $text") }
+                                    } catch (e: Exception) {
+                                        runOnUiThread { directError = e.message ?: "Message transmission failed" }
+                                    }
+                                }
+                            }
+                        )
 
                         Card(colors = CardDefaults.cardColors(containerColor = Panel),
                             shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
@@ -271,18 +336,8 @@ class MainActivity : ComponentActivity() {
                                 Text("$receivedCount frame(s) decoded", fontWeight = FontWeight.SemiBold)
                                 Text(lastReceived, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                                 receiveError?.let { Text(it, color = Color(0xFFFF7777), fontSize = 11.sp) }
-                                Text("Incoming microphone PCM is scanned for ECF3 frames. Payload display is diagnostic plaintext only.",
-                                    color = Color(0xFFFFC56A), fontSize = 10.sp, lineHeight = 15.sp)
-                            }
-                        }
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF101722)),
-                            shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text("PROTOCOL INTEGRATION", color = Gold, fontWeight = FontWeight.Bold, letterSpacing = 1.3.sp)
-                                Spacer(Modifier.height(8.dp))
-                                Text("ECF3 transmit encoder connected", fontWeight = FontWeight.SemiBold)
-                                Text("Native microphone capture, live ECF3 stream scanning, speaker output and diagnostic transmission are connected. ASRE recovery, secure handshake/session management, Direct/Broadcast orchestration, encrypted messaging and file transfer are not implemented yet.",
-                                    color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                                Text("Decoded packet bytes are routed to the active Direct session and are not rendered as plaintext diagnostics.",
+                                    color = Muted, fontSize = 10.sp, lineHeight = 15.sp)
                             }
                         }
                         Spacer(Modifier.weight(1f))
@@ -295,7 +350,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun addDirectMessage(value: String) {
+        directMessages.add(value)
+        while (directMessages.size > 100) directMessages.removeAt(0)
+    }
+
+    private fun refreshTrustedPeers() {
+        runCatching { directTransport.trustedPeers() }
+            .onSuccess { trustedPeers = it }
+            .onFailure { directError = it.message ?: "Could not load trusted peers" }
+    }
+
     override fun onDestroy() {
+        if (::directTransport.isInitialized) directTransport.disconnect()
         duplexSession?.release()
         duplexSession = null
         engine.release()

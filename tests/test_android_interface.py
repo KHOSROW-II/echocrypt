@@ -1,6 +1,9 @@
 """Tests for the Android-specific terminal menu layer."""
 import unittest
 
+from prompt_toolkit.input import DummyInput
+from prompt_toolkit.output import DummyOutput
+
 from interface.android import AndroidMenu, activate
 from interface import terminal
 
@@ -10,6 +13,8 @@ class AndroidMenuTests(unittest.TestCase):
         menu = AndroidMenu(
             "ANDROID TEST",
             [("one", "First action"), ("back", "Back")],
+            input=DummyInput(),
+            output=DummyOutput(),
         )
         self.assertTrue(menu.app.full_screen)
         self.assertTrue(menu.app.mouse_support())

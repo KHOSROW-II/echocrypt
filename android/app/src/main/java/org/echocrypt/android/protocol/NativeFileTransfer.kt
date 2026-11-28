@@ -49,7 +49,7 @@ class NativeFileTransfer(
     }
 
     @Synchronized
-    fun start(source: File, requestedName: String = source.name) {
+    fun start(source: File, requestedName: String = source.name, deleteSourceAfterSend: Boolean = false) {
         check(outgoing == null) { "A file transfer is already in progress" }
         require(source.isFile && source.canRead()) { "Selected file is not readable" }
         require(source.length() in 1..MAX_FILE_BYTES) { "File must be between 1 byte and $MAX_FILE_BYTES bytes" }
@@ -57,7 +57,7 @@ class NativeFileTransfer(
         val digest = sha256(source)
         val id = ByteArray(TRANSFER_ID_BYTES).also(random::nextBytes)
         val count = ((source.length() + CHUNK_BYTES - 1) / CHUNK_BYTES).toInt()
-        outgoing = Outgoing(id, source, name, digest, count)
+        outgoing = Outgoing(id, source, name, digest, count, deleteSourceAfterSend)
         onProgress("Preparing $name · ${source.length()} bytes")
         sendManifest(checkNotNull(outgoing))
     }
@@ -70,6 +70,7 @@ class NativeFileTransfer(
         val active = outgoing ?: return
         if (active.nextChunk >= active.chunkCount) {
             outgoing = null
+            if (active.deleteSourceAfterSend) active.source.delete()
             onProgress("File sent · ${active.name}")
             return
         }
@@ -88,6 +89,7 @@ class NativeFileTransfer(
 
     @Synchronized
     fun close() {
+        outgoing?.let { if (it.deleteSourceAfterSend) it.source.delete() }
         outgoing = null
         awaitingTransportAck = false
         incoming.values.forEach { runCatching { it.file.close() }; runCatching { it.temp.delete() } }
@@ -125,6 +127,7 @@ class NativeFileTransfer(
         } catch (error: Exception) {
             outgoing = null
             awaitingTransportAck = false
+            if (active.deleteSourceAfterSend) active.source.delete()
             onError(error.message ?: "Could not read outgoing file")
         }
     }
@@ -244,13 +247,10 @@ class NativeFileTransfer(
             packet.isNotEmpty() && (packet[0].toInt() and 0xff) in TYPE_MANIFEST..TYPE_CHUNK
 
         fun sanitizeName(input: String): String {
-            val cleaned = input.trim()
-                .replace('/', '_').replace('\\', '_')
-                .filter { it >= ' ' && it != '\u007f' }
-                .trim('.', ' ')
+            require('/' !in input && '\\' !in input) { "Path separators are not allowed in file names" }
+            val cleaned = input.trim().filter { it >= ' ' && it != '\u007f' }.trim('.', ' ')
             require(cleaned.isNotBlank() && cleaned != "." && cleaned != "..") { "Invalid file name" }
-            val bytes = cleaned.toByteArray(Charsets.UTF_8)
-            require(bytes.size <= MAX_NAME_BYTES) { "File name is too long" }
+            require(cleaned.toByteArray(Charsets.UTF_8).size <= MAX_NAME_BYTES) { "File name is too long" }
             return cleaned
         }
 

@@ -69,6 +69,42 @@ class AndroidAudioEngine {
         captureThread = null
     }
 
+    /** Stream an already-modulated 48 kHz mono waveform to Android output. */
+    fun transmitPcm(samples: FloatArray) {
+        require(samples.isNotEmpty()) { "PCM transmission cannot be empty" }
+        val pcm = ShortArray(samples.size) { index ->
+            (samples[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
+        }
+        val minimum = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
+        check(minimum > 0) { "PCM playback is not supported on this device" }
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setAudioFormat(AudioFormat.Builder().setSampleRate(SAMPLE_RATE)
+                .setEncoding(ENCODING).setChannelMask(CHANNEL_OUT).build())
+            .setBufferSizeInBytes(max(minimum, 8_192))
+            .setTransferMode(AudioTrack.MODE_STREAM).build()
+        try {
+            check(track.state == AudioTrack.STATE_INITIALIZED) { "Android could not initialize acoustic output" }
+            track.play()
+            var offset = 0
+            while (offset < pcm.size) {
+                val count = track.write(pcm, offset, minOf(4_096, pcm.size - offset), AudioTrack.WRITE_BLOCKING)
+                check(count > 0) { "AudioTrack write failed: $count" }
+                offset += count
+            }
+            val deadline = System.currentTimeMillis() + (samples.size * 1_000L / SAMPLE_RATE) + 2_000L
+            while (track.playbackHeadPosition.toLong() < pcm.size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            check(track.playbackHeadPosition.toLong() >= pcm.size) { "Audio transmission playback timed out" }
+        } finally {
+            try { track.stop() } catch (_: IllegalStateException) { }
+            track.release()
+        }
+    }
+
     fun playTestTone(frequencyHz: Int = 1800, durationMs: Int = 700) {
         require(frequencyHz in 100..10_000)
         require(durationMs in 100..5_000)

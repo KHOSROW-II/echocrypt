@@ -109,7 +109,7 @@ class NativeStreamReceiver(
         val first = maxOf(0, candidate - candidateStride)
         val last = minOf(
             buffer.size - syncSamples,
-            candidate + candidateStride * 2
+            candidate + candidateStride * 3
         )
         if (last < first) return candidate
 

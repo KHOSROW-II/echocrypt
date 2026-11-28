@@ -211,6 +211,10 @@ Install from the repository with `python -m pip install ".[audio]"`.
 
 ## Installation
 
+### Unified downloads
+
+All supported desktop operating-system packages, browser extensions, and the native Android APK are published together in the same GitHub Release. When the Android branch passes its native unit tests and APK build, download **`echocrypt-android.apk`** from the release assets list alongside the Linux, Windows, and macOS packages. Android development CI also retains a short-lived debug APK artifact; it does not create a separate Android-only GitHub Release.
+
 ### Requirements
 
 - Python 3.

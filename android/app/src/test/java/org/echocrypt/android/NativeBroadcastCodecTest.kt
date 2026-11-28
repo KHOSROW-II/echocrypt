@@ -36,6 +36,35 @@ class NativeBroadcastCodecTest {
         assertNull(assembler.accept(first))
     }
 
+    @Test fun leavingAndRejoiningIgnoresCompletionFromThePreviousRoom() {
+        val callbacks = mutableListOf<() -> Unit>()
+        var queueCalls = 0
+        val transport = org.echocrypt.android.protocol.NativeBroadcastTransport(
+            enqueueAudio = { _, callback ->
+                queueCalls++
+                callbacks += callback
+                true
+            },
+            onTextReceived = { _, _ -> },
+            onError = { throw AssertionError(it) },
+            onStateChanged = { }
+        )
+        transport.join()
+        transport.sendText("old room")
+        assertEquals(1, queueCalls)
+        transport.leave()
+
+        transport.join()
+        transport.sendText("new room")
+        assertEquals(2, queueCalls)
+
+        callbacks[0].invoke() // stale callback must not consume or duplicate the new frame
+        assertEquals(2, queueCalls)
+        callbacks[1].invoke()
+        assertEquals(2, queueCalls)
+        transport.leave()
+    }
+
     @Test fun rejectsCorruptedBroadcastPacket() {
         val sender = NativeBroadcastCodec("ALICE001".toByteArray())
         val receiver = NativeBroadcastCodec("BOB00001".toByteArray())

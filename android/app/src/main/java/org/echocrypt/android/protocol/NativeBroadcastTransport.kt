@@ -15,6 +15,7 @@ class NativeBroadcastTransport(
     private val pendingPackets = ArrayDeque<ByteArray>()
     private var pendingBytes = 0
     private var playbackInFlight = false
+    private var generation = 0L
 
     @Volatile var isJoined: Boolean = false
         private set
@@ -22,6 +23,8 @@ class NativeBroadcastTransport(
     @Synchronized
     fun join() {
         if (isJoined) return
+        generation++
+        playbackInFlight = false
         isJoined = true
         AppEventLog.record("BROADCAST_JOIN", "mode=open-public sender=" + senderLabel())
         onStateChanged("JOINED · OPEN PUBLIC BROADCAST")
@@ -31,9 +34,11 @@ class NativeBroadcastTransport(
     @Synchronized
     fun leave() {
         if (!isJoined) return
+        generation++
         isJoined = false
         pendingPackets.clear()
         pendingBytes = 0
+        playbackInFlight = false
         AppEventLog.record("BROADCAST_LEAVE")
         onStateChanged("LEFT · OPEN PUBLIC BROADCAST")
     }
@@ -90,9 +95,14 @@ class NativeBroadcastTransport(
             pump()
             return
         }
+        val queuedGeneration = generation
+        playbackInFlight = true
         val accepted = try {
             enqueueAudio(frame.samples) {
                 synchronized(this) {
+                    // Ignore a completion callback belonging to a room that has
+                    // already been left. It must not consume a new room's packet.
+                    if (queuedGeneration != generation) return@synchronized
                     if (pendingPackets.isNotEmpty() && pendingPackets.peekFirst().contentEquals(packet)) {
                         pendingPackets.removeFirst()
                         pendingBytes -= packet.size
@@ -107,7 +117,9 @@ class NativeBroadcastTransport(
             onError(failure.message ?: "Could not enqueue Broadcast audio")
             false
         }
-        if (accepted) playbackInFlight = true
-        else AppEventLog.record("BROADCAST_AUDIO_QUEUE_FULL", "pendingFrames=" + pendingPackets.size)
+        if (!accepted) {
+            if (queuedGeneration == generation) playbackInFlight = false
+            AppEventLog.record("BROADCAST_AUDIO_QUEUE_FULL", "pendingFrames=" + pendingPackets.size)
+        }
     }
 }

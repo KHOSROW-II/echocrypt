@@ -27,11 +27,11 @@ object NativeIdentity {
     data class PublicIdentity(val publicKey: ByteArray, val fingerprint: String) {
         init {
             require(publicKey.size == 32) { "Ed25519 public key must be 32 bytes" }
-            require(fingerprint == sha256(publicKey)) { "Fingerprint mismatch" }
+            require(fingerprint == NativeIdentity.sha256(publicKey)) { "Fingerprint mismatch" }
         }
 
         fun toJson(): String = JSONObject()
-            .put("format", IDENTITY_FORMAT)
+            .put("format", NativeIdentity.IDENTITY_FORMAT)
             .put("public_key", NativeIdentity.run { publicKey.toHex() })
             .put("fingerprint", fingerprint)
             .toString(2)
@@ -39,10 +39,10 @@ object NativeIdentity {
         companion object {
             fun fromJson(json: String): PublicIdentity {
                 val value = JSONObject(json)
-                require(value.optString("format") == IDENTITY_FORMAT) { "Unsupported identity format" }
-                val key = value.getString("public_key").hexToBytes()
+                require(value.optString("format") == NativeIdentity.IDENTITY_FORMAT) { "Unsupported identity format" }
+                val key = NativeIdentity.run { value.getString("public_key").hexToBytes() }
                 require(key.size == 32) { "Ed25519 public key must be exactly 32 bytes" }
-                val actual = sha256(key)
+                val actual = NativeIdentity.sha256(key)
                 require(value.getString("fingerprint").equals(actual, ignoreCase = true)) {
                     "Fingerprint mismatch"
                 }
@@ -56,7 +56,7 @@ object NativeIdentity {
         val publicIdentity: PublicIdentity by lazy {
             check(seedBytes.any { it.toInt() != 0 }) { "Identity has been destroyed" }
             val public = Ed25519PrivateKeyParameters(seedBytes, 0).generatePublicKey().encoded
-            PublicIdentity(public, sha256(public))
+            PublicIdentity(public, NativeIdentity.sha256(public))
         }
 
         @Synchronized
@@ -77,7 +77,7 @@ object NativeIdentity {
     }
 
     fun generate(): PrivateIdentity {
-        val seed = ByteArray(32).also(random::nextBytes)
+        val seed = ByteArray(32).also(NativeIdentity.random::nextBytes)
         return PrivateIdentity(seed).also { seed.fill(0) }
     }
 

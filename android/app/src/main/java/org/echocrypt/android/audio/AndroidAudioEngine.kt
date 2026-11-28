@@ -106,7 +106,11 @@ class AndroidAudioEngine {
             }
             check(track.playbackHeadPosition.toLong() >= pcm.size) { "Audio transmission playback timed out" }
         } finally {
-            try { track.stop() } catch (_: IllegalStateException) { }
+            // Do not call stop() on an uninitialized or already-stopped track.
+            if (track.state == AudioTrack.STATE_INITIALIZED &&
+                track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                try { track.stop() } catch (_: IllegalStateException) { }
+            }
             track.release()
         }
     }

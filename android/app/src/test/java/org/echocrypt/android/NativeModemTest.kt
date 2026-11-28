@@ -116,10 +116,23 @@ class NativeModemTest {
         assertEquals(2, received.size)
         assertTrue(received[0].payload.contentEquals(firstPayload))
         assertTrue(received[1].payload.contentEquals(secondPayload))
-        // The current sync metric can accept a start up to one short prefix early;
-        // this receiver does not yet provide sample-exact timing recovery.
-        assertTrue(kotlin.math.abs(received[0].startOffsetSamples - 16L) <= 16L)
-        assertTrue(kotlin.math.abs(received[1].startOffsetSamples - (16L + first.samples.size)) <= 16L)
+        assertEquals(16L, received[0].startOffsetSamples)
+        assertEquals(16L + first.samples.size, received[1].startOffsetSamples)
+    }
+
+
+    @Test
+    fun streamReceiverRefinesStartAtNonStrideAlignedSampleOffset() {
+        val payload = "SAMPLE ACCURATE SYNC".toByteArray(Charsets.UTF_8)
+        val frame = NativeModem.encode(payload)
+        val prefix = FloatArray(19) { 0f }
+        val stream = prefix + frame.samples
+        val receiver = org.echocrypt.android.protocol.NativeStreamReceiver(candidateStride = 8)
+        val received = receiver.push(stream)
+
+        assertEquals(1, received.size)
+        assertTrue(received.single().payload.contentEquals(payload))
+        assertEquals(19L, received.single().startOffsetSamples)
     }
 
     @Test
